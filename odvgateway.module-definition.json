@@ -1,0 +1,144 @@
+{
+  "formatVersion": 1,
+  "moduleKey": "odvgateway",
+  "definitionVersion": "0.1.11",
+  "module": {
+    "displayName": "ODVGateway",
+    "moduleType": "WebAppModule",
+    "schemaName": "odvgateway",
+    "description": "Gateway web application that adapts WebClient document selections into OpenDocViewer sessions backed by direct server-side file access.",
+    "sortOrder": 315,
+    "isEnabled": true
+  },
+  "apps": [
+    {
+      "appKey": "odvgateway_webapp",
+      "displayName": "ODVGateway",
+      "appType": "WebApp",
+      "description": "Web app definition for the ODVGateway adapter.",
+      "sortOrder": 315,
+      "isEnabled": true
+    }
+  ],
+  "compatibleArtifacts": [
+    {
+      "appKey": "odvgateway_webapp",
+      "packageType": "web-app",
+      "targetName": "odvgateway",
+      "relativePathTemplate": "odvgateway/web/{version}",
+      "minVersion": "0.1.11",
+      "maxVersion": null
+    }
+  ],
+  "artifactConfigurationFiles": [
+    {
+      "appKey": "odvgateway_webapp",
+      "packageType": "web-app",
+      "targetName": "odvgateway",
+      "relativePath": "appsettings.json",
+      "contentSource": "site-local",
+      "purpose": "Gateway runtime configuration, including OpenDocViewer dist path, session TTL, source cache behavior, and metadata alias mapping."
+    }
+  ],
+  "sqlScripts": [],
+  "integrity": {
+    "source": "ODVGateway has no module-owned database schema in version 0.1.0. Runtime behavior is configured through appsettings files.",
+    "requiredSchemas": [],
+    "requiredTables": [],
+    "requiredOmpRows": {
+      "permissions": [
+        {
+          "name": "ODVGateway.View",
+          "description": "Read access to the ODVGateway web app."
+        },
+        {
+          "name": "ODVGateway.Admin",
+          "description": "Administrative access to the ODVGateway web app."
+        }
+      ],
+      "rolePermissions": [
+        {
+          "roleName": "PortalAdmins",
+          "permissionName": "ODVGateway.View",
+          "scope": "bootstrap-default-admin"
+        },
+        {
+          "roleName": "PortalAdmins",
+          "permissionName": "ODVGateway.Admin",
+          "scope": "bootstrap-default-admin"
+        }
+      ],
+      "appPermissions": [
+        {
+          "appKey": "odvgateway_webapp",
+          "permissionName": "ODVGateway.View",
+          "requireAll": false
+        }
+      ],
+      "modules": [
+        {
+          "moduleKey": "odvgateway",
+          "schemaName": "odvgateway"
+        }
+      ],
+      "apps": [
+        {
+          "moduleKey": "odvgateway",
+          "appKey": "odvgateway_webapp",
+          "appType": "WebApp"
+        }
+      ],
+      "moduleInstances": [
+        {
+          "moduleInstanceKey": "odvgateway",
+          "instanceKey": "default",
+          "displayName": "ODVGateway",
+          "description": "ODVGateway module instance for the default OMP instance."
+        }
+      ],
+      "appInstances": [
+        {
+          "appInstanceKey": "odvgateway_webapp",
+          "moduleInstanceKey": "odvgateway",
+          "appKey": "odvgateway_webapp",
+          "displayName": "ODVGateway",
+          "description": "ODVGateway web app managed by OMP HostAgent.",
+          "routePath": "ODVGateway",
+          "installationName": "odvgateway",
+          "packageType": "web-app",
+          "targetName": "odvgateway",
+          "hostBinding": "host-neutral"
+        }
+      ],
+      "instanceTemplateModuleInstances": [
+        {
+          "moduleInstanceKey": "odvgateway",
+          "instanceTemplateKey": "default",
+          "displayName": "ODVGateway",
+          "description": "ODVGateway module instance in the default instance template."
+        }
+      ],
+      "instanceTemplateAppInstances": [
+        {
+          "appInstanceKey": "odvgateway_webapp",
+          "moduleInstanceKey": "odvgateway",
+          "appKey": "odvgateway_webapp",
+          "displayName": "ODVGateway",
+          "description": "ODVGateway web app in the default instance template.",
+          "routePath": "ODVGateway",
+          "installationName": "odvgateway",
+          "packageType": "web-app",
+          "targetName": "odvgateway",
+          "hostBinding": "host-neutral"
+        }
+      ]
+    },
+    "requiredModuleRows": {},
+    "excludedSeedData": [
+      {
+        "key": "Gateway site configuration",
+        "reason": "OpenDocViewer dist paths, source path trust settings, and metadata aliases are deployment-specific and belong in runtime configuration files."
+      }
+    ]
+  }
+}

@@ -1,0 +1,34 @@
+name: CI
+
+# CI is intentionally manual by default so maintainers can choose when to spend
+# Actions minutes on this companion gateway repository.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Check out ODVGateway
+        uses: actions/checkout@v4
+        with:
+          path: ODVGateway
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Show .NET SDK info
+        run: dotnet --info
+
+      - name: Restore
+        working-directory: ODVGateway
+        run: dotnet restore src/ODVGateway/ODVGateway.csproj
+
+      - name: Build
+        working-directory: ODVGateway
+        run: dotnet build src/ODVGateway/ODVGateway.csproj --configuration Release --no-restore

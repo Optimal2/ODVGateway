@@ -1,0 +1,13 @@
+bin/
+obj/
+.vs/
+.vscode/
+
+# Local build, package, and publish output.
+artifacts/
+TestResults/
+*.user
+*.suo
+*.zip
+*.nupkg
+logs/

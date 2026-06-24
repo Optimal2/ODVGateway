@@ -1,0 +1,45 @@
+name: CodeQL
+
+# CodeQL is intentionally manual by default so maintainers can choose when to
+# spend Actions minutes on this companion gateway repository.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  analyze:
+    if: ${{ vars.ENABLE_CODEQL == 'true' }}
+    name: Analyze (C#)
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out ODVGateway
+        uses: actions/checkout@v4
+        with:
+          path: ODVGateway
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: csharp
+          build-mode: manual
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore
+        working-directory: ODVGateway
+        run: dotnet restore src/ODVGateway/ODVGateway.csproj
+
+      - name: Build
+        working-directory: ODVGateway
+        run: dotnet build src/ODVGateway/ODVGateway.csproj --configuration Release --no-restore
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4
