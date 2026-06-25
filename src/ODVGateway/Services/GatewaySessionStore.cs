@@ -89,15 +89,22 @@ public sealed class GatewaySessionStore
 
     public bool TryGetByHandoffLookupKey(string handoffLookupKey, out GatewaySession session)
     {
-        PruneExpired();
-
-        if (_sessionKeysByHandoffLookupKey.TryGetValue(handoffLookupKey, out var sessionKey) &&
-            TryGet(sessionKey, out session))
+        lock (_sessionMutationGate)
         {
-            return true;
+            var now = DateTimeOffset.UtcNow;
+            PruneExpiredCore(now);
+
+            if (_sessionKeysByHandoffLookupKey.TryGetValue(handoffLookupKey, out var sessionKey) &&
+                _sessionsBySessionKey.TryGetValue(sessionKey, out var candidate) &&
+                candidate.ExpiresUtc > now)
+            {
+                session = candidate;
+                return true;
+            }
+
+            _sessionKeysByHandoffLookupKey.TryRemove(handoffLookupKey, out _);
         }
 
-        _sessionKeysByHandoffLookupKey.TryRemove(handoffLookupKey, out _);
         session = null!;
         return false;
     }
@@ -117,14 +124,21 @@ public sealed class GatewaySessionStore
             .Where(entry => entry.Value.ExpiresUtc <= now)
             .ToArray())
         {
-            if (_sessionsBySessionKey.TryRemove(entry.Key, out var removedSession) &&
-                _sessionKeysByHandoffLookupKey.TryGetValue(
-                    removedSession.HandoffLookupKey,
-                    out var mappedSessionKey) &&
-                mappedSessionKey.Equals(removedSession.SessionKey, StringComparison.OrdinalIgnoreCase))
+            if (_sessionsBySessionKey.TryRemove(entry.Key, out var removedSession))
             {
-                _sessionKeysByHandoffLookupKey.TryRemove(removedSession.HandoffLookupKey, out _);
+                RemoveHandoffLookupKeyIfCurrent(removedSession);
             }
+        }
+    }
+
+    private void RemoveHandoffLookupKeyIfCurrent(GatewaySession removedSession)
+    {
+        if (_sessionKeysByHandoffLookupKey.TryGetValue(
+                removedSession.HandoffLookupKey,
+                out var mappedSessionKey) &&
+            mappedSessionKey.Equals(removedSession.SessionKey, StringComparison.OrdinalIgnoreCase))
+        {
+            _sessionKeysByHandoffLookupKey.TryRemove(removedSession.HandoffLookupKey, out _);
         }
     }
 
@@ -227,15 +241,7 @@ internal sealed record FileTicket(string? FileId, string? Extension, string File
         {
             return null;
         }
-        catch (IOException)
-        {
-            return null;
-        }
         catch (NotSupportedException)
-        {
-            return null;
-        }
-        catch (UnauthorizedAccessException)
         {
             return null;
         }
@@ -263,15 +269,7 @@ internal sealed record FileTicket(string? FileId, string? Extension, string File
         {
             return null;
         }
-        catch (IOException)
-        {
-            return null;
-        }
         catch (NotSupportedException)
-        {
-            return null;
-        }
-        catch (UnauthorizedAccessException)
         {
             return null;
         }
