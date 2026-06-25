@@ -74,17 +74,21 @@ public sealed class GatewaySessionStore
 
     public bool TryGet(string sessionKey, out GatewaySession session)
     {
-        PruneExpired();
-
-        if (_sessionsBySessionKey.TryGetValue(sessionKey, out var candidate) &&
-            candidate.ExpiresUtc > DateTimeOffset.UtcNow)
+        lock (_sessionMutationGate)
         {
-            session = candidate;
-            return true;
-        }
+            var now = DateTimeOffset.UtcNow;
+            PruneExpiredCore(now);
 
-        session = null!;
-        return false;
+            if (_sessionsBySessionKey.TryGetValue(sessionKey, out var candidate) &&
+                candidate.ExpiresUtc > now)
+            {
+                session = candidate;
+                return true;
+            }
+
+            session = null!;
+            return false;
+        }
     }
 
     public bool TryGetByHandoffLookupKey(string handoffLookupKey, out GatewaySession session)
@@ -120,16 +124,20 @@ public sealed class GatewaySessionStore
     private void PruneExpiredCore(DateTimeOffset now)
     {
         // Materialize the filtered snapshot before removing entries from the concurrent maps.
-        foreach (var entry in _sessionsBySessionKey
+        foreach (var removedSession in _sessionsBySessionKey
             .Where(entry => entry.Value.ExpiresUtc <= now)
-            .ToArray())
+            .ToArray()
+            .Select(TryRemoveSession)
+            .OfType<GatewaySession>())
         {
-            if (_sessionsBySessionKey.TryRemove(entry.Key, out var removedSession))
-            {
-                RemoveHandoffLookupKeyIfCurrent(removedSession);
-            }
+            RemoveHandoffLookupKeyIfCurrent(removedSession);
         }
     }
+
+    private GatewaySession? TryRemoveSession(KeyValuePair<string, GatewaySession> entry)
+        => _sessionsBySessionKey.TryRemove(entry.Key, out var removedSession)
+            ? removedSession
+            : null;
 
     private void RemoveHandoffLookupKeyIfCurrent(GatewaySession removedSession)
     {
