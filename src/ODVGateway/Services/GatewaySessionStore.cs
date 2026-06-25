@@ -107,10 +107,9 @@ public sealed class GatewaySessionStore
             }
 
             _sessionKeysByHandoffLookupKey.TryRemove(handoffLookupKey, out _);
+            session = null!;
+            return false;
         }
-
-        session = null!;
-        return false;
     }
 
     private void PruneExpired()
