@@ -112,6 +112,7 @@ public sealed class GatewaySessionStore
 
     private void PruneExpiredCore(DateTimeOffset now)
     {
+        // Materialize the filtered snapshot before removing entries from the concurrent maps.
         foreach (var entry in _sessionsBySessionKey
             .Where(entry => entry.Value.ExpiresUtc <= now)
             .ToArray())
