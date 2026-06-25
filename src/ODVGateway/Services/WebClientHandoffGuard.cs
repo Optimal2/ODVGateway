@@ -83,40 +83,37 @@ public sealed class WebClientHandoffGuard
         HttpRequest request,
         IEnumerable<string>? configuredUrls)
     {
-        var initiators = new List<AllowedInitiator>();
-        foreach (var configuredUrl in configuredUrls ?? [])
-        {
-            var trimmed = configuredUrl?.Trim();
-            if (string.IsNullOrWhiteSpace(trimmed))
-            {
-                continue;
-            }
-
-            if (Uri.TryCreate(trimmed, UriKind.Absolute, out var absolute) && IsHttpUri(absolute))
-            {
-                initiators.Add(AllowedInitiator.FromUri(absolute));
-                continue;
-            }
-
-            if (trimmed.StartsWith("/", StringComparison.Ordinal))
-            {
-                if (Uri.TryCreate($"{request.Scheme}://{request.Host}{trimmed}", UriKind.Absolute, out var relativeToGateway))
-                {
-                    initiators.Add(AllowedInitiator.FromUri(relativeToGateway));
-                }
-
-                continue;
-            }
-
-            if (Uri.TryCreate($"{request.Scheme}://{trimmed}", UriKind.Absolute, out var hostOnly) && IsHttpUri(hostOnly))
-            {
-                initiators.Add(AllowedInitiator.FromUri(hostOnly));
-            }
-        }
-
-        return initiators
+        return (configuredUrls ?? [])
+            .Select(configuredUrl => NormalizeAllowedInitiator(request, configuredUrl))
+            .Where(initiator => initiator is not null)
+            .Select(initiator => initiator!)
             .Distinct()
             .ToArray();
+    }
+
+    private static AllowedInitiator? NormalizeAllowedInitiator(HttpRequest request, string? configuredUrl)
+    {
+        var trimmed = configuredUrl?.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed))
+        {
+            return null;
+        }
+
+        if (Uri.TryCreate(trimmed, UriKind.Absolute, out var absolute) && IsHttpUri(absolute))
+        {
+            return AllowedInitiator.FromUri(absolute);
+        }
+
+        if (trimmed.StartsWith("/", StringComparison.Ordinal))
+        {
+            return Uri.TryCreate($"{request.Scheme}://{request.Host}{trimmed}", UriKind.Absolute, out var relativeToGateway)
+                ? AllowedInitiator.FromUri(relativeToGateway)
+                : null;
+        }
+
+        return Uri.TryCreate($"{request.Scheme}://{trimmed}", UriKind.Absolute, out var hostOnly) && IsHttpUri(hostOnly)
+            ? AllowedInitiator.FromUri(hostOnly)
+            : null;
     }
 
     private static bool IsAllowedInitiator(Uri initiator, AllowedInitiator allowed, bool includePath)

@@ -717,7 +717,7 @@ static async Task<SourcePackPayload> FetchWebClientSourceBytesAsync(
                     source.Index,
                     attempt,
                     statusCode,
-                    DescribeSourceEndpointForLog(sourceUrl));
+                    DescribeSourceEndpointForLog());
 
                 if (IsRetryableProxyStatusCode(statusCode) && attempt < maxAttempts)
                 {
@@ -767,15 +767,15 @@ static async Task<SourcePackPayload> FetchWebClientSourceBytesAsync(
                 "WebClient source pack fetch timed out. Index={FileIndex}, Attempt={Attempt}, Source={SourceEndpoint}",
                 source.Index,
                 attempt,
-                DescribeSourceEndpointForLog(sourceUrl));
+                DescribeSourceEndpointForLog());
         }
         catch (HttpRequestException ex)
         {
-            LogWebClientSourcePackFetchFailed(logger, session, source, attempt, sourceUrl, ex);
+            LogWebClientSourcePackFetchFailed(logger, session, source, attempt, ex);
         }
         catch (IOException ex)
         {
-            LogWebClientSourcePackFetchFailed(logger, session, source, attempt, sourceUrl, ex);
+            LogWebClientSourcePackFetchFailed(logger, session, source, attempt, ex);
         }
         catch (SourcePackPayloadTooLargeException ex)
         {
@@ -787,7 +787,7 @@ static async Task<SourcePackPayload> FetchWebClientSourceBytesAsync(
         }
         catch (InvalidOperationException ex)
         {
-            LogWebClientSourcePackFetchFailed(logger, session, source, attempt, sourceUrl, ex);
+            LogWebClientSourcePackFetchFailed(logger, session, source, attempt, ex);
         }
 
         if (attempt < maxAttempts)
@@ -808,7 +808,6 @@ static void LogWebClientSourcePackFetchFailed(
     GatewaySession session,
     GatewaySourceFile source,
     int attempt,
-    string sourceUrl,
     Exception ex)
 {
     logger.LogWarning(
@@ -816,7 +815,7 @@ static void LogWebClientSourcePackFetchFailed(
         "WebClient source pack fetch failed. Index={FileIndex}, Attempt={Attempt}, Source={SourceEndpoint}",
         source.Index,
         attempt,
-        DescribeSourceEndpointForLog(sourceUrl));
+        DescribeSourceEndpointForLog());
 }
 
 static long GetMaxSourcePackFrameBytes(ODVGatewayOptions options)
@@ -1020,7 +1019,7 @@ static async Task<IResult> ProxyWebClientSourceAsync(
                     source.Index,
                     attempt,
                     statusCode,
-                    DescribeSourceEndpointForLog(sourceUrl));
+                    DescribeSourceEndpointForLog());
 
                 if (IsRetryableProxyStatusCode(statusCode) && attempt < maxAttempts)
                 {
@@ -1040,7 +1039,7 @@ static async Task<IResult> ProxyWebClientSourceAsync(
                     attempt,
                     contentLength.Value,
                     maxProxyBytes,
-                    DescribeSourceEndpointForLog(sourceUrl));
+                    DescribeSourceEndpointForLog());
                 return Results.Json(new
                 {
                     error = FormatSourceProxyLimitExceededMessage(contentLength.Value, maxProxyBytes),
@@ -1093,15 +1092,15 @@ static async Task<IResult> ProxyWebClientSourceAsync(
                 "WebClient source proxy timed out. Index={FileIndex}, Attempt={Attempt}, Source={SourceEndpoint}",
                 source.Index,
                 attempt,
-                DescribeSourceEndpointForLog(sourceUrl));
+                DescribeSourceEndpointForLog());
         }
         catch (HttpRequestException ex)
         {
-            LogWebClientSourceProxyFailed(logger, session, source, attempt, sourceUrl, ex);
+            LogWebClientSourceProxyFailed(logger, session, source, attempt, ex);
         }
         catch (IOException ex)
         {
-            LogWebClientSourceProxyFailed(logger, session, source, attempt, sourceUrl, ex);
+            LogWebClientSourceProxyFailed(logger, session, source, attempt, ex);
         }
         catch (SourcePackPayloadTooLargeException ex)
         {
@@ -1111,7 +1110,7 @@ static async Task<IResult> ProxyWebClientSourceAsync(
                 source.Index,
                 attempt,
                 maxProxyBytes,
-                DescribeSourceEndpointForLog(sourceUrl));
+                DescribeSourceEndpointForLog());
             return Results.Json(new
             {
                 error = ex.Message,
@@ -1121,7 +1120,7 @@ static async Task<IResult> ProxyWebClientSourceAsync(
         }
         catch (InvalidOperationException ex)
         {
-            LogWebClientSourceProxyFailed(logger, session, source, attempt, sourceUrl, ex);
+            LogWebClientSourceProxyFailed(logger, session, source, attempt, ex);
         }
 
         if (attempt < maxAttempts)
@@ -1172,7 +1171,6 @@ static void LogWebClientSourceProxyFailed(
     GatewaySession session,
     GatewaySourceFile source,
     int attempt,
-    string sourceUrl,
     Exception ex)
 {
     logger.LogWarning(
@@ -1180,23 +1178,12 @@ static void LogWebClientSourceProxyFailed(
         "WebClient source proxy failed. Index={FileIndex}, Attempt={Attempt}, Source={SourceEndpoint}",
         source.Index,
         attempt,
-        DescribeSourceEndpointForLog(sourceUrl));
+        DescribeSourceEndpointForLog());
 }
 
-static string DescribeSourceEndpointForLog(string sourceUrl)
+static string DescribeSourceEndpointForLog()
 {
-    if (!Uri.TryCreate(sourceUrl, UriKind.Absolute, out var uri))
-    {
-        return "relative-url";
-    }
-
-    if (!uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) &&
-        !uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
-    {
-        return "non-http-url";
-    }
-
-    return uri.GetLeftPart(UriPartial.Authority);
+    return "configured-webclient-source";
 }
 
 static void ValidateTrustedSourceRootConfiguration(ODVGatewayOptions options)
@@ -1221,7 +1208,7 @@ static void ValidateTrustedSourceRootConfiguration(ODVGatewayOptions options)
 
     throw new InvalidOperationException(
         "ODVGateway: TrustedSourceRoots must be absolute local or UNC paths when TrustClientFilePath is enabled. " +
-        $"Invalid entries: {string.Join(", ", invalidRoots)}");
+        $"Invalid entry count: {invalidRoots.Count}.");
 }
 
 static Task DelayProxyRetryAsync(RemoteInlineSourceOptions options, int attempt, CancellationToken cancellationToken)

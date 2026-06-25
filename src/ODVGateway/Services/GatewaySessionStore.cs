@@ -112,17 +112,17 @@ public sealed class GatewaySessionStore
 
     private void PruneExpiredCore(DateTimeOffset now)
     {
-        foreach (var entry in _sessionsBySessionKey.Where(entry => entry.Value.ExpiresUtc <= now))
+        foreach (var entry in _sessionsBySessionKey
+            .Where(entry => entry.Value.ExpiresUtc <= now)
+            .ToArray())
         {
-            if (_sessionsBySessionKey.TryRemove(entry.Key, out var removedSession))
+            if (_sessionsBySessionKey.TryRemove(entry.Key, out var removedSession) &&
+                _sessionKeysByHandoffLookupKey.TryGetValue(
+                    removedSession.HandoffLookupKey,
+                    out var mappedSessionKey) &&
+                mappedSessionKey.Equals(removedSession.SessionKey, StringComparison.OrdinalIgnoreCase))
             {
-                if (_sessionKeysByHandoffLookupKey.TryGetValue(
-                        removedSession.HandoffLookupKey,
-                        out var mappedSessionKey) &&
-                    mappedSessionKey.Equals(removedSession.SessionKey, StringComparison.OrdinalIgnoreCase))
-                {
-                    _sessionKeysByHandoffLookupKey.TryRemove(removedSession.HandoffLookupKey, out _);
-                }
+                _sessionKeysByHandoffLookupKey.TryRemove(removedSession.HandoffLookupKey, out _);
             }
         }
     }

@@ -41,8 +41,8 @@ public sealed class DirectSourceFileResolver
         if (invalidTrustedRoots.Count > 0)
         {
             _logger.LogError(
-                "Rejected client file path because TrustedSourceRoots contains non-absolute entries while TrustClientFilePath is enabled. InvalidRoots={InvalidRoots}",
-                invalidTrustedRoots);
+                "Rejected client file path because TrustedSourceRoots contains non-absolute entries while TrustClientFilePath is enabled. InvalidRootCount={InvalidRootCount}",
+                invalidTrustedRoots.Count);
             return false;
         }
 
@@ -57,8 +57,7 @@ public sealed class DirectSourceFileResolver
         if (!IsUnderTrustedRoot(candidatePath, trustedRoots))
         {
             _logger.LogWarning(
-                "Rejected client file path outside configured TrustedSourceRoots. Path={SourcePath}",
-                candidatePath);
+                "Rejected client file path outside configured TrustedSourceRoots.");
             return false;
         }
 
@@ -147,40 +146,21 @@ public sealed class DirectSourceFileResolver
 
     internal static IReadOnlyList<string> GetInvalidTrustedRoots(IEnumerable<string>? roots)
     {
-        var invalidRoots = new List<string>();
-        foreach (var root in roots ?? [])
-        {
-            var trimmedRoot = root?.Trim();
-            if (string.IsNullOrWhiteSpace(trimmedRoot))
-            {
-                continue;
-            }
-
-            if (!TryNormalizeTrustedRoot(trimmedRoot, out _))
-            {
-                invalidRoots.Add(trimmedRoot);
-            }
-        }
-
-        return invalidRoots
+        return (roots ?? [])
+            .Select(root => root?.Trim())
+            .Where(trimmedRoot => !string.IsNullOrWhiteSpace(trimmedRoot))
+            .Where(trimmedRoot => !TryNormalizeTrustedRoot(trimmedRoot, out _))
+            .Select(trimmedRoot => trimmedRoot!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
 
     internal static IReadOnlyList<string> NormalizeTrustedRoots(IEnumerable<string>? roots)
     {
-        var normalizedRoots = new List<string>();
-        foreach (var root in roots ?? [])
-        {
-            if (!TryNormalizeTrustedRoot(root, out var normalizedRoot))
-            {
-                continue;
-            }
-
-            normalizedRoots.Add(normalizedRoot);
-        }
-
-        return normalizedRoots
+        return (roots ?? [])
+            .Select(root => TryNormalizeTrustedRoot(root, out var normalizedRoot) ? normalizedRoot : null)
+            .Where(normalizedRoot => !string.IsNullOrWhiteSpace(normalizedRoot))
+            .Select(normalizedRoot => normalizedRoot!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
