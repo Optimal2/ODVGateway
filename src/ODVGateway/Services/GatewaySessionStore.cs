@@ -7,6 +7,9 @@ namespace ODVGateway.Services;
 
 public sealed class GatewaySessionStore
 {
+    // The dictionaries are individually concurrent, but the session store also maintains a
+    // cross-dictionary lookup invariant and a capacity check. Keep those compound mutations under
+    // one small gate so a session key and its handoff lookup key cannot drift apart.
     private readonly object _sessionMutationGate = new();
 
     private readonly ConcurrentDictionary<string, GatewaySession> _sessionsBySessionKey =
