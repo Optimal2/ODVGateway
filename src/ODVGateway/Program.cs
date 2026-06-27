@@ -49,7 +49,19 @@ var app = builder.Build();
 var distResolver = app.Services.GetRequiredService<OpenDocViewerDistResolver>();
 var distPath = distResolver.ResolveDistPath();
 
+LogProductionCompatibilityWarnings(app.Logger, startupOptions);
+
 app.UseResponseCompression();
+
+app.Use(async (context, next) =>
+{
+    var headers = context.Response.Headers;
+    headers["X-Frame-Options"] = "SAMEORIGIN";
+    headers["X-Content-Type-Options"] = "nosniff";
+    headers["Referrer-Policy"] = "no-referrer";
+    headers["X-Robots-Tag"] = "noindex";
+    await next(context);
+});
 
 if (!string.IsNullOrWhiteSpace(distPath))
 {
@@ -1270,6 +1282,24 @@ static bool IsValidCookieName(string? name)
     }
 
     return true;
+}
+
+static void LogProductionCompatibilityWarnings(ILogger logger, ODVGatewayOptions options)
+{
+    if (options.WebClientHandoff.AllowMissingInitiatorHeaders)
+    {
+        logger.LogWarning(
+            "ODVGateway is configured with webClientHandoff.allowMissingInitiatorHeaders enabled. " +
+            "This is a development/compatibility setting and should be disabled in production.");
+    }
+
+    if (options.WebClientHandoff.AllowedInitiatorUrls.Length == 0 ||
+        options.WebClientHandoff.AllowedInitiatorUrls.All(string.IsNullOrWhiteSpace))
+    {
+        logger.LogWarning(
+            "ODVGateway is configured with an empty webClientHandoff.allowedInitiatorUrls list. " +
+            "This is a development/compatibility setting and should be locked down in production.");
+    }
 }
 
 internal sealed class SourcePackPayloadTooLargeException : InvalidOperationException

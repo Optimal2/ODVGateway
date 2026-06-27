@@ -138,10 +138,12 @@ Important settings:
   URLs that may initialize gateway sessions. Entries may be absolute URLs, host
   names, or root-relative paths on the gateway host. Path-specific entries match
   `Referer` headers; `Origin` headers can only satisfy host-level entries because
-  browsers do not include a path in `Origin`.
+  browsers do not include a path in `Origin`. The gateway logs a startup warning
+  when this list is empty.
 - `webClientHandoff.allowMissingInitiatorHeaders`: Optional compatibility escape
   hatch if a trusted deployment strips both `Referer` and `Origin`. Keep this
-  `false` unless the gateway is protected by another boundary.
+  `false` unless the gateway is protected by another boundary. The gateway logs
+  a startup warning when this setting is enabled.
 - `webClientSourceFallback`: Optional fallback used when `filePath` is not
   readable by the gateway process. By default the gateway first reuses `filePath`
   when it already looks like a browser URL, matching the legacy OpenDocViewer
@@ -164,6 +166,13 @@ Important settings:
 - `web.config`: The published IIS config raises `maxUrl` and `maxQueryString`
   to 65536 so the existing WebClient `sessiondata` query handoff can carry large
   case selections.
+- Standalone Kestrel deployments add a baseline set of response headers to every
+  response, including static files: `X-Frame-Options: SAMEORIGIN`,
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and
+  `X-Robots-Tag: noindex`. IIS deployments already set the first three through
+  `web.config`; deployment-specific `Content-Security-Policy` and
+  `Strict-Transport-Security` headers remain the responsibility of the host
+  reverse proxy or IIS configuration.
 - `metadataAliases`: Optional alias mapping copied into the neutral ODV bundle
   so print templates such as `{{metadata.patientId}}` keep working. The
   `fieldId` values come from the deployment's WebClient metadata schema and
@@ -302,7 +311,7 @@ GET /health
 
 ## Current 0.1.x Scope
 
-The current repository and web component version is `0.1.18`. The module
+The current repository and web component version is `0.1.19`. The module
 definition version remains `0.1.11` because the public OMP module contract did
 not need a schema change for the later runtime hardening work.
 

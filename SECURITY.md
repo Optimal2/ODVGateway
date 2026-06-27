@@ -53,8 +53,14 @@ handoff and source-access configuration:
   the smallest practical set of absolute local or UNC roots
 - keep `exposeOpenDocViewerDistPathInHealth` disabled in production unless a
   trusted monitor explicitly needs the literal filesystem path
+- review startup warnings about an empty `webClientHandoff.allowedInitiatorUrls`
+  list or enabled `webClientHandoff.allowMissingInitiatorHeaders`; both are
+  intended for development or compatibility scenarios
 - keep source proxy and source-pack byte limits aligned with the deployment's
   expected maximum source-file size
+- verify that baseline response headers (`X-Frame-Options`,
+  `X-Content-Type-Options`, `Referrer-Policy`, `X-Robots-Tag`) are emitted by
+  the host reverse proxy or by the gateway's Kestrel middleware
 - treat prepared sessions as process-local memory: restarts clear pending
   handoffs, and multi-instance deployments need sticky routing or a shared
   session-store implementation before requests can move between instances
