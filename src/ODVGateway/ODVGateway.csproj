@@ -5,5 +5,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>ODVGateway</RootNamespace>
     <AssemblyName>ODVGateway</AssemblyName>
+    <Authors>Optimal2</Authors>
+    <Description>Standalone handoff gateway for OpenDocViewer sessions.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/Optimal2/ODVGateway</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/Optimal2/ODVGateway</PackageProjectUrl>
   </PropertyGroup>
 </Project>

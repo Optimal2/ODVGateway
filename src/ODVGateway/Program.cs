@@ -295,9 +295,9 @@ app.MapMethods("/source/{sessionKey}/{fileIndex:int}", ["GET", "HEAD"], async (
     }
 
     logger.LogWarning(
-        "Prepared source file was not found. Index={FileIndex}, Path={FilePath}",
+        "Prepared source file was not found. Index={FileIndex}, HasClientFilePath={HasClientFilePath}",
         fileIndex,
-        source.FilePath);
+        !string.IsNullOrWhiteSpace(source.FilePath));
     return Results.NotFound(new
     {
         error = "Prepared source file was not found.",
