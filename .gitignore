@@ -5,6 +5,7 @@ obj/
 
 # Local build, package, and publish output.
 artifacts/
+publish/
 TestResults/
 *.user
 *.suo

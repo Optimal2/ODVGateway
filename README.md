@@ -85,10 +85,11 @@ under the `ODVGateway` section. ASP.NET Core host filtering uses the top-level
 
 Important settings:
 
-- `AllowedHosts`: Top-level ASP.NET Core host allowlist. Set this to the public
-  host names that serve the gateway in production, without schemes or paths
-  (for example `gateway.example;gateway.internal.example`). Keep `*` only for
-  local development or a deployment where another trusted front door performs
+- `AllowedHosts`: Top-level ASP.NET Core host allowlist. The repository default
+  is `localhost;127.0.0.1`, which is only suitable for development. Set this to
+  the public host names that serve the gateway in production, without schemes or
+  paths (for example `gateway.example;gateway.internal.example`). Keep `*` only
+  for local development or a deployment where another trusted front door performs
   equivalent host validation.
 - `openDocViewerDistPath`: Path to an OpenDocViewer `dist` folder. If empty,
   the gateway tries `wwwroot/odv`, `wwwroot/OpenDocViewer`, a sibling

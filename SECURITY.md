@@ -42,7 +42,7 @@ handoff and source-access configuration:
 - set `openDocViewerDistPath` explicitly and enable
   `requireExplicitOpenDocViewerDistPath`
 - set the top-level ASP.NET Core `AllowedHosts` value to the gateway's public
-  host names instead of leaving the development wildcard
+  host names instead of leaving the development default (`localhost;127.0.0.1`)
 - configure `webClientHandoff.allowedInitiatorUrls` so only trusted handoff
   pages can initialize sessions
 - keep `webClientHandoff.allowMissingInitiatorHeaders` disabled unless another
