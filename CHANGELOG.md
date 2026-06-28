@@ -2,6 +2,11 @@
 
 All notable changes to ODVGateway are documented here.
 
+## 0.1.21 - 2026-06-28
+
+- Replaced exception messages in source-pack and source-proxy error responses with fixed generic texts.
+- Removed `WebClientSourceFallback.UrlTemplate` and `AllowedHosts` from `/health` output to avoid leaking internal environment details.
+
 ## 0.1.20 - 2026-06-28
 
 - Disabled the Kestrel `Server` response header in standalone deployments.
