@@ -122,10 +122,8 @@ app.MapGet("/health", (
         {
             currentOptions.WebClientSourceFallback.Enabled,
             currentOptions.WebClientSourceFallback.RequireSameHost,
-            currentOptions.WebClientSourceFallback.AllowedHosts,
             currentOptions.WebClientSourceFallback.UseFilePathUrlWhenDirectFileMissing,
             currentOptions.WebClientSourceFallback.UseWhenDirectFileMissing,
-            currentOptions.WebClientSourceFallback.UrlTemplate,
             currentOptions.WebClientSourceFallback.ProxyThroughGateway,
             currentOptions.WebClientSourceFallback.ProxyThroughGatewayAboveSourceCount,
             currentOptions.WebClientSourceFallback.ProxyMaxConcurrency
@@ -674,13 +672,15 @@ static SourcePackPayload BuildFailedSourcePackPayload(
 {
     logger.LogWarning(
         ex,
-        "Could not write source pack frame. Index={FileIndex}",
-        source.Index);
+        "Could not write source pack frame. Index={FileIndex}, ExceptionType={ExceptionType}, ExceptionMessage={ExceptionMessage}",
+        source.Index,
+        ex.GetType().Name,
+        ex.Message);
     return new SourcePackPayload(
         Ok: false,
         Bytes: [],
         ContentType: contentTypes.GetContentType(source.Extension),
-        Error: ex.Message);
+        Error: "The gateway could not read the source file.");
 }
 
 static async Task<SourcePackPayload> FetchWebClientSourceBytesAsync(
@@ -790,11 +790,15 @@ static async Task<SourcePackPayload> FetchWebClientSourceBytesAsync(
         }
         catch (SourcePackPayloadTooLargeException ex)
         {
+            logger.LogWarning(
+                ex,
+                "Source pack payload exceeded configured limit. Index={FileIndex}",
+                source.Index);
             return new SourcePackPayload(
                 Ok: false,
                 Bytes: [],
                 ContentType: contentTypes.GetContentType(source.Extension),
-                Error: ex.Message);
+                Error: "Source file is too large for the source-pack transport.");
         }
         catch (InvalidOperationException ex)
         {
@@ -1124,7 +1128,7 @@ static async Task<IResult> ProxyWebClientSourceAsync(
                 DescribeSourceEndpointForLog());
             return Results.Json(new
             {
-                error = ex.Message,
+                error = "Source file is too large for the gateway source proxy transport.",
                 fileIndex = source.Index,
                 displayName = source.DisplayName
             }, statusCode: StatusCodes.Status502BadGateway);
