@@ -170,8 +170,10 @@ Important settings:
 - Standalone Kestrel deployments add a baseline set of response headers to every
   response, including static files: `X-Frame-Options: SAMEORIGIN`,
   `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and
-  `X-Robots-Tag: noindex`. IIS deployments already set the first three through
-  `web.config`; deployment-specific `Content-Security-Policy` and
+  `X-Robots-Tag: noindex`. Kestrel also disables the default `Server` response
+  header. IIS deployments already set the first three through `web.config` and
+  can remove the `Server` header with `web.config` requestFiltering or URL
+  Rewrite configuration; deployment-specific `Content-Security-Policy` and
   `Strict-Transport-Security` headers remain the responsibility of the host
   reverse proxy or IIS configuration.
 - `metadataAliases`: Optional alias mapping copied into the neutral ODV bundle
@@ -312,7 +314,7 @@ GET /health
 
 ## Current 0.1.x Scope
 
-The current repository and web component version is `0.1.19`. The module
+The current repository and web component version is `0.1.20`. The module
 definition version remains `0.1.11` because the public OMP module contract did
 not need a schema change for the later runtime hardening work.
 

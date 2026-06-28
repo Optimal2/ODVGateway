@@ -2,6 +2,15 @@
 
 All notable changes to ODVGateway are documented here.
 
+## 0.1.20 - 2026-06-28
+
+- Disabled the Kestrel `Server` response header in standalone deployments.
+- Added `Cache-Control: no-store` to `/prep` responses.
+- Removed raw exception messages from `/prep` error responses to avoid
+  information disclosure.
+- Documented the new baseline header and safe error-response behavior in
+  `README.md` and `SECURITY.md`.
+
 ## 0.1.19 - 2026-06-27
 
 - Added production startup warnings when `webClientHandoff.allowedInitiatorUrls`

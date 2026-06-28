@@ -11,6 +11,8 @@ using ODVGateway.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
+builder.WebHost.ConfigureKestrel(options => options.AddServerHeader = false);
+
 var startupOptions = builder.Configuration
     .GetSection(ODVGatewayOptions.SectionName)
     .Get<ODVGatewayOptions>() ?? new ODVGatewayOptions();
@@ -159,6 +161,7 @@ app.MapPost("/prep", async (
     ILoggerFactory loggerFactory,
     CancellationToken cancellationToken) =>
 {
+    request.HttpContext.Response.Headers.CacheControl = "no-store";
     var logger = loggerFactory.CreateLogger("ODVGateway.Prep");
     var handoffResult = handoffGuard.Validate(request);
     if (!handoffResult.IsAllowed)
@@ -455,11 +458,7 @@ static bool HasBundleUrlQuery(HttpRequest request)
 static IResult RejectInvalidPrepPayload(ILogger logger, Exception ex)
 {
     logger.LogWarning(ex, "Rejected invalid WebClient prep payload.");
-    return Results.BadRequest(new
-    {
-        error = "Invalid WebClient prep payload.",
-        detail = ex.Message
-    });
+    return Results.BadRequest(new { error = "Invalid WebClient prep payload." });
 }
 
 static IResult RejectInvalidSessionData(ILogger logger, Exception ex)

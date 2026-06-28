@@ -61,9 +61,14 @@ handoff and source-access configuration:
 - verify that baseline response headers (`X-Frame-Options`,
   `X-Content-Type-Options`, `Referrer-Policy`, `X-Robots-Tag`) are emitted by
   the host reverse proxy or by the gateway's Kestrel middleware
+- verify that the Kestrel `Server` response header is disabled or removed by
+  the host reverse proxy; the gateway disables it by default for standalone
+  Kestrel deployments
 - treat prepared sessions as process-local memory: restarts clear pending
   handoffs, and multi-instance deployments need sticky routing or a shared
   session-store implementation before requests can move between instances
+- note that gateway error responses do not echo raw exception messages or
+  stack traces; keep full diagnostic details in server-side logs
 
 ## Public Repository Scope
 
