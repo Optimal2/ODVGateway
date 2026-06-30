@@ -2,6 +2,10 @@
 
 All notable changes to ODVGateway are documented here.
 
+## 0.1.25 - 2026-06-30
+
+- Named the prepared-session minimum limit and file-ticket parsing constants.
+
 ## 0.1.24 - 2026-06-30
 
 - Made prepared-session and handoff lookup pruning remove only exact key/value pairs.

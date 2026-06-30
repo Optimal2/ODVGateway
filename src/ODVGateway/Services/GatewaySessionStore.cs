@@ -7,6 +7,9 @@ namespace ODVGateway.Services;
 
 public sealed class GatewaySessionStore
 {
+    private const int MinimumConcurrentSessions = 1;
+    private const int MinimumSessionTtlMinutes = 1;
+
     // The dictionaries are individually concurrent, but the session store also maintains a
     // cross-dictionary lookup invariant and a capacity check. Keep those compound mutations under
     // one small gate so a session key and its handoff lookup key cannot drift apart.
@@ -57,7 +60,7 @@ public sealed class GatewaySessionStore
                 return GatewaySessionStoreResult.CapacityExceeded;
             }
 
-            var ttl = TimeSpan.FromMinutes(Math.Max(1, currentOptions.SessionTtlMinutes));
+            var ttl = TimeSpan.FromMinutes(Math.Max(MinimumSessionTtlMinutes, currentOptions.SessionTtlMinutes));
             var sessionKey = SessionKeyFactory.CreateSessionKey();
             var handoffLookupKey = SessionKeyFactory.CreateHandoffLookupKey(prep);
             var sourceFiles = BuildSourceFiles(prep);
@@ -168,7 +171,7 @@ public sealed class GatewaySessionStore
 
     private static int GetMaxConcurrentSessions(ODVGatewayOptions options)
     {
-        return Math.Max(1, options.MaxConcurrentSessions);
+        return Math.Max(MinimumConcurrentSessions, options.MaxConcurrentSessions);
     }
 
     private static IReadOnlyList<GatewaySourceFile> BuildSourceFiles(WebClientPrepRequest prep)
@@ -212,12 +215,15 @@ public readonly record struct GatewaySessionStoreResult(bool IsStored, GatewaySe
 
 internal sealed record FileTicket(string? FileId, string? Extension, string FilePath)
 {
+    private const char FileTicketDelimiter = '|';
+    private const int FileTicketPartCount = 3;
+
     public static FileTicket Parse(string? value)
     {
         var raw = value ?? string.Empty;
-        var parts = raw.Split('|', 3);
+        var parts = raw.Split(FileTicketDelimiter, FileTicketPartCount);
 
-        if (parts.Length >= 3)
+        if (parts.Length >= FileTicketPartCount)
         {
             return new FileTicket(
                 NormalizeText(parts[0]),
