@@ -2,6 +2,11 @@
 
 All notable changes to ODVGateway are documented here.
 
+## 0.1.29 - 2026-06-30
+
+- Avoided repeated low-session-TTL warnings during runtime configuration changes.
+- Documented the tolerant WebClient file-ticket parser contract.
+
 ## 0.1.28 - 2026-06-30
 
 - Logged when configured prepared-session TTL values are raised to the supported minimum.

@@ -188,7 +188,6 @@ public sealed class GatewaySessionStore
     {
         if (options.SessionTtlMinutes >= MinimumSessionTtlMinutes)
         {
-            Volatile.Write(ref _minimumTtlWarningLogged, 0);
             return options.SessionTtlMinutes;
         }
 
@@ -247,6 +246,8 @@ internal sealed record FileTicket(string? FileId, string? Extension, string File
     private const char FileTicketDelimiter = '|';
     private const int FileTicketPartCount = 3;
 
+    // This parser is intentionally best-effort: malformed or partial WebClient file
+    // tickets are normalized into empty/nullable fields rather than rejected.
     public static FileTicket Parse(string? value)
     {
         var raw = value ?? string.Empty;
