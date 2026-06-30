@@ -34,7 +34,7 @@ builder.Services.AddHttpClient("ODVGateway.RemoteInline");
 
 builder.Services.Configure<FormOptions>(options =>
 {
-    options.ValueLengthLimit = (int)Math.Clamp(startupOptions.MaxPrepBodyBytes, 1, int.MaxValue);
+    options.ValueLengthLimit = ClampFormValueLengthLimitBytes(startupOptions.MaxPrepBodyBytes);
     options.MultipartBodyLengthLimit = 64L * 1024L * 1024L;
 });
 builder.Services.AddResponseCompression(options =>
@@ -728,7 +728,7 @@ static async Task<SourcePackPayload> FetchWebClientSourceBytesAsync(
                     source.Index,
                     attempt,
                     statusCode,
-                    DescribeSourceEndpointForLog());
+                    GatewayLogNames.ConfiguredWebClientSource);
 
                 if (IsRetryableProxyStatusCode(statusCode) && attempt < maxAttempts)
                 {
@@ -778,7 +778,7 @@ static async Task<SourcePackPayload> FetchWebClientSourceBytesAsync(
                 "WebClient source pack fetch timed out. Index={FileIndex}, Attempt={Attempt}, Source={SourceEndpoint}",
                 source.Index,
                 attempt,
-                DescribeSourceEndpointForLog());
+                GatewayLogNames.ConfiguredWebClientSource);
         }
         catch (HttpRequestException ex)
         {
@@ -830,12 +830,19 @@ static void LogWebClientSourcePackFetchFailed(
         "WebClient source pack fetch failed. Index={FileIndex}, Attempt={Attempt}, Source={SourceEndpoint}",
         source.Index,
         attempt,
-        DescribeSourceEndpointForLog());
+        GatewayLogNames.ConfiguredWebClientSource);
 }
 
 static long GetMaxSourcePackFrameBytes(ODVGatewayOptions options)
 {
     return Math.Clamp(options.MaxSourcePackFrameBytes, 1L, int.MaxValue);
+}
+
+static int ClampFormValueLengthLimitBytes(long maxPrepBodyBytes)
+{
+    // FormOptions.ValueLengthLimit is int-backed, while the gateway runtime option is long so
+    // larger transport limits can still be represented by multipart/body-specific settings.
+    return (int)Math.Clamp(maxPrepBodyBytes, 1L, int.MaxValue);
 }
 
 static long GetMaxSourceProxyBytes(ODVGatewayOptions options)
@@ -1034,7 +1041,7 @@ static async Task<IResult> ProxyWebClientSourceAsync(
                     source.Index,
                     attempt,
                     statusCode,
-                    DescribeSourceEndpointForLog());
+                    GatewayLogNames.ConfiguredWebClientSource);
 
                 if (IsRetryableProxyStatusCode(statusCode) && attempt < maxAttempts)
                 {
@@ -1054,7 +1061,7 @@ static async Task<IResult> ProxyWebClientSourceAsync(
                     attempt,
                     contentLength.Value,
                     maxProxyBytes,
-                    DescribeSourceEndpointForLog());
+                    GatewayLogNames.ConfiguredWebClientSource);
                 return Results.Json(new
                 {
                     error = FormatSourceProxyLimitExceededMessage(contentLength.Value, maxProxyBytes),
@@ -1107,7 +1114,7 @@ static async Task<IResult> ProxyWebClientSourceAsync(
                 "WebClient source proxy timed out. Index={FileIndex}, Attempt={Attempt}, Source={SourceEndpoint}",
                 source.Index,
                 attempt,
-                DescribeSourceEndpointForLog());
+                GatewayLogNames.ConfiguredWebClientSource);
         }
         catch (HttpRequestException ex)
         {
@@ -1125,7 +1132,7 @@ static async Task<IResult> ProxyWebClientSourceAsync(
                 source.Index,
                 attempt,
                 maxProxyBytes,
-                DescribeSourceEndpointForLog());
+                GatewayLogNames.ConfiguredWebClientSource);
             return Results.Json(new
             {
                 error = "Source file is too large for the gateway source proxy transport.",
@@ -1193,12 +1200,7 @@ static void LogWebClientSourceProxyFailed(
         "WebClient source proxy failed. Index={FileIndex}, Attempt={Attempt}, Source={SourceEndpoint}",
         source.Index,
         attempt,
-        DescribeSourceEndpointForLog());
-}
-
-static string DescribeSourceEndpointForLog()
-{
-    return "configured-webclient-source";
+        GatewayLogNames.ConfiguredWebClientSource);
 }
 
 static void ValidateTrustedSourceRootConfiguration(ODVGatewayOptions options)
@@ -1303,6 +1305,11 @@ static void LogProductionCompatibilityWarnings(ILogger logger, ODVGatewayOptions
             "ODVGateway is configured with an empty webClientHandoff.allowedInitiatorUrls list. " +
             "This is a development/compatibility setting and should be locked down in production.");
     }
+}
+
+internal static class GatewayLogNames
+{
+    public const string ConfiguredWebClientSource = "configured-webclient-source";
 }
 
 internal sealed class SourcePackPayloadTooLargeException : InvalidOperationException

@@ -2,6 +2,11 @@
 
 All notable changes to ODVGateway are documented here.
 
+## 0.1.22 - 2026-06-30
+
+- Clarified prepared-session store cleanup and ODVGateway form limit handling.
+- Replaced constant WebClient source log description helper with a named constant.
+
 ## 0.1.21 - 2026-06-28
 
 - Replaced exception messages in source-pack and source-proxy error responses with fixed generic texts.
@@ -36,6 +41,9 @@ All notable changes to ODVGateway are documented here.
 - Documented IIS security defaults.
 - Hardened WebClient handoff diagnostics.
 - Synchronized prepared-session reads and cleanup behavior.
+
+Versions 0.1.12 through 0.1.16 were internal OMP artifact iteration builds and
+did not introduce separately documented standalone gateway changes.
 
 ## 0.1.11 - 2026-06-24
 

@@ -30,8 +30,11 @@ public sealed class GatewaySessionStore
     {
         get
         {
-            PruneExpired();
-            return _sessionsBySessionKey.Count;
+            lock (_sessionMutationGate)
+            {
+                PruneExpiredCore(DateTimeOffset.UtcNow);
+                return _sessionsBySessionKey.Count;
+            }
         }
     }
 
@@ -109,17 +112,13 @@ public sealed class GatewaySessionStore
                 return true;
             }
 
-            _sessionKeysByHandoffLookupKey.TryRemove(handoffLookupKey, out _);
+            if (!string.IsNullOrWhiteSpace(sessionKey))
+            {
+                RemoveHandoffLookupKeyIfCurrent(handoffLookupKey, sessionKey);
+            }
+
             session = null!;
             return false;
-        }
-    }
-
-    private void PruneExpired()
-    {
-        lock (_sessionMutationGate)
-        {
-            PruneExpiredCore(DateTimeOffset.UtcNow);
         }
     }
 
@@ -143,12 +142,17 @@ public sealed class GatewaySessionStore
 
     private void RemoveHandoffLookupKeyIfCurrent(GatewaySession removedSession)
     {
+        RemoveHandoffLookupKeyIfCurrent(removedSession.HandoffLookupKey, removedSession.SessionKey);
+    }
+
+    private void RemoveHandoffLookupKeyIfCurrent(string handoffLookupKey, string sessionKey)
+    {
         if (_sessionKeysByHandoffLookupKey.TryGetValue(
-                removedSession.HandoffLookupKey,
+                handoffLookupKey,
                 out var mappedSessionKey) &&
-            mappedSessionKey.Equals(removedSession.SessionKey, StringComparison.OrdinalIgnoreCase))
+            mappedSessionKey.Equals(sessionKey, StringComparison.OrdinalIgnoreCase))
         {
-            _sessionKeysByHandoffLookupKey.TryRemove(removedSession.HandoffLookupKey, out _);
+            _sessionKeysByHandoffLookupKey.TryRemove(handoffLookupKey, out _);
         }
     }
 

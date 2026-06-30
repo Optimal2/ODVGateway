@@ -314,7 +314,7 @@ GET /health
 
 ## Current 0.1.x Scope
 
-The current repository and web component version is `0.1.21`. The module
+The current repository and web component version is `0.1.22`. The module
 definition version remains `0.1.11` because the public OMP module contract did
 not need a schema change for the later runtime hardening work.
 
