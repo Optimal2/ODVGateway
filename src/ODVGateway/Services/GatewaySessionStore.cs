@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.Options;
 using ODVGateway.Models;
 using ODVGateway.Options;
@@ -81,7 +82,7 @@ public sealed class GatewaySessionStore
         }
     }
 
-    public bool TryGet(string sessionKey, out GatewaySession session)
+    public bool TryGet(string sessionKey, [NotNullWhen(true)] out GatewaySession? session)
     {
         lock (_sessionMutationGate)
         {
@@ -95,12 +96,14 @@ public sealed class GatewaySessionStore
                 return true;
             }
 
-            session = null!;
+            session = null;
             return false;
         }
     }
 
-    public bool TryGetByHandoffLookupKey(string handoffLookupKey, out GatewaySession session)
+    public bool TryGetByHandoffLookupKey(
+        string handoffLookupKey,
+        [NotNullWhen(true)] out GatewaySession? session)
     {
         lock (_sessionMutationGate)
         {
@@ -119,7 +122,7 @@ public sealed class GatewaySessionStore
                 RemoveHandoffLookupKeyIfCurrent(handoffLookupKey, sessionKey);
             }
 
-            session = null!;
+            session = null;
             return false;
         }
     }

@@ -2,6 +2,10 @@
 
 All notable changes to ODVGateway are documented here.
 
+## 0.1.26 - 2026-06-30
+
+- Clarified prepared-session lookup nullability without changing runtime behavior.
+
 ## 0.1.25 - 2026-06-30
 
 - Named the prepared-session minimum limit and file-ticket parsing constants.
