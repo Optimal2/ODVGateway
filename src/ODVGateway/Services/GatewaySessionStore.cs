@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Diagnostics.CodeAnalysis;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using ODVGateway.Models;
 using ODVGateway.Options;
@@ -23,11 +24,16 @@ public sealed class GatewaySessionStore
         new(StringComparer.OrdinalIgnoreCase);
 
     private readonly IOptionsMonitor<ODVGatewayOptions> _options;
+    private readonly ILogger<GatewaySessionStore> _logger;
     private long _capacityRejectedCount;
+    private int _minimumTtlWarningLogged;
 
-    public GatewaySessionStore(IOptionsMonitor<ODVGatewayOptions> options)
+    public GatewaySessionStore(
+        IOptionsMonitor<ODVGatewayOptions> options,
+        ILogger<GatewaySessionStore> logger)
     {
         _options = options;
+        _logger = logger;
     }
 
     public int Count
@@ -61,7 +67,7 @@ public sealed class GatewaySessionStore
                 return GatewaySessionStoreResult.CapacityExceeded;
             }
 
-            var ttl = TimeSpan.FromMinutes(Math.Max(MinimumSessionTtlMinutes, currentOptions.SessionTtlMinutes));
+            var ttl = TimeSpan.FromMinutes(GetEffectiveSessionTtlMinutes(currentOptions));
             var sessionKey = SessionKeyFactory.CreateSessionKey();
             var handoffLookupKey = SessionKeyFactory.CreateHandoffLookupKey(prep);
             var sourceFiles = BuildSourceFiles(prep);
@@ -178,6 +184,25 @@ public sealed class GatewaySessionStore
         return Math.Max(MinimumConcurrentSessions, options.MaxConcurrentSessions);
     }
 
+    private int GetEffectiveSessionTtlMinutes(ODVGatewayOptions options)
+    {
+        if (options.SessionTtlMinutes >= MinimumSessionTtlMinutes)
+        {
+            Volatile.Write(ref _minimumTtlWarningLogged, 0);
+            return options.SessionTtlMinutes;
+        }
+
+        if (Interlocked.Exchange(ref _minimumTtlWarningLogged, 1) == 0)
+        {
+            _logger.LogWarning(
+                "ODVGateway SessionTtlMinutes is below the supported minimum. ConfiguredSessionTtlMinutes={ConfiguredSessionTtlMinutes}, EffectiveSessionTtlMinutes={EffectiveSessionTtlMinutes}",
+                options.SessionTtlMinutes,
+                MinimumSessionTtlMinutes);
+        }
+
+        return MinimumSessionTtlMinutes;
+    }
+
     private static IReadOnlyList<GatewaySourceFile> BuildSourceFiles(WebClientPrepRequest prep)
     {
         var files = new List<GatewaySourceFile>();
@@ -270,8 +295,7 @@ internal sealed record FileTicket(string? FileId, string? Extension, string File
     {
         localPath = null;
 
-        if (!value.StartsWith("file://", StringComparison.OrdinalIgnoreCase) ||
-            !Uri.TryCreate(value, UriKind.Absolute, out var fileUri) ||
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var fileUri) ||
             !fileUri.IsFile)
         {
             return false;

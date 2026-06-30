@@ -2,6 +2,11 @@
 
 All notable changes to ODVGateway are documented here.
 
+## 0.1.28 - 2026-06-30
+
+- Logged when configured prepared-session TTL values are raised to the supported minimum.
+- Simplified local file URI detection before later trusted-root validation.
+
 ## 0.1.27 - 2026-06-30
 
 - Raised the effective prepared-session TTL floor to five minutes.
