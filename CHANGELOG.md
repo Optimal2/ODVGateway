@@ -2,6 +2,10 @@
 
 All notable changes to ODVGateway are documented here.
 
+## 0.1.23 - 2026-06-30
+
+- Clarified prepared-session pruning lock ownership and handoff lookup cleanup.
+
 ## 0.1.22 - 2026-06-30
 
 - Clarified prepared-session store cleanup and ODVGateway form limit handling.

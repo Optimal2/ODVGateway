@@ -104,16 +104,15 @@ public sealed class GatewaySessionStore
             var now = DateTimeOffset.UtcNow;
             PruneExpiredCore(now);
 
-            if (_sessionKeysByHandoffLookupKey.TryGetValue(handoffLookupKey, out var sessionKey) &&
-                _sessionsBySessionKey.TryGetValue(sessionKey, out var candidate) &&
-                candidate.ExpiresUtc > now)
+            if (_sessionKeysByHandoffLookupKey.TryGetValue(handoffLookupKey, out var sessionKey))
             {
-                session = candidate;
-                return true;
-            }
+                if (_sessionsBySessionKey.TryGetValue(sessionKey, out var candidate) &&
+                    candidate.ExpiresUtc > now)
+                {
+                    session = candidate;
+                    return true;
+                }
 
-            if (!string.IsNullOrWhiteSpace(sessionKey))
-            {
                 RemoveHandoffLookupKeyIfCurrent(handoffLookupKey, sessionKey);
             }
 
@@ -124,6 +123,7 @@ public sealed class GatewaySessionStore
 
     private void PruneExpiredCore(DateTimeOffset now)
     {
+        // Caller must hold _sessionMutationGate so session and handoff lookup indexes stay in sync.
         // Materialize the filtered snapshot before removing entries from the concurrent maps.
         foreach (var removedSession in _sessionsBySessionKey
             .Where(entry => entry.Value.ExpiresUtc <= now)
