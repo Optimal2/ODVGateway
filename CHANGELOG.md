@@ -2,6 +2,10 @@
 
 All notable changes to ODVGateway are documented here.
 
+## 0.1.24 - 2026-06-30
+
+- Made prepared-session and handoff lookup pruning remove only exact key/value pairs.
+
 ## 0.1.23 - 2026-06-30
 
 - Clarified prepared-session pruning lock ownership and handoff lookup cleanup.

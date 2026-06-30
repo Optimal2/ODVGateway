@@ -136,8 +136,8 @@ public sealed class GatewaySessionStore
     }
 
     private GatewaySession? TryRemoveSession(KeyValuePair<string, GatewaySession> entry)
-        => _sessionsBySessionKey.TryRemove(entry.Key, out var removedSession)
-            ? removedSession
+        => RemoveExact(_sessionsBySessionKey, entry)
+            ? entry.Value
             : null;
 
     private void RemoveHandoffLookupKeyIfCurrent(GatewaySession removedSession)
@@ -152,8 +152,18 @@ public sealed class GatewaySessionStore
                 out var mappedSessionKey) &&
             mappedSessionKey.Equals(sessionKey, StringComparison.OrdinalIgnoreCase))
         {
-            _sessionKeysByHandoffLookupKey.TryRemove(handoffLookupKey, out _);
+            RemoveExact(
+                _sessionKeysByHandoffLookupKey,
+                new KeyValuePair<string, string>(handoffLookupKey, sessionKey));
         }
+    }
+
+    private static bool RemoveExact<TKey, TValue>(
+        ConcurrentDictionary<TKey, TValue> dictionary,
+        KeyValuePair<TKey, TValue> entry)
+        where TKey : notnull
+    {
+        return ((ICollection<KeyValuePair<TKey, TValue>>)dictionary).Remove(entry);
     }
 
     private static int GetMaxConcurrentSessions(ODVGatewayOptions options)
