@@ -100,6 +100,8 @@ Important settings:
   fallback probing and requires `openDocViewerDistPath` to point at a valid ODV
   dist folder. Keep this `true` in production and `false` for local development.
 - `sessionTtlMinutes`: How long prepared WebClient sessions remain in memory.
+  Values below five minutes are treated as five minutes so a bad override does
+  not make handoffs expire before the viewer can finish loading.
 - `maxConcurrentSessions`: Upper bound for the in-memory prepared session store.
   New `/prep` requests are rejected with HTTP `429` when the cap is reached.
   The store is process-local and not durable; restart clears all prepared
@@ -314,7 +316,7 @@ GET /health
 
 ## Current 0.1.x Scope
 
-The current repository and web component version is `0.1.26`. The module
+The current repository and web component version is `0.1.27`. The module
 definition version remains `0.1.11` because the public OMP module contract did
 not need a schema change for the later runtime hardening work.
 

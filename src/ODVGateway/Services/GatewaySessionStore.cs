@@ -9,7 +9,7 @@ namespace ODVGateway.Services;
 public sealed class GatewaySessionStore
 {
     private const int MinimumConcurrentSessions = 1;
-    private const int MinimumSessionTtlMinutes = 1;
+    private const int MinimumSessionTtlMinutes = 5;
 
     // The dictionaries are individually concurrent, but the session store also maintains a
     // cross-dictionary lookup invariant and a capacity check. Keep those compound mutations under
@@ -130,7 +130,8 @@ public sealed class GatewaySessionStore
     private void PruneExpiredCore(DateTimeOffset now)
     {
         // Caller must hold _sessionMutationGate so session and handoff lookup indexes stay in sync.
-        // Materialize the filtered snapshot before removing entries from the concurrent maps.
+        // The store is capped by MaxConcurrentSessions. Materializing the filtered snapshot keeps
+        // exact key/value removals deterministic while pruning the two related indexes.
         foreach (var removedSession in _sessionsBySessionKey
             .Where(entry => entry.Value.ExpiresUtc <= now)
             .ToArray()
@@ -255,13 +256,48 @@ internal sealed record FileTicket(string? FileId, string? Extension, string File
     private static string NormalizeFilePath(string? value)
     {
         var raw = value?.Trim() ?? string.Empty;
-        if (raw.StartsWith("file://", StringComparison.OrdinalIgnoreCase) &&
-            Uri.TryCreate(raw, UriKind.Absolute, out var fileUri))
+        if (TryGetLocalFileUriPath(raw, out var localPath))
         {
-            return fileUri.LocalPath;
+            return localPath;
         }
 
         return raw;
+    }
+
+    private static bool TryGetLocalFileUriPath(
+        string value,
+        [NotNullWhen(true)] out string? localPath)
+    {
+        localPath = null;
+
+        if (!value.StartsWith("file://", StringComparison.OrdinalIgnoreCase) ||
+            !Uri.TryCreate(value, UriKind.Absolute, out var fileUri) ||
+            !fileUri.IsFile)
+        {
+            return false;
+        }
+
+        try
+        {
+            var candidate = fileUri.LocalPath;
+            if (!Path.IsPathFullyQualified(candidate))
+            {
+                return false;
+            }
+
+            // This parse step only converts local file URIs into path form for later routing.
+            // Direct server-side reads still require TrustClientFilePath and TrustedSourceRoots.
+            localPath = candidate;
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+        catch (NotSupportedException)
+        {
+            return false;
+        }
     }
 
     private static string? NormalizeExtensionFromPath(string? path)

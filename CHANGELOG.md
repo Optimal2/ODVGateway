@@ -2,6 +2,12 @@
 
 All notable changes to ODVGateway are documented here.
 
+## 0.1.27 - 2026-06-30
+
+- Raised the effective prepared-session TTL floor to five minutes.
+- Clarified safe `file://` path normalization before trusted-root validation.
+- Documented why prepared-session pruning uses a bounded snapshot.
+
 ## 0.1.26 - 2026-06-30
 
 - Clarified prepared-session lookup nullability without changing runtime behavior.
