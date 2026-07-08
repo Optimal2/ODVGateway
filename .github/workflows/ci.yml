@@ -32,3 +32,8 @@ jobs:
       - name: Build
         working-directory: ODVGateway
         run: dotnet build src/ODVGateway/ODVGateway.csproj --configuration Release --no-restore
+
+      - name: Smoke test
+        working-directory: ODVGateway
+        shell: powershell
+        run: powershell -File scripts/smoke-test.ps1 -Port 5210
