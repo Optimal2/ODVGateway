@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using ODVGateway.Models;
 using ODVGateway.Options;
@@ -8,13 +9,16 @@ public sealed class DirectSourceFileResolver
 {
     private readonly IOptionsMonitor<ODVGatewayOptions> _options;
     private readonly ILogger<DirectSourceFileResolver> _logger;
+    private readonly string? _contentRootPath;
 
     public DirectSourceFileResolver(
         IOptionsMonitor<ODVGatewayOptions> options,
-        ILogger<DirectSourceFileResolver> logger)
+        ILogger<DirectSourceFileResolver> logger,
+        IHostEnvironment? environment = null)
     {
         _options = options;
         _logger = logger;
+        _contentRootPath = environment?.ContentRootPath;
     }
 
     public bool TryResolve(GatewaySourceFile source, out DirectSourceFile directSource)
@@ -37,7 +41,7 @@ public sealed class DirectSourceFileResolver
             return false;
         }
 
-        var invalidTrustedRoots = GetInvalidTrustedRoots(options.TrustedSourceRoots);
+        var invalidTrustedRoots = GetInvalidTrustedRoots(options.TrustedSourceRoots, _contentRootPath);
         if (invalidTrustedRoots.Count > 0)
         {
             _logger.LogError(
@@ -46,7 +50,7 @@ public sealed class DirectSourceFileResolver
             return false;
         }
 
-        var trustedRoots = NormalizeTrustedRoots(options.TrustedSourceRoots);
+        var trustedRoots = NormalizeTrustedRoots(options.TrustedSourceRoots, _contentRootPath);
         if (trustedRoots.Count == 0)
         {
             _logger.LogWarning(
@@ -144,28 +148,35 @@ public sealed class DirectSourceFileResolver
         }
     }
 
-    internal static IReadOnlyList<string> GetInvalidTrustedRoots(IEnumerable<string>? roots)
+    internal static IReadOnlyList<string> GetInvalidTrustedRoots(
+        IEnumerable<string>? roots,
+        string? contentRootPath = null)
     {
         return (roots ?? [])
             .Select(root => root?.Trim())
             .Where(trimmedRoot => !string.IsNullOrWhiteSpace(trimmedRoot))
-            .Where(trimmedRoot => !TryNormalizeTrustedRoot(trimmedRoot, out _))
+            .Where(trimmedRoot => !TryNormalizeTrustedRoot(trimmedRoot, out _, contentRootPath))
             .Select(trimmedRoot => trimmedRoot!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
 
-    internal static IReadOnlyList<string> NormalizeTrustedRoots(IEnumerable<string>? roots)
+    internal static IReadOnlyList<string> NormalizeTrustedRoots(
+        IEnumerable<string>? roots,
+        string? contentRootPath = null)
     {
         return (roots ?? [])
-            .Select(root => TryNormalizeTrustedRoot(root, out var normalizedRoot) ? normalizedRoot : null)
+            .Select(root => TryNormalizeTrustedRoot(root, out var normalizedRoot, contentRootPath) ? normalizedRoot : null)
             .Where(normalizedRoot => !string.IsNullOrWhiteSpace(normalizedRoot))
             .Select(normalizedRoot => normalizedRoot!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
 
-    private static bool TryNormalizeTrustedRoot(string? root, out string normalizedRoot)
+    private static bool TryNormalizeTrustedRoot(
+        string? root,
+        out string normalizedRoot,
+        string? contentRootPath = null)
     {
         normalizedRoot = string.Empty;
 
@@ -174,6 +185,8 @@ public sealed class DirectSourceFileResolver
         {
             return false;
         }
+
+        raw = ReplaceContentRootToken(raw, contentRootPath);
 
         if (Uri.TryCreate(raw, UriKind.Absolute, out var uri))
         {
@@ -211,6 +224,34 @@ public sealed class DirectSourceFileResolver
         {
             return false;
         }
+    }
+
+    private static string ReplaceContentRootToken(string raw, string? contentRootPath)
+    {
+        if (string.IsNullOrEmpty(contentRootPath))
+        {
+            return raw;
+        }
+
+        const string Token = "{ContentRoot}";
+        if (!raw.StartsWith(Token, StringComparison.OrdinalIgnoreCase))
+        {
+            return raw;
+        }
+
+        var remainder = raw.Length > Token.Length ? raw[Token.Length..] : string.Empty;
+        if (remainder.Length > 0 &&
+            remainder[0] is not ('/' or '\\') &&
+            remainder[0] != Path.DirectorySeparatorChar &&
+            remainder[0] != Path.AltDirectorySeparatorChar)
+        {
+            // Token is a prefix of something else (e.g. "{ContentRootX}"); leave it alone.
+            return raw;
+        }
+
+        remainder = remainder.TrimStart('/', '\\');
+        var basePath = contentRootPath!.TrimEnd('/', '\\');
+        return string.IsNullOrEmpty(remainder) ? basePath : $"{basePath}{Path.DirectorySeparatorChar}{remainder}";
     }
 
     private static bool IsUnderTrustedRoot(string candidatePath, IReadOnlyList<string> trustedRoots)

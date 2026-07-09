@@ -17,7 +17,7 @@ var startupOptions = builder.Configuration
     .GetSection(ODVGatewayOptions.SectionName)
     .Get<ODVGatewayOptions>() ?? new ODVGatewayOptions();
 
-ValidateTrustedSourceRootConfiguration(startupOptions);
+ValidateTrustedSourceRootConfiguration(startupOptions, builder.Environment.ContentRootPath);
 
 builder.Services.Configure<ODVGatewayOptions>(
     builder.Configuration.GetSection(ODVGatewayOptions.SectionName));
@@ -1203,17 +1203,23 @@ static void LogWebClientSourceProxyFailed(
         GatewayLogNames.ConfiguredWebClientSource);
 }
 
-static void ValidateTrustedSourceRootConfiguration(ODVGatewayOptions options)
+static void ValidateTrustedSourceRootConfiguration(
+    ODVGatewayOptions options,
+    string? contentRootPath = null)
 {
     if (!options.TrustClientFilePath)
     {
         return;
     }
 
-    var invalidRoots = DirectSourceFileResolver.GetInvalidTrustedRoots(options.TrustedSourceRoots);
+    var invalidRoots = DirectSourceFileResolver.GetInvalidTrustedRoots(
+        options.TrustedSourceRoots,
+        contentRootPath);
     if (invalidRoots.Count == 0)
     {
-        var trustedRoots = DirectSourceFileResolver.NormalizeTrustedRoots(options.TrustedSourceRoots);
+        var trustedRoots = DirectSourceFileResolver.NormalizeTrustedRoots(
+            options.TrustedSourceRoots,
+            contentRootPath);
         if (trustedRoots.Count > 0)
         {
             return;

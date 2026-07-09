@@ -183,6 +183,32 @@ function Invoke-SmokeWebRequest {
             Headers = $errorResponse.Headers
         }
     }
+    catch [Microsoft.PowerShell.Commands.HttpResponseException] {
+        $errorResponse = $_.Exception.Response
+        if ($null -eq $errorResponse) {
+            throw
+        }
+
+        $statusCode = [int]$errorResponse.StatusCode
+        $content = ''
+        if ($null -ne $_.ErrorDetails -and -not [string]::IsNullOrEmpty($_.ErrorDetails.Message)) {
+            $content = $_.ErrorDetails.Message
+        }
+        else {
+            try {
+                $content = $errorResponse.Content.ReadAsStringAsync().Result
+            }
+            catch {
+                $content = ''
+            }
+        }
+
+        return [pscustomobject]@{
+            StatusCode = $statusCode
+            Content = $content
+            Headers = $errorResponse.Headers
+        }
+    }
 }
 
 try {
@@ -279,7 +305,7 @@ try {
     $headers = $healthResponse.Headers
 
     $cto = $headers['X-Content-Type-Options']
-    Register-CheckResult -Check 'Header: X-Content-Type-Options' -Passed ($cto -eq 'nosniff') -Message ($cto -join ', ')
+    Register-CheckResult -Check 'Header: X-Content-Type-Options' -Passed ([bool]($cto -eq 'nosniff')) -Message ($cto -join ', ')
 
     $xfo = $headers['X-Frame-Options']
     Register-CheckResult -Check 'Header: X-Frame-Options' -Passed ($null -ne $xfo) -Message ($xfo -join ', ') -WarningOnly
@@ -291,7 +317,7 @@ try {
     Register-CheckResult -Check 'Header: X-Robots-Tag' -Passed ($null -ne $robots) -Message ($robots -join ', ') -WarningOnly
 
     $server = $headers['Server']
-    Register-CheckResult -Check 'Header: Server hidden/non-revealing' -Passed (($null -eq $server) -or ($server -notmatch 'Kestrel|ASP.NET|IIS|nginx|apache')) -Message ($server -join ', ')
+    Register-CheckResult -Check 'Header: Server hidden/non-revealing' -Passed (($null -eq $server) -or [bool]($server -notmatch 'Kestrel|ASP.NET|IIS|nginx|apache')) -Message ($server -join ', ')
 
     # CSP warning only
     $csp = $headers['Content-Security-Policy']
