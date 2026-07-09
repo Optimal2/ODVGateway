@@ -24,3 +24,7 @@ silently add broader filesystem access.
 
 Future path-resolution or database lookup logic should be implemented behind a
 separate resolver so the initial direct-file-path mode remains easy to review.
+
+## Local CI
+
+This is a private repository with metered GitHub Actions. CI is `workflow_dispatch`-only — it runs only on manual trigger. **The actual pre-push gate is local execution.** Run `scripts/local-ci.ps1` before every push to verify build and smoke tests pass. This catches lockstep breaches and runtime regressions before they reach the shared main branch.
