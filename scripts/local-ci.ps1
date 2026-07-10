@@ -7,6 +7,7 @@
 
     1. dotnet build src/ODVGateway/ODVGateway.csproj --configuration Release
     2. scripts/smoke-test.ps1 (builds, starts, and smoke-tests the gateway)
+    3. scripts/validate-component-versions.ps1
 
     Each step reports PASS or FAIL. The script exits with code 0 when every
     step passes and 1 when any step fails.
@@ -36,6 +37,7 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
 $projectPath = Join-Path $repoRoot 'src/ODVGateway/ODVGateway.csproj'
 $smokeScript = Join-Path $scriptDir 'smoke-test.ps1'
+$validatorScript = Join-Path $scriptDir 'validate-component-versions.ps1'
 
 function Write-StepResult {
     param(
@@ -104,6 +106,27 @@ else {
     $overallPass = $false
 }
 Write-StepResult -Step 'smoke-test.ps1' -Passed $step2Pass -Message $step2Message
+
+# Step 3: validate component versions
+$step3Pass = $false
+$step3Message = ''
+try {
+    Write-Host ''
+    Write-Host "Running: $validatorScript -BaseCommit 'origin/main'"
+    & "$validatorScript" -BaseCommit 'origin/main'
+    if ($LASTEXITCODE -eq 0) {
+        $step3Pass = $true
+    }
+    else {
+        $step3Message = "validate-component-versions.ps1 exited with code $LASTEXITCODE"
+        $overallPass = $false
+    }
+}
+catch {
+    $step3Message = "validate-component-versions.ps1 failed: $_"
+    $overallPass = $false
+}
+Write-StepResult -Step 'validate-component-versions.ps1' -Passed $step3Pass -Message $step3Message
 
 # Summary
 Write-Host ''
