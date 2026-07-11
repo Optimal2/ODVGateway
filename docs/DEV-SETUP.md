@@ -80,6 +80,18 @@ This runs:
 
 GitHub Actions CI is `workflow_dispatch`-only (metered). The local gate IS the CI.
 
+## Release Gate
+
+Before a release, run the local release gate as well:
+```powershell
+pwsh scripts/release.ps1
+```
+
+This runs the local CI checks plus `scripts/validate-component-versions.ps1` to
+confirm that `omp-components.json` has been updated for any deployable changes.
+The script does not publish anything; it only validates that the repository is
+ready for a manually approved release.
+
 ## Production Safety
 
 The following settings in the Development overlay MUST be disabled/absent in production:

@@ -315,6 +315,38 @@ Health check:
 GET /health
 ```
 
+## Release Process
+
+ODVGateway releases require manual approval. The repository contains a local
+release gate and a dispatch-only GitHub Actions workflow that validate but do
+NOT publish.
+
+Run the local release gate before requesting a release:
+
+```powershell
+pwsh scripts/release.ps1
+```
+
+The gate runs the same checks as `local-ci.ps1` and also validates that
+component versions are consistent against `origin/main`. Use `-WhatIf` to see
+what would run without executing anything:
+
+```powershell
+pwsh scripts/release.ps1 -WhatIf
+```
+
+Optional switches:
+
+- `-Configuration Debug` — build with Debug configuration
+- `-SmokePort 5220` — run smoke tests on a different port
+- `-SkipBuild`, `-SkipSmoke`, `-SkipValidate` — skip individual checks
+
+The GitHub Actions release gate is `workflow_dispatch`-only. Trigger it from
+the Actions tab, choose the build configuration, and decide whether to run
+smoke tests. If the gate passes, the workflow reports that the repository is
+ready for a manual release. Actual tagging, packaging, and publishing must be
+performed outside the workflow with explicit approval.
+
 ## Current 0.1.x Scope
 
 The current repository and web component version is `0.1.29`. The module

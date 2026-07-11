@@ -1,0 +1,75 @@
+name: Release gate
+
+# Release gate is dispatch-only and intentionally does NOT publish anything.
+# It validates that the repository is ready for a manual release. Official
+# ODVGateway releases require explicit human approval and are performed
+# outside this workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: 'Build configuration'
+        type: choice
+        options:
+          - Debug
+          - Release
+        default: 'Release'
+        required: true
+      run_smoke:
+        description: 'Run smoke tests'
+        type: boolean
+        default: true
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  release-gate:
+    runs-on: windows-latest
+    # Uncomment the line below when the organization has configured GitHub
+    # environment protection rules for the release environment.
+    # environment: release
+    steps:
+      - name: Check out ODVGateway
+        uses: actions/checkout@v4
+        with:
+          path: ODVGateway
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Show .NET SDK info
+        working-directory: ODVGateway
+        run: dotnet --info
+
+      - name: Restore
+        working-directory: ODVGateway
+        run: dotnet restore src/ODVGateway/ODVGateway.csproj
+
+      - name: Build
+        working-directory: ODVGateway
+        run: dotnet build src/ODVGateway/ODVGateway.csproj --configuration ${{ github.event.inputs.configuration }} --no-restore
+
+      - name: Smoke test
+        if: github.event.inputs.run_smoke == 'true'
+        working-directory: ODVGateway
+        shell: powershell
+        run: powershell -File scripts/smoke-test.ps1 -Port 5210
+
+      - name: Validate component versions
+        working-directory: ODVGateway
+        shell: powershell
+        run: powershell -File scripts/validate-component-versions.ps1 -BaseCommit 'origin/main'
+
+      - name: Summary
+        working-directory: ODVGateway
+        shell: powershell
+        run: |
+          $components = Get-Content -Path omp-components.json | ConvertFrom-Json -Depth 8
+          Write-Host "Repository version: $($components.repositoryVersion)"
+          Write-Host "Component version: $($components.components[0].version)"
+          Write-Host "All checks passed - ready for manual release."
