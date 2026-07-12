@@ -347,9 +347,59 @@ smoke tests. If the gate passes, the workflow reports that the repository is
 ready for a manual release. Actual tagging, packaging, and publishing must be
 performed outside the workflow with explicit approval.
 
+### Manual Release Steps
+
+Once the release gate is green, the actual release is performed manually by a
+human owner. The following flow is a proposal; every mechanics-specific detail
+is marked **"ÄGARBESLUT KRÄVS"** (owner decision required) and must not be
+treated as a decided process without explicit human approval.
+
+1. **Prerequisites**
+   - Local release gate passes (`pwsh scripts/release.ps1`).
+   - Working tree is clean (`git status --short` returns nothing).
+   - Current branch is `main` and is up to date with `origin/main`.
+   - The intended release version matches `omp-components.json` and the
+     *Current 0.1.x Scope* note in this README.
+
+2. **Create the release marker**
+   - **Tag schema**: Propose creating an annotated git tag with a SemVer
+     prefix that matches the component version, e.g. `v0.1.30`.
+     **ÄGARBESLUT KRÄVS**: tag format, prefix, signing strategy, and whether
+     the tag is created locally or via the GitHub web UI.
+
+3. **Build and package**
+   - Run the same publish/build steps exercised by the release gate.
+   - **Packaging**: Produce a versioned publish artifact, for example a
+     zip archive of the built output and/or an OMP universal package from the
+     local build pipeline.
+     **ÄGARBESLUT KRÄVS**: package format(s), naming convention, included
+     artifacts, and whether to also produce a NuGet package, container image,
+     or other deployment bundle.
+
+4. **Publish artifacts**
+   - **Publishing targets**: Propose uploading the package(s) to a private
+     project artifact store or attaching them to a GitHub Release associated
+     with the tag.
+     **ÄGARBESLUT KRÄVS**: destination, retention policy, access control,
+     and whether any package registry or public location is used.
+
+5. **Approval**
+   - The repository owner (or a delegated maintainer) approves the release
+     before any tag is pushed or artifact is published.
+   - Approval is recorded by the owner explicitly confirming the version,
+     tag, package contents, and target location. No automated step constitutes
+     approval.
+
+6. **Post-release**
+   - Ensure `CHANGELOG.md` contains an entry for the released version if one
+     does not already exist.
+   - Bump the component version in `omp-components.json` and any related
+     files for the next development cycle, following the OMP versioning rules.
+   - Communicate the release through the project's normal channel.
+
 ## Current 0.1.x Scope
 
-The current repository and web component version is `0.1.29`. The module
+The current repository and web component version is `0.1.30`. The module
 definition version remains `0.1.11` because the public OMP module contract did
 not need a schema change for the later runtime hardening work.
 
