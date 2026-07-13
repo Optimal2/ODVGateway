@@ -9,6 +9,24 @@ using ODVGateway.Models;
 using ODVGateway.Options;
 using ODVGateway.Services;
 
+// Default CSP is restrictive but allows the inline bootstrap script injected by
+// OpenDocViewerIndexRenderer, the inline styles used by GatewayHtml.StatusPage,
+// and the same-origin OpenDocViewer dist files. Deployments can override the
+// entire policy via ODVGateway:contentSecurityPolicy in appsettings.json.
+const string DefaultContentSecurityPolicy =
+    "default-src 'self'; " +
+    "script-src 'self' 'unsafe-inline'; " +
+    "style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data: blob:; " +
+    "connect-src 'self'; " +
+    "font-src 'self'; " +
+    "media-src 'self'; " +
+    "object-src 'self'; " +
+    "worker-src 'self' blob:; " +
+    "frame-ancestors 'self'; " +
+    "base-uri 'self'; " +
+    "form-action 'self'";
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.WebHost.ConfigureKestrel(options => options.AddServerHeader = false);
@@ -62,6 +80,8 @@ app.Use(async (context, next) =>
     headers["X-Content-Type-Options"] = "nosniff";
     headers["Referrer-Policy"] = "no-referrer";
     headers["X-Robots-Tag"] = "noindex";
+    headers["Content-Security-Policy"] =
+        startupOptions.ContentSecurityPolicy ?? DefaultContentSecurityPolicy;
     await next(context);
 });
 

@@ -32,6 +32,8 @@ public sealed class ODVGatewayOptions
 
     public string SourceCacheControl { get; set; } = "no-store";
 
+    public string? ContentSecurityPolicy { get; set; }
+
     public InlineSourceOptions InlineSources { get; set; } = new();
 
     public RemoteInlineSourceOptions RemoteInlineSources { get; set; } = new();

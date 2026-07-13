@@ -172,13 +172,20 @@ Important settings:
   case selections.
 - Standalone Kestrel deployments add a baseline set of response headers to every
   response, including static files: `X-Frame-Options: SAMEORIGIN`,
-  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and
-  `X-Robots-Tag: noindex`. Kestrel also disables the default `Server` response
-  header. IIS deployments already set the first three through `web.config` and
-  can remove the `Server` header with `web.config` requestFiltering or URL
-  Rewrite configuration; deployment-specific `Content-Security-Policy` and
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+  `X-Robots-Tag: noindex`, and `Content-Security-Policy`. Kestrel also disables
+  the default `Server` response header. IIS deployments already set the first
+  three through `web.config` and can remove the `Server` header with
+  `web.config` requestFiltering or URL Rewrite configuration; deployment-specific
   `Strict-Transport-Security` headers remain the responsibility of the host
   reverse proxy or IIS configuration.
+- `contentSecurityPolicy`: Optional override for the `Content-Security-Policy`
+  response header. When omitted or null, the gateway emits a restrictive default
+  policy that allows same-origin OpenDocViewer dist files, the inline bootstrap
+  script injected by the gateway, inline styles used by error/status pages,
+  blob/data image sources, and same-origin API calls. Set this only when the
+  default policy breaks a specific OpenDocViewer build; include a comment in
+  deployment configuration explaining why the override is required.
 - `metadataAliases`: Optional alias mapping copied into the neutral ODV bundle
   so print templates such as `{{metadata.patientId}}` keep working. The
   `fieldId` values come from the deployment's WebClient metadata schema and
@@ -208,6 +215,7 @@ Example production snippet:
     ],
     "useBundleUrlHandoff": true,
     "sourceCacheControl": "no-store",
+    "contentSecurityPolicy": null,
     "webClientHandoff": {
       "allowedInitiatorUrls": [
         "https://webclient.example/WebClientODV/MediaViewerTwo.cshtml"
@@ -321,6 +329,30 @@ ODVGateway releases require manual approval. The repository contains a local
 release gate and a dispatch-only GitHub Actions workflow that validate but do
 NOT publish.
 
+### Release approval model
+
+The recommended default for this standalone repository is a **single-person
+approval flag**. The `release.ps1` gate performs automated validation and then
+prints an explicit reminder that publishing still requires human approval. The
+operator running the gate decides whether to proceed with tagging, packaging,
+and publishing; that decision is the approval.
+
+Who approves: the repository owner or a delegated maintainer.
+How approval is recorded: by the approver explicitly confirming the version,
+tag, package contents, and target location in the project's normal channel
+(for example, a direct message, email, or release checklist). No automated
+step, green CI run, or successful validation script constitutes approval.
+What constitutes approval: a clear "go" decision from the approver after
+reviewing the release gate output, the intended version, and the artifacts that
+will be published.
+
+**ÄGARBESLUT KRÄVS:** This single-person flag is appropriate for a standalone
+companion app today. If the project later requires multi-person sign-off, it
+must be replaced with an explicit control such as a GitHub environment
+protection rule, a required second maintainer review, or a signed release
+checklist. Do not treat the current operator-confirmation flow as a decided
+multi-person process without owner approval.
+
 Run the local release gate before requesting a release:
 
 ```powershell
@@ -399,7 +431,7 @@ treated as a decided process without explicit human approval.
 
 ## Current 0.1.x Scope
 
-The current repository and web component version is `0.1.30`. The module
+The current repository and web component version is `0.1.31`. The module
 definition version remains `0.1.11` because the public OMP module contract did
 not need a schema change for the later runtime hardening work.
 
@@ -418,6 +450,8 @@ Included:
 - Bundle URL handoff and diagnostics for source routing.
 - Conservative source page-count hints for better initial OpenDocViewer totals.
 - Same-host remote inline source prefetch for small raster WebClient URLs.
+- A default `Content-Security-Policy` response header with an optional
+  deployment override.
 
 Deferred:
 

@@ -2,6 +2,30 @@
 
 All notable changes to ODVGateway are documented here.
 
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
+for its `0.1.x` release line.
+
+## [0.1.31] - 2026-07-13
+
+### Added
+
+- Added a default `Content-Security-Policy` response header to the Kestrel
+  middleware pipeline. The default policy is restrictive (`default-src 'self'`)
+  with targeted allowances for the same-origin OpenDocViewer dist files, the
+  gateway's inline bootstrap script, inline status-page styles, blob/data image
+  sources, and same-origin API calls.
+- Made the `Content-Security-Policy` value configurable via
+  `ODVGateway:contentSecurityPolicy` in `appsettings.json`. When the setting is
+  omitted or null, the gateway uses the built-in default.
+
+### Changed
+
+- Documented the release-approval model in `README.md`: the current default is a
+  single-person operator-confirmation flag run through `scripts/release.ps1`,
+  with an explicit **ÄGARBESLUT KRÄVS** note that multi-person sign-off must be
+  added later if required.
+
 ## 0.1.29 - 2026-06-30
 
 - Avoided repeated low-session-TTL warnings during runtime configuration changes.

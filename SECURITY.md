@@ -59,8 +59,9 @@ handoff and source-access configuration:
 - keep source proxy and source-pack byte limits aligned with the deployment's
   expected maximum source-file size
 - verify that baseline response headers (`X-Frame-Options`,
-  `X-Content-Type-Options`, `Referrer-Policy`, `X-Robots-Tag`) are emitted by
-  the host reverse proxy or by the gateway's Kestrel middleware
+  `X-Content-Type-Options`, `Referrer-Policy`, `X-Robots-Tag`, and
+  `Content-Security-Policy`) are emitted by the host reverse proxy or by the
+  gateway's Kestrel middleware
 - verify that the Kestrel `Server` response header is disabled or removed by
   the host reverse proxy; the gateway disables it by default for standalone
   Kestrel deployments
