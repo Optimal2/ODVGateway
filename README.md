@@ -323,6 +323,28 @@ Health check:
 GET /health
 ```
 
+## Local pre-push gate
+
+This repository uses tracked Git hooks to run the local CI gate before every
+push. Configure the hooks once after cloning:
+
+```powershell
+.\scripts\setup-hooks.ps1
+```
+
+The configuration points Git at the `.githooks` directory in this repository.
+
+Hooks:
+
+- `pre-commit` — light static checks only (`git diff --cached --check`).
+  Does not build or run tests.
+- `pre-push` — runs `scripts\local-ci.ps1`, which builds the gateway, runs
+  smoke tests, and validates OMP component version lockstep.
+
+The push is blocked if the local CI gate fails. Because this is a private
+repository with `workflow_dispatch`-only GitHub Actions, the local gate is the
+actual pre-push verification.
+
 ## Release Process
 
 ODVGateway releases require manual approval. The repository contains a local
