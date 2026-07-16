@@ -71,6 +71,17 @@ var distPath = distResolver.ResolveDistPath();
 
 LogProductionCompatibilityWarnings(app.Logger, startupOptions);
 
+app.UseExceptionHandler(errorApp =>
+{
+    errorApp.Run(async context =>
+    {
+        context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+        context.Response.ContentType = "text/plain";
+        await context.Response.WriteAsync("An unexpected error occurred.");
+    });
+});
+app.UseStatusCodePages();
+
 app.UseResponseCompression();
 
 app.Use(async (context, next) =>

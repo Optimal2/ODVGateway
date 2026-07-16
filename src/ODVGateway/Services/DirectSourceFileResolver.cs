@@ -41,7 +41,7 @@ public sealed class DirectSourceFileResolver
             return false;
         }
 
-        var invalidTrustedRoots = GetInvalidTrustedRoots(options.TrustedSourceRoots, _contentRootPath);
+        var invalidTrustedRoots = GetInvalidTrustedRoots(options.TrustedSourceRoots, _contentRootPath, _logger);
         if (invalidTrustedRoots.Count > 0)
         {
             _logger.LogError(
@@ -50,7 +50,7 @@ public sealed class DirectSourceFileResolver
             return false;
         }
 
-        var trustedRoots = NormalizeTrustedRoots(options.TrustedSourceRoots, _contentRootPath);
+        var trustedRoots = NormalizeTrustedRoots(options.TrustedSourceRoots, _contentRootPath, _logger);
         if (trustedRoots.Count == 0)
         {
             _logger.LogWarning(
@@ -88,8 +88,12 @@ public sealed class DirectSourceFileResolver
         {
             return false;
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException ex)
         {
+            _logger.LogWarning(
+                ex,
+                "Could not access direct source file. Path={CandidatePath}",
+                candidatePath);
             return false;
         }
     }
@@ -105,7 +109,7 @@ public sealed class DirectSourceFileResolver
             options: FileOptions.Asynchronous | FileOptions.SequentialScan);
     }
 
-    private static bool TryNormalizeSourcePath(string? sourcePath, out string fullPath)
+    private bool TryNormalizeSourcePath(string? sourcePath, out string fullPath)
     {
         fullPath = string.Empty;
 
@@ -142,20 +146,25 @@ public sealed class DirectSourceFileResolver
         {
             return false;
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException ex)
         {
+            _logger.LogWarning(
+                ex,
+                "Could not normalize client file path. Path={SourcePath}",
+                sourcePath);
             return false;
         }
     }
 
     internal static IReadOnlyList<string> GetInvalidTrustedRoots(
         IEnumerable<string>? roots,
-        string? contentRootPath = null)
+        string? contentRootPath = null,
+        ILogger? logger = null)
     {
         return (roots ?? [])
             .Select(root => root?.Trim())
             .Where(trimmedRoot => !string.IsNullOrWhiteSpace(trimmedRoot))
-            .Where(trimmedRoot => !TryNormalizeTrustedRoot(trimmedRoot, out _, contentRootPath))
+            .Where(trimmedRoot => !TryNormalizeTrustedRoot(trimmedRoot, out _, contentRootPath, logger))
             .Select(trimmedRoot => trimmedRoot!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -163,10 +172,11 @@ public sealed class DirectSourceFileResolver
 
     internal static IReadOnlyList<string> NormalizeTrustedRoots(
         IEnumerable<string>? roots,
-        string? contentRootPath = null)
+        string? contentRootPath = null,
+        ILogger? logger = null)
     {
         return (roots ?? [])
-            .Select(root => TryNormalizeTrustedRoot(root, out var normalizedRoot, contentRootPath) ? normalizedRoot : null)
+            .Select(root => TryNormalizeTrustedRoot(root, out var normalizedRoot, contentRootPath, logger) ? normalizedRoot : null)
             .Where(normalizedRoot => !string.IsNullOrWhiteSpace(normalizedRoot))
             .Select(normalizedRoot => normalizedRoot!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -176,7 +186,8 @@ public sealed class DirectSourceFileResolver
     private static bool TryNormalizeTrustedRoot(
         string? root,
         out string normalizedRoot,
-        string? contentRootPath = null)
+        string? contentRootPath = null,
+        ILogger? logger = null)
     {
         normalizedRoot = string.Empty;
 
@@ -220,8 +231,12 @@ public sealed class DirectSourceFileResolver
         {
             return false;
         }
-        catch (UnauthorizedAccessException)
+        catch (UnauthorizedAccessException ex)
         {
+            logger?.LogWarning(
+                ex,
+                "Could not normalize trusted source root. Root={TrustedRoot}",
+                root);
             return false;
         }
     }
