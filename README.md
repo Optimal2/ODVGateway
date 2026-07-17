@@ -339,7 +339,9 @@ Hooks:
 - `pre-commit` — light static checks only (`git diff --cached --check`).
   Does not build or run tests.
 - `pre-push` — runs `scripts\local-ci.ps1`, which builds the gateway, runs
-  smoke tests, and validates OMP component version lockstep.
+  the xUnit unit tests in `tests\ODVGateway.Tests` (in-memory, no I/O or
+  network dependencies), runs smoke tests, and validates OMP component
+  version lockstep.
 
 The push is blocked if the local CI gate fails. Because this is a private
 repository with `workflow_dispatch`-only GitHub Actions, the local gate is the

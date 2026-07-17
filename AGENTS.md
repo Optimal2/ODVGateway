@@ -27,4 +27,6 @@ separate resolver so the initial direct-file-path mode remains easy to review.
 
 ## Local CI
 
-This is a private repository with metered GitHub Actions. CI is `workflow_dispatch`-only — it runs only on manual trigger. **The actual pre-push gate is local execution.** Run `scripts/local-ci.ps1` before every push to verify build and smoke tests pass. This catches lockstep breaches and runtime regressions before they reach the shared main branch.
+This is a private repository with metered GitHub Actions. CI is `workflow_dispatch`-only — it runs only on manual trigger. **The actual pre-push gate is local execution.** Run `scripts/local-ci.ps1` before every push to verify build, unit tests, and smoke tests pass. This catches lockstep breaches and runtime regressions before they reach the shared main branch.
+
+Unit tests live in `tests/ODVGateway.Tests` (xUnit, `net10.0`), outside `src/` so they are never packaged into the web-app artifact. They are pure in-memory Tier D tests (no filesystem, network, or live HTTP dependencies) and run as the second step of `scripts/local-ci.ps1`, right after `dotnet build` and before the smoke test.

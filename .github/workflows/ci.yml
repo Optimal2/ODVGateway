@@ -33,6 +33,10 @@ jobs:
         working-directory: ODVGateway
         run: dotnet build src/ODVGateway/ODVGateway.csproj --configuration Release --no-restore
 
+      - name: Unit tests
+        working-directory: ODVGateway
+        run: dotnet test tests/ODVGateway.Tests/ODVGateway.Tests.csproj --configuration Release
+
       - name: Smoke test
         working-directory: ODVGateway
         shell: powershell
