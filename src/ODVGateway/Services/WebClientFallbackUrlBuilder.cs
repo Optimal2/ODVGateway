@@ -140,7 +140,13 @@ public sealed class WebClientFallbackUrlBuilder
             return false;
         }
 
-        if (Uri.TryCreate(normalizedHost, UriKind.Absolute, out var configuredUri))
+        // Only treat the entry as a URI when it carries an explicit http/https
+        // scheme. On .NET, a bare "host:port" entry parses as an absolute URI
+        // whose scheme is the host text and whose Host is empty, which would
+        // otherwise make the port-split branch below unreachable.
+        if (Uri.TryCreate(normalizedHost, UriKind.Absolute, out var configuredUri) &&
+            (configuredUri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+             configuredUri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
         {
             return HostAndPortMatch(
                 configuredUri.Host,

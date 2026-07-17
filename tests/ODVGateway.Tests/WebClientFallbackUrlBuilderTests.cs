@@ -102,19 +102,32 @@ public sealed class WebClientFallbackUrlBuilderTests
     }
 
     [Fact]
-    public void Build_FilePathAbsoluteUrlOtherHost_BareHostPortAllowedHost_DoesNotMatch()
+    public void Build_FilePathAbsoluteUrlOtherHost_BareHostPortAllowedHost_Matches()
     {
-        // Documents a configuration pitfall: on .NET, "host:port" without a
-        // scheme parses as an absolute URI whose scheme is the host text and
-        // whose Host is empty, so HostMatches never matches it. Bare host
-        // names without a port work; scheme-full URLs work; bare "host:port"
-        // does not. Reported as a potential production bug, not fixed here.
+        // A bare "host:port" AllowedHosts entry (no scheme) must match. On
+        // .NET, Uri.TryCreate("host:port", Absolute) succeeds with the host
+        // text as scheme and an empty Host, so HostMatches must only treat
+        // the entry as a URI when the scheme is http/https and otherwise use
+        // the port-split parse.
         var file = CreateFile(filePath: "https://webclient.example:8443/streams/file-1");
         var options = CreateOptions(o => o.AllowedHosts = ["webclient.example:8443"]);
 
         var result = Build(file, options);
 
-        Assert.Equal(WebClientFallbackUrlKind.Template, result.Kind);
+        Assert.Equal(WebClientFallbackUrlKind.FilePath, result.Kind);
+        Assert.Equal("https://webclient.example:8443/streams/file-1", result.Url);
+    }
+
+    [Fact]
+    public void Build_FilePathAbsoluteUrlOtherHost_BareIpv4HostPortAllowedHost_Matches()
+    {
+        var file = CreateFile(filePath: "http://10.20.30.40:8080/streams/file-1");
+        var options = CreateOptions(o => o.AllowedHosts = ["10.20.30.40:8080"]);
+
+        var result = Build(file, options);
+
+        Assert.Equal(WebClientFallbackUrlKind.FilePath, result.Kind);
+        Assert.Equal("http://10.20.30.40:8080/streams/file-1", result.Url);
     }
 
     [Fact]
