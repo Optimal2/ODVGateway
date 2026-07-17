@@ -183,7 +183,15 @@ function Invoke-SmokeWebRequest {
             Headers = $errorResponse.Headers
         }
     }
-    catch [Microsoft.PowerShell.Commands.HttpResponseException] {
+    catch {
+        # [Microsoft.PowerShell.Commands.HttpResponseException] only exists in
+        # PowerShell 7; referencing it in a typed catch makes Windows PowerShell
+        # 5.1 fail with "Unable to find type" at parse time. Match the type by
+        # name at runtime instead so the script works under both shells.
+        if ($_.Exception.GetType().FullName -ne 'Microsoft.PowerShell.Commands.HttpResponseException') {
+            throw
+        }
+
         $errorResponse = $_.Exception.Response
         if ($null -eq $errorResponse) {
             throw
