@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using System.Buffers.Binary;
 using System.Text;
 using System.Text.Json;
+using NLog.Web;
 using ODVGateway.Models;
 using ODVGateway.Options;
 using ODVGateway.Services;
@@ -28,6 +29,9 @@ const string DefaultContentSecurityPolicy =
     "form-action 'self'";
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Logging.ClearProviders();
+builder.Host.UseNLog();
 
 builder.WebHost.ConfigureKestrel(options => options.AddServerHeader = false);
 
@@ -70,6 +74,30 @@ var distResolver = app.Services.GetRequiredService<OpenDocViewerDistResolver>();
 var distPath = distResolver.ResolveDistPath();
 
 LogProductionCompatibilityWarnings(app.Logger, startupOptions);
+
+var correlationLoggerFactory = app.Services.GetRequiredService<ILoggerFactory>();
+
+// Request correlation middleware. Runs first so every downstream log entry and
+// response carries the same X-Correlation-ID. A valid client-supplied id
+// (non-empty, at most 128 HTTP token characters) is reused, otherwise a new id
+// is generated.
+app.Use(async (context, next) =>
+{
+    var correlationId = context.Request.Headers["X-Correlation-ID"].ToString();
+    if (!IsValidCorrelationId(correlationId))
+    {
+        correlationId = Guid.NewGuid().ToString("N");
+    }
+
+    context.Response.Headers["X-Correlation-ID"] = correlationId;
+
+    using (correlationLoggerFactory
+        .CreateLogger("ODVGateway.Correlation")
+        .BeginScope(new Dictionary<string, object?> { ["CorrelationId"] = correlationId }))
+    {
+        await next(context);
+    }
+});
 
 app.UseExceptionHandler(errorApp =>
 {
@@ -1318,6 +1346,26 @@ static bool IsValidCookieName(string? name)
         }
 
         if ("()<>@,;:\\\"/[]?={}".Contains(character, StringComparison.Ordinal))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool IsValidCorrelationId(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value) || value.Length > 128)
+    {
+        return false;
+    }
+
+    foreach (var character in value)
+    {
+        var isTokenCharacter = char.IsAsciiLetterOrDigit(character)
+            || "!#$%&'*+-.^_`|~".Contains(character, StringComparison.Ordinal);
+        if (!isTokenCharacter)
         {
             return false;
         }

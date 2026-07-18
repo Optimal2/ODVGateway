@@ -11,4 +11,7 @@
     <RepositoryUrl>https://github.com/Optimal2/ODVGateway</RepositoryUrl>
     <PackageProjectUrl>https://github.com/Optimal2/ODVGateway</PackageProjectUrl>
   </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="NLog.Web.AspNetCore" Version="6.1.4" />
+  </ItemGroup>
 </Project>
