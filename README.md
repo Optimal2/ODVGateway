@@ -300,8 +300,15 @@ Export a universal package:
 .\scripts\omp\export-universal-package.ps1 -AllComponents -BuildArtifacts
 ```
 
-Runtime `appsettings.json` should be supplied as an artifact configuration file
-or host-specific deployment file. It is not part of the immutable artifact zip.
+Runtime `appsettings.json` is not part of the immutable artifact payload.
+The package ships a baseline `appsettings.json` (NLog file/console logging with
+correlation-id layout plus environment-neutral `ODVGateway` defaults) as an
+artifact configuration file: `src/ODVGateway/Packaging/appsettings.json`, wired
+through `artifactConfigurationFiles` in `omp-components.json`. The OMP HostAgent
+writes it to the site at deploy time and deep-merges its built-in web-app
+sections underneath. Site-specific values (dist paths, trusted roots, aliases)
+belong in host-specific config overlays or deployment files, never in this
+repository.
 Packaging scripts warn when ignored standalone publish `appsettings*.json`
 files remain under `artifacts/publish` because those files are easy to confuse
 with package input but are excluded from OMP artifact payloads.

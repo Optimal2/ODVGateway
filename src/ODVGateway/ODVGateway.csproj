@@ -14,4 +14,9 @@
   <ItemGroup>
     <PackageReference Include="NLog.Web.AspNetCore" Version="6.1.4" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Packaging/ holds the OMP artifact configuration file shipped inside the
+         artifact package (configuration/appsettings.json), not in the payload. -->
+    <Content Remove="Packaging/**" />
+  </ItemGroup>
 </Project>

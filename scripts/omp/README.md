@@ -11,6 +11,9 @@ build-universal-package.cmd
 export-universal-package.cmd
 ```
 
+The PowerShell scripts in this directory are written to work on both Windows
+PowerShell 5.1 and PowerShell 7+.
+
 The `.cmd` files are intended for Windows double-click usage and normal command
 prompt usage. They call the matching PowerShell scripts with `-NoProfile` and
 without `-ExecutionPolicy Bypass`. `build-universal-package.cmd` and
@@ -26,8 +29,8 @@ All `.cmd` wrappers forward additional arguments to the underlying `.ps1`
 script. Examples:
 
 ```cmd
-scripts\omp\build-universal-package.cmd --no-pause -OutputDirectory .\artifacts\packages
-scripts\omp\export-universal-package.cmd -AllComponents -BuildArtifacts -OutputPath .\artifacts\packages\my-package.zip
+scripts\omp\build-universal-package.cmd --no-pause -OutputDirectory E:\Packages
+scripts\omp\export-universal-package.cmd -AllComponents -BuildArtifacts -OutputPath E:\Packages\my-package.zip
 ```
 
 For most manual package builds, use `build-universal-package.cmd`. It defaults
@@ -72,12 +75,72 @@ components and writes a universal zip named from `repositoryKey` and
 
 ```powershell
 .\scripts\omp\build-universal-package.ps1
-.\scripts\omp\build-universal-package.ps1 -OutputDirectory .\artifacts\packages
+.\scripts\omp\build-universal-package.ps1 -OutputDirectory E:\Packages
 ```
 
 The default output folder is `artifacts\universal-packages`. Set
 `OMP_UNIVERSAL_PACKAGE_OUTPUT_DIR` to use a shared package folder without
 hardcoding machine-specific paths in repositories.
+
+Use `validate-module-definitions.ps1` before packaging or in CI to catch
+manifest/module-definition version drift and stale embedded SQL content. If you
+changed a source `.sql` file referenced by a module definition, refresh the
+embedded JSON first:
+
+```powershell
+.\scripts\dev\embed-module-definition-sql.ps1
+.\scripts\omp\validate-module-definitions.ps1
+```
+
+If you did not change module-definition source SQL, validation alone is enough:
+
+```powershell
+.\scripts\omp\validate-module-definitions.ps1
+```
+
+Use `validate-component-versions.ps1` in CI or before packaging to catch
+manifest drift that would produce mismatched or unbuildable artifacts. It
+validates the `omp-components.json` manifest only; it does **not** enforce
+assembly version because `Directory.Build.props` intentionally pins assembly
+version to `0.1.0` for all projects. OMP artifact identity comes from the
+manifest component version plus SHA-256 content hash, not from assembly
+version.
+
+```powershell
+.\scripts\omp\validate-component-versions.ps1
+```
+
+What the guard protects against:
+
+- A component `projectPath` that is missing or does not contain a `.csproj`
+  file. This catches renamed/moved projects before packaging fails.
+- A missing or malformed `repositoryVersion` or component `version`. Both must
+  follow a `major.minor` or `major.minor.patch` shape.
+- `moduleDefinitions[].definitionVersion` out of sync with the referenced
+  `.module-definition.json` file. This is a fast pre-check that overlaps with
+  `validate-module-definitions.ps1`.
+- A component `moduleKey` that points to a module definition not declared in
+  `moduleDefinitions`. This catches stale or misspelled module references.
+- A component `minModuleDefinitionVersion` that is greater than the currently
+  declared module definition version. This is reported as a **warning** because
+  it means the component expects a newer module definition than the manifest
+  provides.
+- A change to the `OpenModulePlatform.Web.Shared` binary that is not matched
+  by a cascade-bump of its declared consumers (Check 11). The validator builds
+  `OpenModulePlatform.Web.Shared.dll` from both the parent commit and HEAD with
+  identical settings in the same environment and compares the two SHA-256
+  hashes. Because both hashes come from the same runner, the comparison is
+  environment-stable and does not rely on a committed absolute baseline. If the
+  binary changed and no consumer was bumped, the check fails.
+
+If the guard fails:
+
+1. Verify that `bump-version.ps1` was run for every changed component and, when
+   needed, for the repository version and module definitions.
+2. Check that every `projectPath` still exists and contains the expected
+   `.csproj` file.
+3. Check that module definition files were re-embedded or re-bumped after SQL
+   changes, and that their `definitionVersion` matches the manifest entry.
 
 `build-repository-objects.ps1` reads a repository's `omp-components.json` and
 creates portable OMP objects:
@@ -135,14 +198,14 @@ Examples:
 .\scripts\omp\export-universal-package.ps1 `
   -AllComponents `
   -BuildArtifacts `
-  -TargetHostProfile <host-profile> `
-  -ArtifactConfigurationFile 'opendocviewer-web:odv.site.config.js=<path-to-private-odv.site.config.js>'
+  -TargetHostProfile customer-test `
+  -ArtifactConfigurationFile 'opendocviewer-web:odv.site.config.js=E:\Secure\odv.site.config.js'
 
 .\scripts\omp\export-universal-package.ps1 `
   -AllComponents `
   -BuildArtifacts `
-  -HostProfilePath C:\private-profiles\<host-profile>.package-profile.json `
-  -OutputPath .\artifacts\packages\opendocviewer__<host-profile>__20260525.zip
+  -HostProfilePath E:\Private\profiles\customer-test.package-profile.json `
+  -OutputPath E:\Packages\opendocviewer__customer-test__20260525.zip
 ```
 
 The optional host profile is JSON and can provide `targetHostProfile`,
@@ -160,11 +223,6 @@ objects can add an optional hook at
 `-ModuleKey`, and `-Configuration`, and should write generated host configs,
 config overlays, widgets, or widget runtime-data zips below `OutputRoot`.
 
-The shared object builder warns when ignored standalone publish
-`appsettings*.json` files exist under `artifacts/publish`. Those repo-local
-files are not used as OMP package input and can become stale enough to confuse
-public-readiness checks or manual archive review.
-
 Keep private host profiles in the private installer or DEV repository, not in
 public module repositories.
 
@@ -180,8 +238,8 @@ exceeds the configured timeout.
 .\scripts\omp\test-cmd-wrappers.ps1 -RepositoryName OpenModulePlatform -PerRepositoryTimeoutSeconds 1200
 
 .\scripts\omp\test-cmd-wrappers.ps1 `
-  -WorkspaceRoot "$env:USERPROFILE\Documents\GitHub" `
-  -RepositoryName ModuleRepoA,ModuleRepoB,ModuleRepoC `
+  -WorkspaceRoot "C:\src" `
+  -RepositoryName ExampleConsumerA,ExampleConsumerB,ExampleConsumerC `
   -OutputRoot "$env:TEMP\omp-cmd-wrapper-validation\packages" `
   -LogRoot "$env:TEMP\omp-cmd-wrapper-validation\logs" `
   -PerRepositoryTimeoutSeconds 1800
@@ -209,11 +267,11 @@ developer-source refresh, and installer exports produce the same objects:
 
 .\scripts\omp\compare-universal-package-data.ps1 `
   -FirstPackage "$env:TEMP\omp-cmd-wrapper-validation\aggregate-objects" `
-  -SecondPackage "C:\reference-data\global"
+  -SecondPackage "E:\DevInstaller\OpenModulePlatform\Universal\installer\data\global"
 
 .\scripts\omp\compare-universal-package-data.ps1 `
-  -FirstPackage "C:\reference-packages\omp-universal__global__20260606.zip" `
-  -SecondPackage "C:\reference-data\global"
+  -FirstPackage "E:\DevInstaller\OpenModulePlatform\Universal\installer\exports\omp-universal__global__20260606.zip" `
+  -SecondPackage "E:\DevInstaller\OpenModulePlatform\Universal\installer\data\global"
 ```
 
 `merge-universal-package-objects.ps1` extracts many repository-level universal
@@ -232,8 +290,8 @@ To create a universal package from an already validated object root, use:
 
 ```powershell
 .\scripts\omp\export-universal-object-root.ps1 `
-  -ObjectRoot "C:\reference-data\global" `
-  -OutputPath ".\artifacts\packages\omp-universal__global__verified.zip"
+  -ObjectRoot "E:\DevInstaller\OpenModulePlatform\Universal\installer\data\global" `
+  -OutputPath "E:\Packages\omp-universal__global__verified.zip"
 ```
 
 That helper is intended for validation and developer packaging. Normal

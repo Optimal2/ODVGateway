@@ -10,6 +10,7 @@ package name uses repositoryKey and repositoryVersion from omp-components.json.
 [CmdletBinding()]
 param(
     [string]$RepositoryRoot = '',
+    [string]$OmpRepositoryRoot = '',
     [string]$OutputDirectory = '',
     [string]$OutputPath = '',
     [string]$PackageVersion = '',
@@ -140,6 +141,10 @@ try {
         ConfigOverlayFile = $ConfigOverlayFile
         WidgetFile = $WidgetFile
         WidgetDataFile = $WidgetDataFile
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($OmpRepositoryRoot)) {
+        $exportArgs.OmpRepositoryRoot = $OmpRepositoryRoot
     }
 
     if ($AllComponents) {

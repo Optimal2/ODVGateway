@@ -13,8 +13,9 @@ files plus selected artifact package zips to a common output shape:
   widgets/
   widget-data/
 
-Runtime/customer configuration is supplied as command-line mappings instead of
-being stored in the source repository:
+Package-owned configuration that is neutral for every environment can be listed
+on a component in omp-components.json. Runtime/customer configuration is
+supplied as command-line mappings instead of being stored in public source:
 
   -ArtifactConfigurationFile 'component-key:relative/path.ext=C:\secure\file.ext'
   -HostConfigurationFile 'C:\secure\host.json'
@@ -312,6 +313,39 @@ function Read-ConfigurationMappings {
     return $result
 }
 
+function Get-ComponentArtifactConfigurationMappings {
+    param(
+        [Parameter(Mandatory = $true)][object]$Component,
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot
+    )
+
+    $result = [System.Collections.Generic.List[string]]::new()
+    foreach ($entry in @((Get-JsonPropertyValue -Object $Component -Name 'artifactConfigurationFiles'))) {
+        if ($null -eq $entry) {
+            continue
+        }
+
+        $relativePath = [string](Get-JsonPropertyValue -Object $entry -Name 'relativePath')
+        $sourcePath = [string](Get-JsonPropertyValue -Object $entry -Name 'sourcePath')
+        if ([string]::IsNullOrWhiteSpace($sourcePath)) {
+            $sourcePath = [string](Get-JsonPropertyValue -Object $entry -Name 'path')
+        }
+
+        if ([string]::IsNullOrWhiteSpace($relativePath) -or [string]::IsNullOrWhiteSpace($sourcePath)) {
+            throw "Component '$([string]$Component.componentKey)' artifactConfigurationFiles entries require relativePath and sourcePath."
+        }
+
+        $resolvedSource = Resolve-PathFromBase -Path $sourcePath -BasePath $RepositoryRoot
+        if (-not (Test-Path -LiteralPath $resolvedSource -PathType Leaf)) {
+            throw "Component '$([string]$Component.componentKey)' artifact configuration source file was not found: $resolvedSource"
+        }
+
+        $result.Add("$relativePath=$resolvedSource")
+    }
+
+    return $result
+}
+
 function Publish-DotNetComponent {
     param(
         [Parameter(Mandatory = $true)][object]$Component,
@@ -438,6 +472,100 @@ function Publish-NodeWebComponent {
     return $outputPath
 }
 
+function Get-SubresourceIntegrityHash {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "Cannot compute SRI hash; file not found: $Path"
+    }
+
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $sha384 = [System.Security.Cryptography.SHA384]::Create()
+    try {
+        $hash = $sha384.ComputeHash($bytes)
+        return 'sha384-' + [Convert]::ToBase64String($hash)
+    }
+    finally {
+        $sha384.Dispose()
+    }
+}
+
+function Update-OpenDocViewerIndexHtmlIntegrity {
+    param(
+        [Parameter(Mandatory = $true)][string]$PayloadPath,
+        [Parameter(Mandatory = $true)][string]$ComponentKey,
+        [System.Collections.IDictionary]$ConfigurationMappings
+    )
+
+    $indexHtmlPath = Join-Path $PayloadPath 'index.html'
+    if (-not (Test-Path -LiteralPath $indexHtmlPath -PathType Leaf)) {
+        Write-Warning "OpenDocViewer payload for '$ComponentKey' has no index.html; skipping SRI injection."
+        return
+    }
+
+    $html = [System.IO.File]::ReadAllText($indexHtmlPath, [System.Text.UTF8Encoding]::new($false))
+    $bootstrapMatch = [Regex]::Match($html, '<script\s+[^>]*data-odv-bootstrap[^>]*>', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    if (-not $bootstrapMatch.Success) {
+        throw "OpenDocViewer payload index.html is missing the data-odv-bootstrap script tag. Ensure vite.config.js preserves the bootConfig entry."
+    }
+    $bootstrapTag = $bootstrapMatch.Value
+
+    $defaultConfigPath = Join-Path $PayloadPath 'odv.config.js'
+    if (-not (Test-Path -LiteralPath $defaultConfigPath -PathType Leaf)) {
+        throw "OpenDocViewer payload is missing odv.config.js; cannot compute SRI hash."
+    }
+
+    $attributes = [ordered]@{
+        'data-odv-config-integrity' = Get-SubresourceIntegrityHash -Path $defaultConfigPath
+    }
+
+    $siteConfigSource = $null
+    if ($null -ne $ConfigurationMappings -and $ConfigurationMappings.Contains($ComponentKey)) {
+        foreach ($mapping in @($ConfigurationMappings[$ComponentKey])) {
+            if ([string]::IsNullOrWhiteSpace([string]$mapping)) {
+                continue
+            }
+
+            $equalsIndex = $mapping.IndexOf('=')
+            if ($equalsIndex -le 0 -or $equalsIndex -eq ($mapping.Length - 1)) {
+                continue
+            }
+
+            $relativePath = $mapping.Substring(0, $equalsIndex).Trim()
+            if (-not [string]::Equals($relativePath, 'odv.site.config.js', [StringComparison]::OrdinalIgnoreCase)) {
+                continue
+            }
+
+            $siteConfigSource = $mapping.Substring($equalsIndex + 1).Trim()
+            break
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($siteConfigSource)) {
+        if (-not (Test-Path -LiteralPath $siteConfigSource -PathType Leaf)) {
+            throw "OpenDocViewer site config source was not found: $siteConfigSource"
+        }
+
+        $attributes['data-odv-site-config-integrity'] = Get-SubresourceIntegrityHash -Path $siteConfigSource
+    }
+
+    foreach ($attributeName in $attributes.Keys) {
+        $attributeValue = [string]$attributes[$attributeName]
+        $attributePattern = "$attributeName=""[^""]*"""
+        $attributeReplacement = "$attributeName=""$attributeValue"""
+        if ($bootstrapTag -match $attributePattern) {
+            $bootstrapTag = $bootstrapTag -replace $attributePattern, $attributeReplacement
+        }
+        else {
+            $bootstrapTag = $bootstrapTag -replace '>$', " $attributeReplacement>"
+        }
+    }
+
+    $html = $html.Substring(0, $bootstrapMatch.Index) + $bootstrapTag + $html.Substring($bootstrapMatch.Index + $bootstrapMatch.Length)
+    [System.IO.File]::WriteAllText($indexHtmlPath, $html, [System.Text.UTF8Encoding]::new($false))
+    Write-Host "Injected runtime config SRI hashes into $indexHtmlPath"
+}
+
 function Remove-RuntimeConfigurationFilesFromFolder {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -445,40 +573,6 @@ function Remove-RuntimeConfigurationFilesFromFolder {
         [string]::Equals($_.Name, 'appsettings.json', [StringComparison]::OrdinalIgnoreCase) -or
         ($_.Name.StartsWith('appsettings.', [StringComparison]::OrdinalIgnoreCase) -and $_.Name.EndsWith('.json', [StringComparison]::OrdinalIgnoreCase))
     } | Remove-Item -Force
-}
-
-function Warn-OnIgnoredPublishRuntimeConfiguration {
-    param([Parameter(Mandatory = $true)][string]$RepositoryRoot)
-
-    $publishRoot = Join-Path $RepositoryRoot 'artifacts\publish'
-    if (-not (Test-Path -LiteralPath $publishRoot -PathType Container)) {
-        return
-    }
-
-    $configFiles = @(Get-ChildItem -LiteralPath $publishRoot -File -Recurse | Where-Object {
-        [string]::Equals($_.Name, 'appsettings.json', [StringComparison]::OrdinalIgnoreCase) -or
-        ($_.Name.StartsWith('appsettings.', [StringComparison]::OrdinalIgnoreCase) -and $_.Name.EndsWith('.json', [StringComparison]::OrdinalIgnoreCase))
-    })
-
-    if ($configFiles.Count -eq 0) {
-        return
-    }
-
-    $relativePaths = @($configFiles | ForEach-Object {
-        $_.FullName.Substring($RepositoryRoot.Length).TrimStart('\', '/')
-    } | Sort-Object)
-
-    $previewCount = [Math]::Min($relativePaths.Count, 3)
-    $preview = ($relativePaths | Select-Object -First $previewCount) -join ', '
-    if ($relativePaths.Count -gt $previewCount) {
-        $preview += ', ...'
-    }
-
-    Write-Warning (
-        "Ignored standalone publish runtime config was found under '$publishRoot' ({0}). " +
-        "OMP packaging removes runtime appsettings from artifact payloads, so these repo-local files are not package input and can become stale. " +
-        "Delete them or move standalone deployments outside the repository worktree before publishing public-ready archives." -f $preview
-    )
 }
 
 function Copy-PortableObjectFiles {
@@ -732,7 +826,6 @@ if ([string]::IsNullOrWhiteSpace($repositoryKey)) {
 }
 
 $pathMapRoot = '/_/' + (Get-SafePathMapSegment -Value $repositoryKey)
-Warn-OnIgnoredPublishRuntimeConfiguration -RepositoryRoot $repositoryRoot
 
 try {
     foreach ($component in $selectedComponents) {
@@ -772,11 +865,29 @@ try {
             continue
         }
 
+        if ([string]::Equals([string]$component.packageType, 'web-app', [StringComparison]::OrdinalIgnoreCase)) {
+            $indexHtmlPath = Join-Path $payloadPath 'index.html'
+            $odvConfigPath = Join-Path $payloadPath 'odv.config.js'
+            if ((Test-Path -LiteralPath $indexHtmlPath -PathType Leaf) -and
+                (Test-Path -LiteralPath $odvConfigPath -PathType Leaf)) {
+                Update-OpenDocViewerIndexHtmlIntegrity `
+                    -PayloadPath $payloadPath `
+                    -ComponentKey ([string]$component.componentKey) `
+                    -ConfigurationMappings $configurationMappings
+            }
+        }
+
         Remove-RuntimeConfigurationFilesFromFolder -Path $payloadPath
 
-        $configurationFileArgs = @()
+        $configurationFileArgs = [System.Collections.Generic.List[string]]::new()
+        foreach ($mapping in @(Get-ComponentArtifactConfigurationMappings -Component $component -RepositoryRoot $repositoryRoot)) {
+            $configurationFileArgs.Add($mapping)
+        }
+
         if ($configurationMappings.ContainsKey([string]$component.componentKey)) {
-            $configurationFileArgs = @($configurationMappings[[string]$component.componentKey])
+            foreach ($mapping in @($configurationMappings[[string]$component.componentKey])) {
+                $configurationFileArgs.Add($mapping)
+            }
         }
 
         $artifactPackageArgs = @{
@@ -787,7 +898,7 @@ try {
             Version = [string]$component.version
             PayloadPath = $payloadPath
             OutputPath = $artifactsRoot
-            ConfigurationFile = $configurationFileArgs
+            ConfigurationFile = @($configurationFileArgs)
         }
         $minModuleDefinitionVersion = [string](Get-JsonPropertyValue -Object $component -Name 'minModuleDefinitionVersion')
         if (-not [string]::IsNullOrWhiteSpace($minModuleDefinitionVersion)) {
