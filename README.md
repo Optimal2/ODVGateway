@@ -350,9 +350,9 @@ Hooks:
   network dependencies), runs smoke tests, and validates OMP component
   version lockstep.
 
-The push is blocked if the local CI gate fails. Because this is a private
-repository with `workflow_dispatch`-only GitHub Actions, the local gate is the
-actual pre-push verification.
+The push is blocked if the local CI gate fails. Because this repository's
+GitHub Actions are `workflow_dispatch`-only (a deliberate choice — as a public
+repo it gets free Actions), the local gate is the actual pre-push verification.
 
 ## Release Process
 
