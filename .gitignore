@@ -12,3 +12,6 @@ TestResults/
 *.zip
 *.nupkg
 logs/
+
+# Claude Code local tool config — never tracked, must not block dep maintenance
+.claude/
