@@ -76,9 +76,13 @@ pwsh scripts/local-ci.ps1
 
 This runs:
 1. `dotnet build` (Release configuration)
-2. `scripts/smoke-test.ps1` (starts the gateway, checks /health, security headers, error responses)
+2. `dotnet test tests/ODVGateway.Tests` (unit tests)
+3. `scripts/smoke-test.ps1` (starts the gateway, checks /health, security headers, error responses)
+4. `scripts/validate-component-versions.ps1` (`omp-components.json` manifest check)
 
-GitHub Actions CI is `workflow_dispatch`-only (metered). The local gate IS the CI.
+GitHub Actions CI is `workflow_dispatch`-only by deliberate choice. ODVGateway is a
+public repository, so Actions would be free, but the project gates on this local CI
+instead of push-triggered runs. The local gate IS the CI.
 
 ## Release Gate
 
