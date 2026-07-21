@@ -426,7 +426,7 @@ treated as a decided process without explicit human approval.
 
 2. **Create the release marker**
    - **Tag schema**: Propose creating an annotated git tag with a SemVer
-     prefix that matches the component version, e.g. `v0.1.30`.
+     prefix that matches the component version, e.g. `v0.1.38`.
      **ÄGARBESLUT KRÄVS**: tag format, prefix, signing strategy, and whether
      the tag is created locally or via the GitHub web UI.
 
@@ -462,7 +462,7 @@ treated as a decided process without explicit human approval.
 
 ## Current 0.1.x Scope
 
-The current repository and web component version is `0.1.31`. The module
+The current repository and web component version is `0.1.38`. The module
 definition version remains `0.1.11` because the public OMP module contract did
 not need a schema change for the later runtime hardening work.
 
@@ -483,6 +483,9 @@ Included:
 - Same-host remote inline source prefetch for small raster WebClient URLs.
 - A default `Content-Security-Policy` response header with an optional
   deployment override.
+- NLog file/console logging with request-correlation middleware, with the NLog
+  runtime configuration shipped as an OMP artifact configuration file.
+- A global exception handler and an xUnit unit-test baseline wired into the local CI gate.
 
 Deferred:
 

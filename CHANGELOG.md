@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 for its `0.1.x` release line.
 
+## [0.1.38] - 2026-07-20
+
+### Added
+
+- NLog file/console logging with a request-correlation middleware, and the NLog
+  runtime configuration shipped as an OMP artifact configuration file.
+- xUnit Tier D unit-test baseline wired into the local CI gate, with expanded
+  coverage for the decoder, fallback URL builder, proxy limiter, and alias options.
+- Tracked pre-push and pre-commit Git hooks.
+
+### Changed
+
+- Corrected the repository-visibility documentation: ODVGateway is a public repository.
+
+### Fixed
+
+- Added a global exception handler and stopped swallowing `UnauthorizedAccessException`.
+- Matched bare `host:port` AllowedHosts entries in the fallback URL builder.
+- Made `smoke-test.ps1` Windows PowerShell 5.1-safe.
+
+> Versions 0.1.32–0.1.37 were internal development increments (no separate release);
+> their changes are consolidated here under 0.1.38.
+
 ## [0.1.31] - 2026-07-13
 
 ### Added

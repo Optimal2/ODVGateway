@@ -23,7 +23,7 @@ Git. Do not commit build artifacts.
 
 ## Public-Readiness Checklist
 
-ODVGateway is moving toward public visibility. Before opening a pull request,
+ODVGateway is a public repository. Before opening a pull request,
 verify that your changes do not introduce customer-specific or internal-only
 content:
 

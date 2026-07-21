@@ -107,7 +107,7 @@ manifest component version plus SHA-256 content hash, not from assembly
 version.
 
 ```powershell
-.\scripts\omp\validate-component-versions.ps1
+.\scripts\validate-component-versions.ps1
 ```
 
 What the guard protects against:
