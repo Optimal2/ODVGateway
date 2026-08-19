@@ -335,7 +335,7 @@ GET /health
 The unit tests are xUnit, in-memory, and need nothing installed:
 
 ```bash
-dotnet test ODVGateway.slnx --configuration Release
+dotnet test tests/ODVGateway.Tests/ODVGateway.Tests.csproj --configuration Release
 ```
 
 They also run automatically as part of the local pre-push gate below.
