@@ -330,6 +330,16 @@ Health check:
 GET /health
 ```
 
+## Running tests
+
+The unit tests are xUnit, in-memory, and need nothing installed:
+
+```bash
+dotnet test ODVGateway.slnx --configuration Release
+```
+
+They also run automatically as part of the local pre-push gate below.
+
 ## Local pre-push gate
 
 This repository uses tracked Git hooks to run the local CI gate before every

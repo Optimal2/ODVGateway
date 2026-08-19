@@ -14,8 +14,8 @@
     step passes and 1 when any step fails.
 
     Run this before every push to catch build breaks and runtime regressions
-    before they reach the shared main branch. GitHub Actions for this private
-    repository are workflow_dispatch-only and metered, so local execution is
+    before they reach the shared main branch. GitHub Actions for this public
+    repository are workflow_dispatch-only by choice, so local execution is
     the actual gate.
 
 .PARAMETER Configuration
