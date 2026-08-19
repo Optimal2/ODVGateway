@@ -340,6 +340,11 @@ dotnet test tests/ODVGateway.Tests/ODVGateway.Tests.csproj --configuration Relea
 
 They also run automatically as part of the local pre-push gate below.
 
+There is no UiTests project in this repository, and that is deliberate: the
+gateway is a minimal-API service with no Razor pages or server-rendered UI of
+its own. The user interface it serves is the OpenDocViewer SPA, which is
+tested with its own suite in the OpenDocViewer repository.
+
 ## Local pre-push gate
 
 This repository uses tracked Git hooks to run the local CI gate before every
@@ -416,7 +421,9 @@ Optional switches:
 
 The GitHub Actions release gate is `workflow_dispatch`-only. Trigger it from
 the Actions tab, choose the build configuration, and decide whether to run
-smoke tests. If the gate passes, the workflow reports that the repository is
+smoke tests. The workflow always builds and runs the xUnit unit test suite
+(with TRX results uploaded as a workflow artifact) before the optional smoke
+test. If the gate passes, the workflow reports that the repository is
 ready for a manual release. Actual tagging, packaging, and publishing must be
 performed outside the workflow with explicit approval.
 

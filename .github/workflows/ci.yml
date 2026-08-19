@@ -35,7 +35,14 @@ jobs:
 
       - name: Unit tests
         working-directory: ODVGateway
-        run: dotnet test tests/ODVGateway.Tests/ODVGateway.Tests.csproj --configuration Release
+        run: dotnet test tests/ODVGateway.Tests/ODVGateway.Tests.csproj --configuration Release --logger trx --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: ODVGateway/TestResults
 
       - name: Smoke test
         working-directory: ODVGateway

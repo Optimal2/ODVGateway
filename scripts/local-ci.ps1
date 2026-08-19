@@ -38,6 +38,7 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
 $projectPath = Join-Path $repoRoot 'src/ODVGateway/ODVGateway.csproj'
 $testProjectPath = Join-Path $repoRoot 'tests/ODVGateway.Tests/ODVGateway.Tests.csproj'
+$testResultsDir = Join-Path $repoRoot 'TestResults'
 $smokeScript = Join-Path $scriptDir 'smoke-test.ps1'
 $validatorScript = Join-Path $scriptDir 'validate-component-versions.ps1'
 
@@ -88,8 +89,8 @@ $step2Message = ''
 if ($step1Pass) {
     try {
         Write-Host ''
-        Write-Host "Running: dotnet test `"$testProjectPath`" --configuration $Configuration"
-        & dotnet test "$testProjectPath" --configuration $Configuration
+        Write-Host "Running: dotnet test `"$testProjectPath`" --configuration $Configuration --logger trx --results-directory `"$testResultsDir`""
+        & dotnet test "$testProjectPath" --configuration $Configuration --logger trx --results-directory "$testResultsDir"
         if ($LASTEXITCODE -eq 0) {
             $step2Pass = $true
         }

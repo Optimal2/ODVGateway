@@ -54,6 +54,17 @@ jobs:
         working-directory: ODVGateway
         run: dotnet build src/ODVGateway/ODVGateway.csproj --configuration ${{ github.event.inputs.configuration }} --no-restore
 
+      - name: Unit tests
+        working-directory: ODVGateway
+        run: dotnet test tests/ODVGateway.Tests/ODVGateway.Tests.csproj --configuration ${{ github.event.inputs.configuration }} --logger trx --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gate-test-results
+          path: ODVGateway/TestResults
+
       - name: Smoke test
         if: github.event.inputs.run_smoke == 'true'
         working-directory: ODVGateway
