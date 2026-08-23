@@ -9,7 +9,7 @@
          from its artifact version. An OMP artifact-only test build may bump the
          artifact without an official release, and an official release may happen
          without an artifact rebuild. Never force the two to match. -->
-    <Version>0.1.39</Version>
+    <Version>0.1.40</Version>
 
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <AnalysisLevel>latest</AnalysisLevel>
