@@ -93,8 +93,11 @@ pwsh scripts/release.ps1
 
 This runs the local CI checks plus `scripts/validate-component-versions.ps1` to
 confirm that `omp-components.json` has been updated for any deployable changes.
-The script does not publish anything; it only validates that the repository is
-ready for a manually approved release.
+Without `-ReleaseType` the script publishes nothing; it only validates that the
+repository is ready. With `-ReleaseType patch|minor|major` it also bumps the
+version, commits and tags, and with `-Publish` it pushes — that switch is the
+approval gate for an official release. See the Release Process section of the
+README.
 
 ## Production Safety
 

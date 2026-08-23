@@ -3,16 +3,20 @@
     Local release gate for ODVGateway.
 
 .DESCRIPTION
-    Runs the local pre-release verification gate for ODVGateway without
-    publishing anything. The script validates that the current tree is ready
-    for a release, then prints version information and a reminder that actual
-    publishing requires explicit human approval.
+    Runs the local pre-release verification gate for ODVGateway. Without
+    -ReleaseType it publishes nothing: it validates that the current tree is
+    ready for a release and prints version information.
+
+    With -ReleaseType it also bumps <Version> in Directory.Build.props, commits
+    and tags. Only -Publish pushes; that switch is the approval gate for an
+    official release.
 
     Default checks (each can be skipped):
 
     1. dotnet build src/ODVGateway/ODVGateway.csproj --configuration <Configuration>
-    2. scripts/smoke-test.ps1 -Port <SmokePort>
-    3. scripts/validate-component-versions.ps1 -BaseCommit 'origin/main'
+    2. dotnet test tests/ODVGateway.Tests/ODVGateway.Tests.csproj
+    3. scripts/smoke-test.ps1 -Port <SmokePort>
+    4. scripts/validate-component-versions.ps1 -BaseCommit 'origin/main'
 
     Exit codes: 0 = all executed checks passed, 1 = one or more checks failed.
 
@@ -67,6 +71,7 @@ Set-StrictMode -Version Latest
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
 $projectPath = Join-Path $repoRoot 'src/ODVGateway/ODVGateway.csproj'
+$testProject = Join-Path $repoRoot 'tests/ODVGateway.Tests/ODVGateway.Tests.csproj'
 $smokeScript = Join-Path $scriptDir 'smoke-test.ps1'
 $validatorScript = Join-Path $scriptDir 'validate-component-versions.ps1'
 $componentsPath = Join-Path $repoRoot 'omp-components.json'
@@ -192,6 +197,39 @@ else {
 Write-StepResult -Step 'dotnet build' -Passed $step1Pass -Message $step1Message
 
 # Step 2: smoke test
+# Step 1b: dotnet test
+#
+# This is not optional padding. The pre-push hook runs local-ci.ps1, which runs
+# the unit tests -- and -Publish pushes with --no-verify, so without this step a
+# published release would never have run them locally at all. They would first
+# run in the workflow, AFTER the tag is public, and a failure there leaves a
+# public tag with no release and no sanctioned way back (retagging by hand is
+# exactly what AGENTS.md forbids). Found by review, 2026-08-23.
+$stepTestPass = $false
+$stepTestMessage = ''
+if (-not $SkipBuild) {
+    try {
+        Write-Host "Running: dotnet test `"$testProject`" --configuration $Configuration"
+        & dotnet test $testProject --configuration $Configuration
+        if ($LASTEXITCODE -eq 0) {
+            $stepTestPass = $true
+        }
+        else {
+            $stepTestMessage = "dotnet test exited with code $LASTEXITCODE"
+            $overallPass = $false
+        }
+    }
+    catch {
+        $stepTestMessage = "dotnet test failed: $_"
+        $overallPass = $false
+    }
+}
+else {
+    $stepTestPass = $true
+    $stepTestMessage = 'Skipped by -SkipBuild'
+}
+Write-StepResult -Step 'dotnet test' -Passed $stepTestPass -Message $stepTestMessage
+
 $step2Pass = $false
 $step2Message = ''
 if (-not $SkipSmoke) {
@@ -284,10 +322,46 @@ if ($status) {
     exit 1
 }
 
-$ahead = & git -C $repoRoot rev-list --count '@{u}..HEAD' 2>$null
-if ($LASTEXITCODE -eq 0 -and $ahead -and [int]$ahead -gt 0) {
+# A release must come from main, and from a commit that exists on origin.
+# Checking only "ahead of upstream" let three cases through silently, because a
+# missing upstream makes the command fail and 2>$null hides it: a detached HEAD
+# (tag lands on a loose commit), a feature branch (push succeeds, workflow
+# publishes a release from a commit never on main), and a local main BEHIND
+# origin (push fails halfway). Found by review, 2026-08-23.
+$branch = (& git -C $repoRoot rev-parse --abbrev-ref HEAD).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'git rev-parse --abbrev-ref HEAD failed.' }
+if ($branch -eq 'HEAD') {
+    Write-Host 'RELEASE ABORTED: HEAD is detached.' -ForegroundColor Red
+    Write-Host 'Check out main before releasing; a tag on a loose commit is not reachable from any branch.' -ForegroundColor Red
+    exit 1
+}
+if ($branch -ne 'main') {
+    Write-Host "RELEASE ABORTED: on branch '$branch', not main." -ForegroundColor Red
+    Write-Host 'Official releases are cut from main. Merge first.' -ForegroundColor Red
+    exit 1
+}
+
+$upstream = & git -C $repoRoot rev-parse --abbrev-ref '@{u}' 2>$null
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($upstream)) {
+    Write-Host 'RELEASE ABORTED: the current branch has no upstream.' -ForegroundColor Red
+    Write-Host 'Without one there is no way to tell whether this commit exists on origin.' -ForegroundColor Red
+    Write-Host '  Set one with: git branch --set-upstream-to=origin/main main' -ForegroundColor Red
+    exit 1
+}
+
+& git -C $repoRoot fetch --quiet origin 2>$null | Out-Null
+$counts = (& git -C $repoRoot rev-list --left-right --count '@{u}...HEAD').Trim() -split '\s+'
+if ($LASTEXITCODE -ne 0 -or $counts.Count -lt 2) { throw 'git rev-list --left-right --count failed.' }
+$behind = [int]$counts[0]
+$ahead = [int]$counts[1]
+if ($ahead -gt 0) {
     Write-Host "RELEASE ABORTED: $ahead commit(s) not pushed to upstream." -ForegroundColor Red
     Write-Host 'Push them first so the tag points at a commit that exists on origin.' -ForegroundColor Red
+    exit 1
+}
+if ($behind -gt 0) {
+    Write-Host "RELEASE ABORTED: local main is $behind commit(s) behind origin." -ForegroundColor Red
+    Write-Host '  Update with: git pull --ff-only' -ForegroundColor Red
     exit 1
 }
 
@@ -305,7 +379,21 @@ if (-not (Test-Path -LiteralPath $notesPath)) {
 
 $existingTag = & git -C $repoRoot tag --list $tag
 if ($existingTag) {
-    Write-Host "RELEASE ABORTED: tag $tag already exists." -ForegroundColor Red
+    Write-Host "RELEASE ABORTED: tag $tag already exists locally." -ForegroundColor Red
+    exit 1
+}
+
+# A local check only sees local tags. A tag that already exists on origin would
+# not surface until the tag push is refused - at which point the commit is
+# already published and the advice "push the tag manually" cannot work.
+$remoteTag = & git -C $repoRoot ls-remote --tags origin "refs/tags/$tag"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host 'RELEASE ABORTED: could not query origin for existing tags.' -ForegroundColor Red
+    Write-Host 'Releasing without that answer risks a tag collision mid-publish.' -ForegroundColor Red
+    exit 1
+}
+if ($remoteTag) {
+    Write-Host "RELEASE ABORTED: tag $tag already exists on origin." -ForegroundColor Red
     exit 1
 }
 
@@ -368,8 +456,10 @@ if (-not $Publish) {
     exit 0
 }
 
-# --no-verify: the pre-push hook runs the same local CI this script just ran,
-# and the release commit only changes a version string.
+# --no-verify: this script has just run build, unit tests, smoke and version
+# validation - the same checks as the pre-push hook - and the release commit only
+# changes a version string. Keep the test step above in sync with local-ci.ps1;
+# if the hook ever gains a check this script lacks, this bypass starts hiding it.
 & git -C $repoRoot push --no-verify origin HEAD
 if ($LASTEXITCODE -ne 0) {
     Write-Host 'RELEASE FAILED at git push (commit).' -ForegroundColor Red

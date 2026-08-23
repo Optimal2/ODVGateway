@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 for its `0.1.x` release line.
 
+## [0.1.39] - 2026-08-23
+
+First official release. Earlier `0.1.x` versions existed only as OpenModulePlatform
+artifacts and were never published as installable releases.
+
+### Added
+
+- An official release line: `vX.Y.Z` tags, a published `ODVGateway-vX.Y.Z.zip`
+  archive with the framework-dependent publish output, and a tag-triggered
+  release workflow.
+- `<Version>` in `Directory.Build.props` as the official application version,
+  separate from the OMP artifact version in `omp-components.json`.
+- Release support in `scripts/release.ps1` (`-ReleaseType`, `-Yes`, `-Publish`).
+  Without those switches it is the same local gate as before.
+
+### Changed
+
+- The release gate now runs the unit tests. It did not, which mattered because
+  `-Publish` pushes with `--no-verify` and would otherwise skip the only local
+  run of them.
+- Adopted the shared test standard: TRX output everywhere, and the release
+  workflow runs the tests rather than assuming they ran locally.
+- Updated the test infrastructure baseline (Microsoft.NET.Test.Sdk 18.8.1,
+  xunit.runner.visualstudio 3.1.5).
+- Corrected the documented test command and added a "Running tests" section; the
+  local CI help text no longer describes this public repository as private.
+
 ## [0.1.38] - 2026-07-20
 
 ### Added

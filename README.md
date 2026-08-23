@@ -371,111 +371,86 @@ repo it gets free Actions), the local gate is the actual pre-push verification.
 
 ## Release Process
 
-ODVGateway releases require manual approval. The repository contains a local
-release gate and a dispatch-only GitHub Actions workflow that validate but do
-NOT publish.
+Official releases are tagged `vX.Y.Z` and publish a GitHub release with
+`ODVGateway-vX.Y.Z.zip` — the framework-dependent publish output, ready to
+deploy to an IIS host that has the ASP.NET Core hosting bundle.
 
-### Release approval model
+### The approval gate
 
-The recommended default for this standalone repository is a **single-person
-approval flag**. The `release.ps1` gate performs automated validation and then
-prints an explicit reminder that publishing still requires human approval. The
-operator running the gate decides whether to proceed with tagging, packaging,
-and publishing; that decision is the approval.
-
-Who approves: the repository owner or a delegated maintainer.
-How approval is recorded: by the approver explicitly confirming the version,
-tag, package contents, and target location in the project's normal channel
-(for example, a direct message, email, or release checklist). No automated
-step, green CI run, or successful validation script constitutes approval.
-What constitutes approval: a clear "go" decision from the approver after
-reviewing the release gate output, the intended version, and the artifacts that
-will be published.
-
-**ÄGARBESLUT KRÄVS:** This single-person flag is appropriate for a standalone
-companion app today. If the project later requires multi-person sign-off, it
-must be replaced with an explicit control such as a GitHub environment
-protection rule, a required second maintainer review, or a signed release
-checklist. Do not treat the current operator-confirmation flow as a decided
-multi-person process without owner approval.
-
-Run the local release gate before requesting a release:
+**One command, run by a maintainer:**
 
 ```powershell
-pwsh scripts/release.ps1
+pwsh scripts/release.ps1 -ReleaseType patch -Publish
 ```
 
-The gate runs the same checks as `local-ci.ps1` and also validates that
-component versions are consistent against `origin/main`. Use `-WhatIf` to see
-what would run without executing anything:
+That is the approval gate. It validates, bumps `<Version>` in
+`Directory.Build.props`, commits, tags, and pushes. Without `-Publish` the
+release is prepared locally and nothing leaves the machine. Without
+`-ReleaseType` the script is the same local gate it has always been.
+
+Never hand-edit `<Version>`, and never push a release tag directly — the tag is
+what triggers publishing.
+
+### Before running it
+
+1. Write `release-notes/vX.Y.Z.md`. It becomes the release body, and the script
+   refuses to release without it. No top-level `#` heading; GitHub adds the title.
+2. Add the version's entry to `CHANGELOG.md`.
+3. Update `SECURITY.md` so the supported-version table names the version about to
+   be released.
+4. Commit and push those. The script releases a commit; it does not create one
+   from your working tree.
+
+### What the script refuses
+
+Each of these would otherwise produce a tag describing something that exists
+nowhere, or a release from a commit nobody can find:
+
+- a dirty working tree, or commits not pushed to origin
+- a branch other than `main`, or a detached HEAD
+- a local `main` behind `origin/main`
+- a missing `release-notes/vX.Y.Z.md`
+- a tag that already exists, locally **or** on origin
+
+If a step fails partway, the script prints what exists and the exact command to
+undo or finish it.
+
+### What happens next
+
+`.github/workflows/release.yml` triggers on the tag. It verifies the tag matches
+`<Version>`, runs the build, unit tests, smoke test and version validation,
+publishes the application, and attaches the archive to a GitHub release.
+
+This is the one workflow in this repository that runs on push rather than manual
+dispatch. The reason is in AGENTS.md: building the published archive has to happen
+on a clean machine from the tagged commit, not from whatever a developer had on
+disk. The workflow can still be dispatched manually to run the checks without
+publishing.
+
+### After the release
+
+If the released build should reach OpenModulePlatform, bump the OMP artifact
+version **from the post-release commit** so the delivered artifact carries the
+released build:
 
 ```powershell
-pwsh scripts/release.ps1 -WhatIf
+pwsh scripts/omp/bump-version.ps1 -ComponentKey odvgateway-web
 ```
 
-Optional switches:
+### Two version lines
 
-- `-Configuration Debug` — build with Debug configuration
-- `-SmokePort 5220` — run smoke tests on a different port
-- `-SkipBuild`, `-SkipSmoke`, `-SkipValidate` — skip individual checks
+| Where | What it is |
+| --- | --- |
+| `Directory.Build.props` `<Version>` | the official application version, reported by the binaries |
+| `omp-components.json` | the OMP artifact version |
 
-The GitHub Actions release gate is `workflow_dispatch`-only. Trigger it from
-the Actions tab, choose the build configuration, and decide whether to run
-smoke tests. The workflow always builds and runs the xUnit unit test suite
-(with TRX results uploaded as a workflow artifact) before the optional smoke
-test. If the gate passes, the workflow reports that the repository is
-ready for a manual release. Actual tagging, packaging, and publishing must be
-performed outside the workflow with explicit approval.
+They are independent by design. An artifact-only test build may bump the artifact
+without an official release, and an official release may happen without an
+artifact rebuild. Never force them to match.
 
-### Manual Release Steps
-
-Once the release gate is green, the actual release is performed manually by a
-human owner. The following flow is a proposal; every mechanics-specific detail
-is marked **"ÄGARBESLUT KRÄVS"** (owner decision required) and must not be
-treated as a decided process without explicit human approval.
-
-1. **Prerequisites**
-   - Local release gate passes (`pwsh scripts/release.ps1`).
-   - Working tree is clean (`git status --short` returns nothing).
-   - Current branch is `main` and is up to date with `origin/main`.
-   - The intended release version matches `omp-components.json` and the
-     *Current 0.1.x Scope* note in this README.
-
-2. **Create the release marker**
-   - **Tag schema**: Propose creating an annotated git tag with a SemVer
-     prefix that matches the component version, e.g. `v0.1.38`.
-     **ÄGARBESLUT KRÄVS**: tag format, prefix, signing strategy, and whether
-     the tag is created locally or via the GitHub web UI.
-
-3. **Build and package**
-   - Run the same publish/build steps exercised by the release gate.
-   - **Packaging**: Produce a versioned publish artifact, for example a
-     zip archive of the built output and/or an OMP universal package from the
-     local build pipeline.
-     **ÄGARBESLUT KRÄVS**: package format(s), naming convention, included
-     artifacts, and whether to also produce a NuGet package, container image,
-     or other deployment bundle.
-
-4. **Publish artifacts**
-   - **Publishing targets**: Propose uploading the package(s) to a private
-     project artifact store or attaching them to a GitHub Release associated
-     with the tag.
-     **ÄGARBESLUT KRÄVS**: destination, retention policy, access control,
-     and whether any package registry or public location is used.
-
-5. **Approval**
-   - The repository owner (or a delegated maintainer) approves the release
-     before any tag is pushed or artifact is published.
-   - Approval is recorded by the owner explicitly confirming the version,
-     tag, package contents, and target location. No automated step constitutes
-     approval.
-
-6. **Post-release**
-   - Ensure `CHANGELOG.md` contains an entry for the released version if one
-     does not already exist.
-   - Bump the component version in `omp-components.json` and any related
-     files for the next development cycle, following the OMP versioning rules.
-   - Communicate the release through the project's normal channel.
+Note that the two archives are one character apart and are **not** the same file:
+`ODVGateway-v0.1.39.zip` is the published release, `ODVGateway-0.1.39.zip` is the
+OMP artifact package.
 
 ## Current 0.1.x Scope
 

@@ -7,11 +7,12 @@ Checks that every component listed in omp-components.json has a valid version,
 points to an existing .csproj project, references a declared module definition,
 and that module definition versions stay in sync with the manifest.
 
-This script validates the manifest only. Assembly versions in
-Directory.Build.props are intentionally decoupled from omp-components.json
-component versions: they are statically set to 0.1.0 for all C# projects.
-OMP artifact identity is determined by the component manifest version plus
-SHA-256 content hash, not by assembly version.
+This script validates the manifest only. The application version in
+Directory.Build.props (<Version>) is intentionally decoupled from the
+omp-components.json component version: it is the official release version, owned
+by scripts/release.ps1, and an artifact-only build may bump one without the
+other. OMP artifact identity is determined by the component manifest version plus
+SHA-256 content hash, not by the application version.
 #>
 [CmdletBinding()]
 param(
@@ -898,11 +899,11 @@ else {
 # ---------------------------------------------------------------------------
 # Assembly version documentation (informational only, not enforced).
 # ---------------------------------------------------------------------------
-Write-Host 'Assembly version note:'
-Write-Host '  Directory.Build.props sets assembly version to 0.1.0 intentionally.'
-Write-Host '  Assembly version is decoupled from omp-components.json component versions.'
-Write-Host '  OMP artifact identity uses manifest version + SHA-256, not assembly version.'
-Write-Host '  This script validates the manifest, not the assembly versions.'
+Write-Host 'Application version note:'
+Write-Host '  Directory.Build.props <Version> is the official release version, owned by release.ps1.'
+Write-Host '  It is decoupled from the omp-components.json component version by design.'
+Write-Host '  OMP artifact identity uses manifest version + SHA-256, not the application version.'
+Write-Host '  This script validates the manifest, not the application version.'
 Write-Host ''
 
 # ---------------------------------------------------------------------------

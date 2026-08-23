@@ -8,15 +8,38 @@ Security issues should be reported privately before public disclosure.
 
 ## Supported Versions
 
-ODVGateway is currently in the `0.1.x` release line. Official releases are tagged
-`vX.Y.Z` and published with a `ODVGateway-vX.Y.Z.zip` archive; the version they
-report is `<Version>` in `Directory.Build.props`, which is separate from the OMP
-artifact version in `omp-components.json`.
+**ODVGateway v0.1.39** is the current supported release and the recommended
+deployment target.
 
-| Version | Supported |
-| --- | --- |
-| 0.1.x | Yes |
-| < 0.1.0 | No |
+Official releases are tagged `vX.Y.Z` and published with a
+`ODVGateway-vX.Y.Z.zip` archive containing the framework-dependent publish
+output. The version they report is `<Version>` in `Directory.Build.props`, which
+is deliberately separate from the OMP artifact version in `omp-components.json`;
+neither is forced to match the other.
+
+v0.1.39 is the first official release. Earlier `0.1.x` builds existed only as OMP
+artifacts and were never published as installable releases; deployments running
+them should move to v0.1.39, which carries the same application code plus the
+test-standard and dependency updates listed below.
+
+| Version | Security support | Notes |
+| --- | --- | --- |
+| 0.1.39 | :white_check_mark: | Current recommended release and only supported baseline |
+| <= 0.1.38 | :x: | OMP-artifact-only builds with no published release; upgrade to v0.1.39 |
+| < 0.1.0 | :x: | Not supported |
+
+## Recent release context
+
+The most recent releases are listed below for operational context. Only v0.1.39
+is supported.
+
+### ODVGateway v0.1.39
+First official release. Changes since the 0.1.38 artifact:
+
+- Adopted the shared test standard: xUnit tests emit TRX everywhere, and the release workflow runs them rather than assuming they were run locally.
+- Updated the test infrastructure baseline (Microsoft.NET.Test.Sdk 18.8.1, xunit.runner.visualstudio 3.1.5).
+- Corrected the documented test command and added a "Running tests" section; the local CI help text no longer describes this public repository as private.
+- Added the release process itself: an official version in `Directory.Build.props`, a publishing release helper, and a tag-triggered workflow that attaches the deployable archive.
 
 ## Reporting a Vulnerability
 
