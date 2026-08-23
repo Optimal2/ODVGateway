@@ -8,7 +8,7 @@ Security issues should be reported privately before public disclosure.
 
 ## Supported Versions
 
-**ODVGateway v0.1.39** is the current supported release and the recommended
+**ODVGateway v0.1.40** is the current supported release and the recommended
 deployment target.
 
 Official releases are tagged `vX.Y.Z` and published with a
@@ -24,14 +24,21 @@ test-standard and dependency updates listed below.
 
 | Version | Security support | Notes |
 | --- | --- | --- |
-| 0.1.39 | :white_check_mark: | Current recommended release and only supported baseline |
+| 0.1.40 | :white_check_mark: | Current recommended release and only supported baseline |
+| 0.1.39 | :x: | Superseded by v0.1.40 release-process hardening |
 | <= 0.1.38 | :x: | OMP-artifact-only builds with no published release; upgrade to v0.1.39 |
 | < 0.1.0 | :x: | Not supported |
 
 ## Recent release context
 
-The most recent releases are listed below for operational context. Only v0.1.39
+The most recent releases are listed below for operational context. Only v0.1.40
 is supported.
+
+### ODVGateway v0.1.40
+Hardening of the release process after an independent review; runtime behaviour
+unchanged. The gate now runs the unit tests, the release refuses a detached HEAD,
+a non-main branch, a missing upstream and a stale local main, and existing tags
+are checked on origin as well as locally.
 
 ### ODVGateway v0.1.39
 First official release. Changes since the 0.1.38 artifact:

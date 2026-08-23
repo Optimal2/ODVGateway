@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 for its `0.1.x` release line.
 
+## [0.1.40] - 2026-08-23
+
+Hardening of the release process after an independent review of v0.1.39. Runtime
+behaviour is unchanged.
+
+### Changed
+
+- The release gate runs the unit tests. Publishing pushes with `--no-verify`, so
+  they were previously skipped locally and first ran in the workflow after the
+  tag was public.
+- The release refuses a detached HEAD, a branch other than `main`, a missing
+  upstream, and a local `main` behind origin. Only "ahead of upstream" was
+  checked before, and a missing upstream made even that pass silently.
+- Existing tags are checked on origin as well as locally.
+- A failed release reports what it left behind and how to undo or finish it.
+- The workflow's build-configuration input works for dispatch runs; a tag always
+  builds Release.
+
+### Fixed
+
+- Documentation that contradicted the process: the README's manual release
+  proposal, `docs/DEV-SETUP.md` claiming the script never publishes, and the
+  version validator's assembly-version note.
+
 ## [0.1.39] - 2026-08-23
 
 First official release. Earlier `0.1.x` versions existed only as OpenModulePlatform
