@@ -1,5 +1,24 @@
 <Project>
   <PropertyGroup>
+    <!--
+      Keep the git commit out of assembly bytes.
+
+      The SDK appends "+<commit sha>" to InformationalVersion, and Source Link is
+      built into the SDK since .NET 8 - no package reference needed - so
+      _GenerateSourceLinkFile embeds the commit and changes the assembly MVID, the
+      PE timestamp and the PDB signature. OMP artifact identity is the manifest
+      version plus a SHA-256 of the payload, so that turned every commit in this
+      repository into "artifact content has changed under the same version" for
+      every component the build touched - and bumping versions to fix it is itself
+      a commit, which invalidates them again.
+
+      Measured 2026-08-23 in OpenModulePlatform: a commit with NO file changes
+      produced a different assembly, and resetting back reproduced the original
+      bytes exactly. This repository ships OMP artifacts, not NuGet packages, so
+      the source revision costs identity and buys nothing. CI keeps it.
+    -->
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <EnableSourceControlManagerQueries Condition="'$(GITHUB_ACTIONS)' != 'true'">false</EnableSourceControlManagerQueries>
     <!-- The official ODVGateway application version, and the single source of
          truth for it. scripts/release.ps1 owns this value: it bumps it, commits
          it, and tags it. Do not hand-edit.
