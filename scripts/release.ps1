@@ -325,13 +325,40 @@ if (-not $Yes) {
     }
 }
 
-Set-ProjectVersion -Path $propsPath -Version $nextVersion
+# Each step below can fail, and each leaves a different amount of work behind.
+# Say which, and say how to undo it - a half-finished release is worse than a
+# failed one only when nobody knows which half finished.
+try {
+    Set-ProjectVersion -Path $propsPath -Version $nextVersion
+}
+catch {
+    Write-Host "RELEASE FAILED while writing the version: $_" -ForegroundColor Red
+    Write-Host '  Nothing was committed. Undo with: git checkout -- Directory.Build.props' -ForegroundColor Red
+    exit 1
+}
+
 & git -C $repoRoot add 'Directory.Build.props'
-if ($LASTEXITCODE -ne 0) { throw 'git add failed.' }
+if ($LASTEXITCODE -ne 0) {
+    Write-Host 'RELEASE FAILED at git add.' -ForegroundColor Red
+    Write-Host '  Undo with: git checkout -- Directory.Build.props' -ForegroundColor Red
+    exit 1
+}
+
 & git -C $repoRoot commit -m "chore(release): $nextVersion"
-if ($LASTEXITCODE -ne 0) { throw 'git commit failed.' }
+if ($LASTEXITCODE -ne 0) {
+    Write-Host 'RELEASE FAILED at git commit.' -ForegroundColor Red
+    Write-Host '  The version file is staged but not committed.' -ForegroundColor Red
+    Write-Host '  Undo with: git restore --staged Directory.Build.props; git checkout -- Directory.Build.props' -ForegroundColor Red
+    exit 1
+}
+
 & git -C $repoRoot tag -a $tag -m "ODVGateway $tag"
-if ($LASTEXITCODE -ne 0) { throw 'git tag failed.' }
+if ($LASTEXITCODE -ne 0) {
+    Write-Host 'RELEASE FAILED at git tag.' -ForegroundColor Red
+    Write-Host '  The release commit exists locally but is untagged and unpushed.' -ForegroundColor Red
+    Write-Host '  Undo with: git reset --hard HEAD~1' -ForegroundColor Red
+    exit 1
+}
 
 if (-not $Publish) {
     Write-Host ''
@@ -344,9 +371,21 @@ if (-not $Publish) {
 # --no-verify: the pre-push hook runs the same local CI this script just ran,
 # and the release commit only changes a version string.
 & git -C $repoRoot push --no-verify origin HEAD
-if ($LASTEXITCODE -ne 0) { throw 'git push (commit) failed.' }
+if ($LASTEXITCODE -ne 0) {
+    Write-Host 'RELEASE FAILED at git push (commit).' -ForegroundColor Red
+    Write-Host "  The commit and tag $tag exist locally only; nothing was published." -ForegroundColor Red
+    Write-Host "  Retry the push, or undo with: git tag -d $tag; git reset --hard HEAD~1" -ForegroundColor Red
+    exit 1
+}
+
 & git -C $repoRoot push --no-verify origin $tag
-if ($LASTEXITCODE -ne 0) { throw 'git push (tag) failed. The commit is pushed; push the tag manually.' }
+if ($LASTEXITCODE -ne 0) {
+    Write-Host 'RELEASE FAILED at git push (tag).' -ForegroundColor Red
+    Write-Host '  The release COMMIT is already on origin; only the tag is missing, so' -ForegroundColor Red
+    Write-Host '  the workflow has not run and no release was published.' -ForegroundColor Red
+    Write-Host "  Finish with: git push origin $tag" -ForegroundColor Red
+    exit 1
+}
 
 Write-Host ''
 Write-Host "Done. Published release commit and tag $tag." -ForegroundColor Green
