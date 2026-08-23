@@ -1,5 +1,16 @@
 <Project>
   <PropertyGroup>
+    <!-- The official ODVGateway application version, and the single source of
+         truth for it. scripts/release.ps1 owns this value: it bumps it, commits
+         it, and tags it. Do not hand-edit.
+
+         This is deliberately SEPARATE from the OMP artifact version in
+         omp-components.json, the same way OpenDocViewer separates package.json
+         from its artifact version. An OMP artifact-only test build may bump the
+         artifact without an official release, and an official release may happen
+         without an artifact rebuild. Never force the two to match. -->
+    <Version>0.1.38</Version>
+
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <AnalysisLevel>latest</AnalysisLevel>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>

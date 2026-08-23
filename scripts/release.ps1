@@ -46,6 +46,18 @@ param(
     [switch]$SkipSmoke,
     [switch]$SkipValidate,
 
+    # Supplying -ReleaseType turns this from a gate into a release: after the
+    # checks pass it bumps <Version> in Directory.Build.props, commits, and tags.
+    # Without it the script behaves exactly as before and publishes nothing.
+    [ValidateSet('patch', 'minor', 'major')]
+    [string]$ReleaseType = '',
+
+    [switch]$Yes,
+
+    # The approval gate for an official release. Without it the release is
+    # prepared locally and never leaves this machine.
+    [switch]$Publish,
+
     [switch]$WhatIf
 )
 
@@ -87,6 +99,48 @@ function Read-RepositoryVersion {
     catch {
         return '(unknown)'
     }
+}
+
+function Read-ProjectVersion {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $text = Get-Content -LiteralPath $Path -Raw
+    $match = [regex]::Match($text, '<Version>\s*([0-9]+\.[0-9]+\.[0-9]+)\s*</Version>')
+    if (-not $match.Success) {
+        throw "No <Version>X.Y.Z</Version> found in $Path. That element is the official version and release.ps1 owns it."
+    }
+    return $match.Groups[1].Value
+}
+
+function Get-NextVersion {
+    param(
+        [Parameter(Mandatory = $true)][string]$Current,
+        [Parameter(Mandatory = $true)][string]$Type
+    )
+    $parts = $Current.Split('.')
+    $major = [int]$parts[0]; $minor = [int]$parts[1]; $patch = [int]$parts[2]
+    switch ($Type) {
+        'major' { return "$($major + 1).0.0" }
+        'minor' { return "$major.$($minor + 1).0" }
+        default { return "$major.$minor.$($patch + 1)" }
+    }
+}
+
+function Set-ProjectVersion {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Version
+    )
+    $text = Get-Content -LiteralPath $Path -Raw
+    $updated = [regex]::Replace(
+        $text,
+        '<Version>\s*[0-9]+\.[0-9]+\.[0-9]+\s*</Version>',
+        "<Version>$Version</Version>",
+        [System.Text.RegularExpressions.RegexOptions]::None)
+    if ($updated -eq $text) {
+        throw "Failed to update <Version> in $Path."
+    }
+    # No BOM, and keep the file's own newline convention.
+    [System.IO.File]::WriteAllText($Path, $updated, (New-Object System.Text.UTF8Encoding($false)))
 }
 
 $version = Read-RepositoryVersion -Path $componentsPath
@@ -194,15 +248,108 @@ else {
 Write-StepResult -Step 'validate-component-versions.ps1' -Passed $step3Pass -Message $step3Message
 
 # Summary
+$propsPath = Join-Path $repoRoot 'Directory.Build.props'
+$appVersion = Read-ProjectVersion -Path $propsPath
+
 Write-Host ''
-Write-Host "Repository version: $version"
-if ($overallPass) {
-    Write-Host 'RELEASE GATE PASSED' -ForegroundColor Green
-    Write-Host 'All executed checks passed. Publishing still requires explicit human approval.' -ForegroundColor Green
-    exit 0
-}
-else {
+Write-Host "Official application version: $appVersion   (Directory.Build.props)"
+Write-Host "OMP artifact version:         $version   (omp-components.json)"
+Write-Host 'These two are independent by design; never force them to match.'
+
+if (-not $overallPass) {
     Write-Host 'RELEASE GATE FAILED' -ForegroundColor Red
     Write-Host 'Do NOT proceed with release until all checks pass.' -ForegroundColor Red
     exit 1
 }
+
+Write-Host 'RELEASE GATE PASSED' -ForegroundColor Green
+
+if ([string]::IsNullOrWhiteSpace($ReleaseType)) {
+    Write-Host 'Gate only. Pass -ReleaseType patch|minor|major to cut a release.' -ForegroundColor Green
+    exit 0
+}
+
+# ---------------------------------------------------------------------------
+# Release. Everything below runs only when -ReleaseType was supplied.
+# ---------------------------------------------------------------------------
+
+# A release must describe exactly one commit, so the tree has to be clean and
+# pushed first. Releasing a dirty tree produces a tag whose contents exist
+# nowhere else.
+$status = & git -C $repoRoot status --porcelain
+if ($LASTEXITCODE -ne 0) { throw 'git status failed.' }
+if ($status) {
+    Write-Host 'RELEASE ABORTED: the working tree has uncommitted changes.' -ForegroundColor Red
+    Write-Host 'Commit and push them first; this script releases a commit, it does not create one from your edits.' -ForegroundColor Red
+    exit 1
+}
+
+$ahead = & git -C $repoRoot rev-list --count '@{u}..HEAD' 2>$null
+if ($LASTEXITCODE -eq 0 -and $ahead -and [int]$ahead -gt 0) {
+    Write-Host "RELEASE ABORTED: $ahead commit(s) not pushed to upstream." -ForegroundColor Red
+    Write-Host 'Push them first so the tag points at a commit that exists on origin.' -ForegroundColor Red
+    exit 1
+}
+
+$nextVersion = Get-NextVersion -Current $appVersion -Type $ReleaseType
+$tag = "v$nextVersion"
+
+# The workflow reads the notes by exact filename, so a missing file means a
+# release published with an empty body. Fail here instead.
+$notesPath = Join-Path $repoRoot "release-notes/$tag.md"
+if (-not (Test-Path -LiteralPath $notesPath)) {
+    Write-Host "RELEASE ABORTED: release-notes/$tag.md is missing." -ForegroundColor Red
+    Write-Host 'The release workflow uses that file as the release body. Write it first.' -ForegroundColor Red
+    exit 1
+}
+
+$existingTag = & git -C $repoRoot tag --list $tag
+if ($existingTag) {
+    Write-Host "RELEASE ABORTED: tag $tag already exists." -ForegroundColor Red
+    exit 1
+}
+
+Write-Host ''
+Write-Host "Release summary" -ForegroundColor Cyan
+Write-Host "  type:        $ReleaseType"
+Write-Host "  version:     $appVersion -> $nextVersion"
+Write-Host "  tag:         $tag"
+Write-Host "  notes:       release-notes/$tag.md"
+Write-Host "  publish:     $(if ($Publish) { 'YES - commit and tag will be pushed to origin' } else { 'no - prepared locally only' })"
+
+if (-not $Yes) {
+    $answer = Read-Host 'Proceed? (y/N)'
+    if ($answer -ne 'y' -and $answer -ne 'Y') {
+        Write-Host 'Aborted by operator.'
+        exit 1
+    }
+}
+
+Set-ProjectVersion -Path $propsPath -Version $nextVersion
+& git -C $repoRoot add 'Directory.Build.props'
+if ($LASTEXITCODE -ne 0) { throw 'git add failed.' }
+& git -C $repoRoot commit -m "chore(release): $nextVersion"
+if ($LASTEXITCODE -ne 0) { throw 'git commit failed.' }
+& git -C $repoRoot tag -a $tag -m "ODVGateway $tag"
+if ($LASTEXITCODE -ne 0) { throw 'git tag failed.' }
+
+if (-not $Publish) {
+    Write-Host ''
+    Write-Host "Prepared $tag locally. Nothing was pushed." -ForegroundColor Yellow
+    Write-Host "To publish:  git push origin HEAD && git push origin $tag" -ForegroundColor Yellow
+    Write-Host "To undo:     git tag -d $tag; git reset --hard HEAD~1" -ForegroundColor Yellow
+    exit 0
+}
+
+# --no-verify: the pre-push hook runs the same local CI this script just ran,
+# and the release commit only changes a version string.
+& git -C $repoRoot push --no-verify origin HEAD
+if ($LASTEXITCODE -ne 0) { throw 'git push (commit) failed.' }
+& git -C $repoRoot push --no-verify origin $tag
+if ($LASTEXITCODE -ne 0) { throw 'git push (tag) failed. The commit is pushed; push the tag manually.' }
+
+Write-Host ''
+Write-Host "Done. Published release commit and tag $tag." -ForegroundColor Green
+Write-Host 'The Release workflow triggers on the tag and publishes the GitHub release.' -ForegroundColor Green
+Write-Host 'After it finishes, bump the OMP artifact version from the post-release commit.' -ForegroundColor Green
+exit 0

@@ -8,7 +8,10 @@ Security issues should be reported privately before public disclosure.
 
 ## Supported Versions
 
-ODVGateway is currently in the `0.1.x` release line.
+ODVGateway is currently in the `0.1.x` release line. Official releases are tagged
+`vX.Y.Z` and published with a `ODVGateway-vX.Y.Z.zip` archive; the version they
+report is `<Version>` in `Directory.Build.props`, which is separate from the OMP
+artifact version in `omp-components.json`.
 
 | Version | Supported |
 | --- | --- |

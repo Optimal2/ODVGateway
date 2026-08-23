@@ -1,10 +1,20 @@
-name: Release gate
+name: Release
 
-# Release gate is dispatch-only and intentionally does NOT publish anything.
-# It validates that the repository is ready for a manual release. Official
-# ODVGateway releases require explicit human approval and are performed
-# outside this workflow.
+# Publishes an official ODVGateway release when a vX.Y.Z tag is pushed.
+#
+# The rest of this repository's Actions are workflow_dispatch-only by deliberate
+# choice (see AGENTS.md) - the real gate is scripts/local-ci.ps1 before a push.
+# This workflow is the documented exception, for the same reason OpenDocViewer
+# has one: publishing a release means building artifacts and attaching them to a
+# tag, which has to happen on a clean machine from the tagged commit, not from
+# whatever a developer had on disk.
+#
+# The approval gate is a maintainer running scripts/release.ps1 -Publish. That
+# creates the tag; this workflow only reacts to it.
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       configuration:
@@ -15,26 +25,27 @@ on:
           - Release
         default: 'Release'
         required: true
-      run_smoke:
-        description: 'Run smoke tests'
-        type: boolean
-        default: true
-        required: true
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  release-gate:
+  release:
     runs-on: windows-latest
-    # Uncomment the line below when the organization has configured GitHub
-    # environment protection rules for the release environment.
-    # environment: release
     steps:
+      - name: Validate tag format
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          tag='${{ github.ref_name }}'
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag '$tag' does not match the required vX.Y.Z pattern." >&2
+            exit 1
+          fi
+
       - name: Check out ODVGateway
         uses: actions/checkout@v4
         with:
-          path: ODVGateway
           fetch-depth: 0
 
       - name: Setup .NET
@@ -43,44 +54,80 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Show .NET SDK info
-        working-directory: ODVGateway
         run: dotnet --info
 
+      # The tag and the version in the tree must agree. A mismatch means the tag
+      # was moved or created by hand, and the published binaries would then carry
+      # a version the release name contradicts.
+      - name: Verify tag matches Directory.Build.props
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          $text = Get-Content Directory.Build.props -Raw
+          $m = [regex]::Match($text, '<Version>\s*([0-9]+\.[0-9]+\.[0-9]+)\s*</Version>')
+          if (-not $m.Success) { throw 'No <Version> element found in Directory.Build.props.' }
+          $version = $m.Groups[1].Value
+          $tag = '${{ github.ref_name }}'
+          if ("v$version" -ne $tag) {
+            throw "Tag $tag does not match Directory.Build.props version $version."
+          }
+          Write-Host "Tag $tag matches version $version."
+
       - name: Restore
-        working-directory: ODVGateway
         run: dotnet restore src/ODVGateway/ODVGateway.csproj
 
       - name: Build
-        working-directory: ODVGateway
-        run: dotnet build src/ODVGateway/ODVGateway.csproj --configuration ${{ github.event.inputs.configuration }} --no-restore
+        run: dotnet build src/ODVGateway/ODVGateway.csproj --configuration Release --no-restore
 
       - name: Unit tests
-        working-directory: ODVGateway
-        run: dotnet test tests/ODVGateway.Tests/ODVGateway.Tests.csproj --configuration ${{ github.event.inputs.configuration }} --logger trx --results-directory TestResults
+        run: dotnet test tests/ODVGateway.Tests/ODVGateway.Tests.csproj --configuration Release --logger trx --results-directory TestResults
 
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: release-gate-test-results
-          path: ODVGateway/TestResults
+          name: test-results
+          path: TestResults
+          if-no-files-found: warn
 
       - name: Smoke test
-        if: github.event.inputs.run_smoke == 'true'
-        working-directory: ODVGateway
-        shell: powershell
-        run: powershell -File scripts/smoke-test.ps1 -Port 5210
+        shell: pwsh
+        run: pwsh -File scripts/smoke-test.ps1 -Port 5210
 
       - name: Validate component versions
-        working-directory: ODVGateway
-        shell: powershell
-        run: powershell -File scripts/validate-component-versions.ps1 -BaseCommit 'origin/main'
+        shell: pwsh
+        run: pwsh -File scripts/validate-component-versions.ps1 -BaseCommit 'origin/main'
 
-      - name: Summary
-        working-directory: ODVGateway
-        shell: powershell
+      # Framework-dependent: the target is IIS on a host that already has the
+      # ASP.NET Core hosting bundle, which is how the gateway is deployed today.
+      - name: Publish application
+        run: dotnet publish src/ODVGateway/ODVGateway.csproj --configuration Release --no-build --output publish/ODVGateway
+
+      - name: Package release archive
+        shell: pwsh
         run: |
-          $components = Get-Content -Path omp-components.json | ConvertFrom-Json -Depth 8
-          Write-Host "Repository version: $($components.repositoryVersion)"
-          Write-Host "Component version: $($components.components[0].version)"
-          Write-Host "All checks passed - ready for manual release."
+          $tag = '${{ github.ref_name }}'
+          if ([string]::IsNullOrWhiteSpace($tag) -or $tag -notmatch '^v[0-9]') { $tag = 'local' }
+          Compress-Archive -Path 'publish/ODVGateway/*' -DestinationPath "ODVGateway-$tag.zip" -Force
+          Get-ChildItem "ODVGateway-$tag.zip" | ForEach-Object { Write-Host "$($_.Name)  $([math]::Round($_.Length/1MB,2)) MB" }
+
+      - name: Verify release notes exist
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          $path = "release-notes/${{ github.ref_name }}.md"
+          if (-not (Test-Path -LiteralPath $path)) {
+            throw "$path is missing. It is the release body; publishing without it would produce an empty release."
+          }
+          Write-Host "Found $path."
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ODVGateway ${{ github.ref_name }}
+          body_path: release-notes/${{ github.ref_name }}.md
+          draft: false
+          files: |
+            ODVGateway-${{ github.ref_name }}.zip
