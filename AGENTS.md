@@ -31,6 +31,32 @@ This is a **public** repository, but its GitHub Actions CI is `workflow_dispatch
 
 Unit tests live in `tests/ODVGateway.Tests` (xUnit, `net10.0`), outside `src/` so they are never packaged into the web-app artifact. They are pure in-memory Tier D tests (no filesystem, network, or live HTTP dependencies) and run as the second step of `scripts/local-ci.ps1`, right after `dotnet build` and before the smoke test.
 
+## Dependency pins - this repo is the one WITHOUT central package management
+
+Every other .NET repository in the family (OpenModulePlatform, IbsPackager, LogSearch,
+EArkivChecker, Dokumentbibliotek, VajSkrivare, iKrock2) pins package versions centrally in a
+`Directory.Packages.props`. **ODVGateway does not** - it has a `Directory.Build.props` (analysis
+and version properties only) and pins inline in the two `.csproj` files. Adding a package here
+means adding a `Version=` attribute; do not assume a central pin exists.
+
+That difference has an observable consequence, so treat it as a known state rather than
+rediscovering it: because a family-wide pin bump does not reach this repository automatically,
+ODVGateway is the only repo that lags behind on shared pins. Measured 2026-08-26 across all
+eight .NET repos:
+
+| Package | Here | Rest of the family |
+| --- | --- | --- |
+| `Microsoft.NET.Test.Sdk` | 18.8.1 | 18.9.0 (7 of 7) |
+| `NLog.Web.AspNetCore` | 6.1.4 | 6.2.0 (4 of 4 that use it) |
+
+`xunit` 2.9.3 and `xunit.runner.visualstudio` 3.1.5 do match the family. When you bump a pin
+here, bump it to the version the rest of the family already carries rather than to whatever is
+newest, unless the task is explicitly a family-wide upgrade.
+
+This repository also stays outside the shared Playwright UI-test tier: the other seven link
+`$(OpenModulePlatformRoot)\tests\shared\Ui\*.cs` into a `*.UiTests` project, ODVGateway does
+not. Its coverage is the Tier D unit tests plus `scripts/smoke-test.ps1`.
+
 ## Releases
 
 Official releases are tagged `vX.Y.Z` and publish a GitHub release with

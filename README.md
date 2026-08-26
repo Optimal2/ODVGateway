@@ -454,9 +454,18 @@ OMP artifact package.
 
 ## Current 0.1.x Scope
 
-The current repository and web component version is `0.1.38`. The module
-definition version remains `0.1.11` because the public OMP module contract did
-not need a schema change for the later runtime hardening work.
+The repository and web component version is **`0.1.41`** and the official
+application version (`Directory.Build.props` `<Version>`) is **`0.1.40`** —
+the two lines are independent, as described above. The module definition
+version remains `0.1.11` because the public OMP module contract did not need
+a schema change for the later runtime hardening work.
+
+*(This paragraph names three numbers that move independently and it went stale
+once already — it claimed `0.1.38` while `omp-components.json` had reached
+`0.1.41`. Read the numbers out of `omp-components.json`,
+`Directory.Build.props` and `odvgateway.module-definition.json` rather than
+from here, and correct this paragraph when you notice it lagging. All three
+verified 2026-08-26.)*
 
 Included:
 
