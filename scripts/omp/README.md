@@ -1,5 +1,12 @@
 # OMP Object Builder
 
+> **This README is a copy of the canonical `scripts/omp/README.md` from
+> OpenModulePlatform.** Sections that describe tooling ODVGateway does not ship
+> are marked **"Not in this repository"** where they appear. The scripts that do
+> exist here (`bump-version`, `build-repository-objects`,
+> `build-universal-package`, `export-universal-package`, `test-cmd-wrappers`)
+> are synced copies of the OpenModulePlatform originals and behave as described.
+
 ## Convenience Wrappers
 
 Every OMP-compatible repository exposes the same command files in
@@ -82,21 +89,14 @@ The default output folder is `artifacts\universal-packages`. Set
 `OMP_UNIVERSAL_PACKAGE_OUTPUT_DIR` to use a shared package folder without
 hardcoding machine-specific paths in repositories.
 
-Use `validate-module-definitions.ps1` before packaging or in CI to catch
-manifest/module-definition version drift and stale embedded SQL content. If you
-changed a source `.sql` file referenced by a module definition, refresh the
-embedded JSON first:
-
-```powershell
-.\scripts\dev\embed-module-definition-sql.ps1
-.\scripts\omp\validate-module-definitions.ps1
-```
-
-If you did not change module-definition source SQL, validation alone is enough:
-
-```powershell
-.\scripts\omp\validate-module-definitions.ps1
-```
+> **Not in this repository: `validate-module-definitions.ps1` and
+> `scripts\dev\embed-module-definition-sql.ps1`.** The canonical README this
+> file is copied from describes a SQL embed/validate flow for module
+> definitions. ODVGateway ships neither script: its only module definition
+> (`odvgateway.module-definition.json`) has an empty `sqlScripts` array, so
+> there is no embedded SQL to refresh. The scripts live in OpenModulePlatform.
+> Manifest/module-definition version drift in this repository is caught by
+> `scripts\validate-component-versions.ps1` (below) instead.
 
 Use `validate-component-versions.ps1` in CI or before packaging to catch
 manifest drift that would produce mismatched or unbuildable artifacts. It
@@ -256,6 +256,15 @@ repositories that contain both `omp-components.json` and
 are below the current user's temp directory.
 
 ## Comparing Package Generation Paths
+
+> **Not in this repository: the comparison helpers below.** None of
+> `merge-universal-package-objects.ps1`, `compare-universal-package-data.ps1`,
+> `compare-artifact-payload-files.ps1`, or `export-universal-object-root.ps1`
+> exist in ODVGateway; they live in OpenModulePlatform's `scripts/omp`. This
+> section is kept because the README is a copy of the canonical one. To compare
+> an ODVGateway package against another generation path, run these helpers from
+> an OpenModulePlatform checkout and point them at this repository's package
+> output.
 
 Universal package validation should compare the import-relevant portable object
 data, not the outer zip bytes. Zip timestamps, compression metadata, and the
