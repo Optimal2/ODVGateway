@@ -125,13 +125,18 @@ What the guard protects against:
   declared module definition version. This is reported as a **warning** because
   it means the component expects a newer module definition than the manifest
   provides.
-- A change to the `OpenModulePlatform.Web.Shared` binary that is not matched
-  by a cascade-bump of its declared consumers (Check 11). The validator builds
-  `OpenModulePlatform.Web.Shared.dll` from both the parent commit and HEAD with
-  identical settings in the same environment and compares the two SHA-256
-  hashes. Because both hashes come from the same runner, the comparison is
-  environment-stable and does not rely on a committed absolute baseline. If the
-  binary changed and no consumer was bumped, the check fails.
+> **Not in this repository: the Web.Shared cascade guard.** This section used to
+> describe a "Check 11" that compares `OpenModulePlatform.Web.Shared.dll` hashes
+> across the parent commit and HEAD. **ODVGateway does not have that check, and
+> cannot have it.** Measured 2026-08-28 against `scripts/validate-component-versions.ps1`
+> (965 lines) at `315e282`: the script implements Check 1–10 only and contains zero
+> references to `Web.Shared`. That is correct, not a gap — ODVGateway is deliberately
+> standalone from OMP Web.Shared: `omp-components.json` has no `sharedDependencies`
+> block, no `.csproj` references `OpenModulePlatform.Web.Shared.csproj`, and there is
+> no Check 14 delegation. Do not port the check here, and do not cite a "Check 11" for
+> this repository. The Web.Shared cascade guards (Check 11 and Check 14) live in
+> OpenModulePlatform and apply to its six declared consumers — IbsPackager, LogSearch,
+> EArkivChecker, Dokumentbibliotek, VajSkrivare and iKrock2 — not to ODVGateway.
 
 If the guard fails:
 
