@@ -36,7 +36,8 @@ public sealed class OpenDocViewerIndexRenderer
             _logger.LogWarning("OpenDocViewer dist path is not configured or could not be found.");
             return GatewayHtml.StatusPage(
                 "OpenDocViewer dist folder was not found",
-                "Configure ODVGateway:OpenDocViewerDistPath so the gateway can serve the OpenDocViewer web app.");
+                "Configure ODVGateway:OpenDocViewerDistPath so the gateway can serve the OpenDocViewer web app.",
+                StatusCodes.Status503ServiceUnavailable);
         }
 
         var indexPath = Path.Join(distPath, "index.html");
@@ -107,7 +108,8 @@ public sealed class OpenDocViewerIndexRenderer
         _logger.LogWarning(ex, "OpenDocViewer index file could not be read at {IndexPath}.", indexPath);
         return GatewayHtml.StatusPage(
             "OpenDocViewer index.html was not found",
-            "The OpenDocViewer dist folder was found, but index.html could not be read. Reinstall or republish the OpenDocViewer dist package.");
+            "The OpenDocViewer dist folder was found, but index.html could not be read. Reinstall or republish the OpenDocViewer dist package.",
+            StatusCodes.Status503ServiceUnavailable);
     }
 
     private static string SerializeForInlineScript<T>(T value)

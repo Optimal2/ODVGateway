@@ -1,7 +1,7 @@
 {
   "formatVersion": 1,
   "moduleKey": "odvgateway",
-  "definitionVersion": "0.1.11",
+  "definitionVersion": "0.1.12",
   "module": {
     "displayName": "ODVGateway",
     "moduleType": "WebAppModule",
@@ -27,7 +27,7 @@
       "targetName": "odvgateway",
       "relativePathTemplate": "odvgateway/web/{version}",
       "minVersion": "0.1.11",
-      "maxVersion": null
+      "maxVersion": "0.1.42"
     }
   ],
   "artifactConfigurationFiles": [

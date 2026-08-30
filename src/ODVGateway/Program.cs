@@ -151,11 +151,14 @@ app.MapGet("/health", (
     var currentOptions = options.Value;
     var resolvedDistPath = resolver.ResolveDistPath();
     var exposeDistPath = currentOptions.ExposeOpenDocViewerDistPathInHealth;
+    var distAvailable = !string.IsNullOrWhiteSpace(resolvedDistPath);
+    // Follow the ASP.NET Core health-check convention: a degraded service answers
+    // 503 so status-code-based monitors see the truth, not just the payload.
     return Results.Json(new
     {
-        status = string.IsNullOrWhiteSpace(resolvedDistPath) ? "degraded" : "ok",
+        status = distAvailable ? "ok" : "degraded",
         openDocViewerDistPath = exposeDistPath ? resolvedDistPath : null,
-        openDocViewerDistAvailable = !string.IsNullOrWhiteSpace(resolvedDistPath),
+        openDocViewerDistAvailable = distAvailable,
         requireExplicitOpenDocViewerDistPath = currentOptions.RequireExplicitOpenDocViewerDistPath,
         activeSessions = sessions.Count,
         maxConcurrentSessions = sessions.MaxConcurrentSessions,
@@ -207,7 +210,7 @@ app.MapGet("/health", (
             currentOptions.RemoteInlineSources.RetryBaseDelayMs,
             currentOptions.RemoteInlineSources.Extensions
         }
-    });
+    }, statusCode: distAvailable ? StatusCodes.Status200OK : StatusCodes.Status503ServiceUnavailable);
 });
 
 app.MapPost("/prep", async (
@@ -461,7 +464,8 @@ static async Task<IResult> RenderViewerAsync(
 
         return GatewayHtml.StatusPage(
             "ODVGateway",
-            "The gateway is running, but no WebClient sessiondata query parameter was supplied.");
+            "The gateway is running, but no WebClient sessiondata query parameter was supplied.",
+            StatusCodes.Status400BadRequest);
     }
 
     WebClientSessionData sessionData;
@@ -492,7 +496,8 @@ static async Task<IResult> RenderViewerAsync(
         logger.LogWarning("No prepared gateway session found for decoded WebClient sessiondata.");
         return GatewayHtml.StatusPage(
             "Prepared ODVGateway session was not found",
-            "The viewer was opened without a matching /prep call, or the in-memory gateway session has expired. Open the document from WebClient again.");
+            "The viewer was opened without a matching /prep call, or the in-memory gateway session has expired. Open the document from WebClient again.",
+            StatusCodes.Status404NotFound);
     }
 
     if (options.Value.UseBundleUrlHandoff)

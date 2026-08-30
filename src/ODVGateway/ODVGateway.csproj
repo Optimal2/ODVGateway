@@ -15,6 +15,10 @@
     <PackageReference Include="NLog.Web.AspNetCore" Version="6.1.4" />
   </ItemGroup>
   <ItemGroup>
+    <!-- Lets tests/ODVGateway.Tests probe the top-level Program via WebApplicationFactory. -->
+    <InternalsVisibleTo Include="ODVGateway.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <!-- Packaging/ holds the OMP artifact configuration file shipped inside the
          artifact package (configuration/appsettings.json), not in the payload. -->
     <Content Remove="Packaging/**" />

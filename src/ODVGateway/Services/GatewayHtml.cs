@@ -4,7 +4,7 @@ namespace ODVGateway.Services;
 
 public static class GatewayHtml
 {
-    public static IResult StatusPage(string title, string message)
+    public static IResult StatusPage(string title, string message, int statusCode)
     {
         var encodedTitle = WebUtility.HtmlEncode(title);
         var encodedMessage = WebUtility.HtmlEncode(message);
@@ -51,6 +51,6 @@ public static class GatewayHtml
 </html>
 """;
 
-        return Results.Content(html, "text/html; charset=utf-8");
+        return Results.Content(html, "text/html; charset=utf-8", statusCode: statusCode);
     }
 }

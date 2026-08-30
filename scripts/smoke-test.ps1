@@ -297,17 +297,21 @@ try {
         throw "ODVGateway process exited early with code $($script:process.ExitCode)."
     }
 
-    # Wait for readiness.
+    # Wait for readiness. /health answers 503 when the dist folder is missing
+    # (degraded); that still means the gateway itself is up and answering.
     Write-Host "Polling /health for up to $StartupTimeoutSeconds seconds..."
     $healthResponse = Invoke-WithRetry -MaxAttempts $StartupTimeoutSeconds -DelayMilliseconds 1000 -ScriptBlock {
-        $response = Invoke-WebRequest -Uri "$($script:baseUrl)/health" -Method GET -UseBasicParsing -TimeoutSec 5
-        if ($response.StatusCode -ne 200) {
+        $response = Invoke-SmokeWebRequest -Uri "$($script:baseUrl)/health" -Method GET
+        if ($response.StatusCode -ne 200 -and $response.StatusCode -ne 503) {
             throw "Unexpected status code: $($response.StatusCode)"
         }
         return $response
     }
 
     Register-CheckResult -Check 'Gateway readiness (/health)' -Passed $true -Message "status $($healthResponse.StatusCode)"
+    if ($healthResponse.StatusCode -eq 503) {
+        Register-CheckResult -Check 'Gateway health (dist available)' -Passed $false -Message '/health reports degraded: OpenDocViewer dist was not resolved' -WarningOnly
+    }
 
     # Header checks on /health
     $headers = $healthResponse.Headers
