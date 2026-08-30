@@ -70,6 +70,43 @@ public sealed class GatewayHttpStatusTests
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
+
+    [Fact]
+    public async Task Viewer_WhenDistPathIsMissing_Returns503()
+    {
+        // OpenDocViewerIndexRenderer.RenderAsync: no dist path configured. The commit
+        // that added the status codes listed this path, but nothing covered it — a
+        // later edit could drop the code back to 200 and every test would stay green.
+        using var factory = new GatewayFactory(distPath: null, allowFallbackWithoutSession: true);
+        using var client = factory.CreateClient();
+
+        using var response = await client.GetAsync("/");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Viewer_WhenDistExistsButIndexIsMissing_Returns503()
+    {
+        // The second renderer path: the dist folder resolves, but index.html cannot
+        // be read (MissingIndexPage). A different failure with the same answer.
+        var distPath = Path.Join(Path.GetTempPath(), "odvgateway-tests-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(distPath);
+        try
+        {
+            using var factory = new GatewayFactory(distPath, allowFallbackWithoutSession: true);
+            using var client = factory.CreateClient();
+
+            using var response = await client.GetAsync("/");
+
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        }
+        finally
+        {
+            Directory.Delete(distPath, recursive: true);
+        }
+    }
+
     private static string CreateDistDirectory()
     {
         var path = Path.Join(Path.GetTempPath(), "odvgateway-tests-" + Guid.NewGuid().ToString("N"));
@@ -89,10 +126,16 @@ public sealed class GatewayHttpStatusTests
     private sealed class GatewayFactory : WebApplicationFactory<Program>
     {
         private readonly string? _distPath;
+        private readonly bool _allowFallbackWithoutSession;
 
-        public GatewayFactory(string? distPath)
+        // allowFallbackWithoutSession lets a probe reach OpenDocViewerIndexRenderer
+        // without a prepared session. Without it every request to "/" stops at the
+        // 400/404 session guard, so the renderer's own 503 paths were unreachable
+        // from a test — which is exactly why they were shipped untested.
+        public GatewayFactory(string? distPath, bool allowFallbackWithoutSession = false)
         {
             _distPath = distPath;
+            _allowFallbackWithoutSession = allowFallbackWithoutSession;
         }
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -107,7 +150,8 @@ public sealed class GatewayHttpStatusTests
                 {
                     ["ODVGateway:OpenDocViewerDistPath"] = _distPath ?? string.Empty,
                     ["ODVGateway:RequireExplicitOpenDocViewerDistPath"] = "true",
-                    ["ODVGateway:AllowOpenDocViewerFallbackWithoutSession"] = "false"
+                    ["ODVGateway:AllowOpenDocViewerFallbackWithoutSession"] =
+                        _allowFallbackWithoutSession ? "true" : "false"
                 });
             });
         }
