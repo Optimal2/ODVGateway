@@ -41,17 +41,22 @@ means adding a `Version=` attribute; do not assume a central pin exists.
 
 That difference has an observable consequence, so treat it as a known state rather than
 rediscovering it: because a family-wide pin bump does not reach this repository automatically,
-ODVGateway is the only repo that lags behind on shared pins. Measured 2026-08-26 across all
-eight .NET repos:
+a shared pin has to be lifted here by hand, and this repository is where such a pin lags.
+Re-measured 2026-09-02 across all eight .NET repos:
 
-| Package | Here | Rest of the family |
-| --- | --- | --- |
-| `Microsoft.NET.Test.Sdk` | 18.8.1 | 18.9.0 (7 of 7) |
-| `NLog.Web.AspNetCore` | 6.1.4 | 6.2.0 (4 of 4 that use it) |
+| Package | Here | Rest of the family | State |
+| --- | --- | --- | --- |
+| `Microsoft.NET.Test.Sdk` | 18.9.0 | 18.9.0 (7 of 7) | in line |
+| `xunit` | 2.9.3 | 2.9.3 (7 of 7) | in line |
+| `xunit.runner.visualstudio` | 4.0.0 | 4.0.0 (7 of 7) | in line |
+| `NLog.Web.AspNetCore` | 6.1.4 | 6.2.0 (4 of 4 that use it) | **behind** |
 
-`xunit` 2.9.3 and `xunit.runner.visualstudio` 3.1.5 do match the family. When you bump a pin
-here, bump it to the version the rest of the family already carries rather than to whatever is
-newest, unless the task is explicitly a family-wide upgrade.
+Three of those four rows were brought in line by family-wide campaigns, not by this repository
+catching up on its own: `Microsoft.NET.Test.Sdk` reached 18.9.0 on 2026-09-01 and the xunit
+runner reached 4.0.0 on 2026-08-31. `NLog.Web.AspNetCore` is the one pin still behind, in
+`src/ODVGateway/ODVGateway.csproj`. When you bump a pin here, bump it to the version the rest
+of the family already carries rather than to whatever is newest, unless the task is explicitly
+a family-wide upgrade.
 
 This repository also stays outside the shared Playwright UI-test tier: the other seven link
 `$(OpenModulePlatformRoot)\tests\shared\Ui\*.cs` into a `*.UiTests` project, ODVGateway does

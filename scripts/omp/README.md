@@ -128,15 +128,28 @@ What the guard protects against:
 > **Not in this repository: the Web.Shared cascade guard.** This section used to
 > describe a "Check 11" that compares `OpenModulePlatform.Web.Shared.dll` hashes
 > across the parent commit and HEAD. **ODVGateway does not have that check, and
-> cannot have it.** Measured 2026-08-28 against `scripts/validate-component-versions.ps1`
-> (965 lines) at `315e282`: the script implements Check 1–10 only and contains zero
-> references to `Web.Shared`. That is correct, not a gap — ODVGateway is deliberately
-> standalone from OMP Web.Shared: `omp-components.json` has no `sharedDependencies`
-> block, no `.csproj` references `OpenModulePlatform.Web.Shared.csproj`, and there is
-> no Check 14 delegation. Do not port the check here, and do not cite a "Check 11" for
-> this repository. The Web.Shared cascade guards (Check 11 and Check 14) live in
+> cannot have it.** That is correct, not a gap — ODVGateway is deliberately standalone
+> from OMP Web.Shared: `omp-components.json` has no `sharedDependencies` block, no
+> `.csproj` references `OpenModulePlatform.Web.Shared.csproj`, and there is no Check 14
+> delegation. Do not port the check here, and do not cite a "Check 11" for this
+> repository. The Web.Shared cascade guards (Check 11 and Check 14) live in
 > OpenModulePlatform and apply to its six declared consumers — IbsPackager, LogSearch,
 > EArkivChecker, Dokumentbibliotek, VajSkrivare and iKrock2 — not to ODVGateway.
+>
+> **Re-measured 2026-09-02** against `scripts/validate-component-versions.ps1` (1012
+> lines) at `fcfb8ff`. The inventory above was stale: the script now implements
+> **Check 1–10 plus 8b**, and it gained **Check 15** (shared script drift). It still
+> contains zero references to `Web.Shared` and still has no Check 14 delegation, so the
+> conclusion is unchanged.
+>
+> **Check 15 is a different thing from Check 14, and it DOES apply here.** It compares
+> this repository's copies of the shared `scripts/omp/*` files — `bump-version.ps1`
+> above all — against the canonical copies in the neighbouring OpenModulePlatform
+> checkout, by calling `validate-shared-scripts.ps1` there. It is about script drift,
+> not about shared project trees, which is why all eight consumers have it while only
+> the six Web.Shared consumers have Check 14. Note that this validator has no `-Strict`
+> parameter: when the neighbour cannot be resolved, Check 15 warns visibly instead of
+> failing, and it never passes silently.
 
 If the guard fails:
 
