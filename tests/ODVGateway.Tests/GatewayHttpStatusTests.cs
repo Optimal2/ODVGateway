@@ -85,6 +85,36 @@ public sealed class GatewayHttpStatusTests
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
     }
 
+    [Theory]
+    [InlineData(true, HttpStatusCode.ServiceUnavailable)]
+    [InlineData(false, HttpStatusCode.OK)]
+    public async Task Viewer_WithoutConfiguredDistPath_FallbackProbingIsGatedByRequireExplicitFlag(
+        bool requireExplicitDistPath,
+        HttpStatusCode expected)
+    {
+        // Same layout both times: no configured dist path, but a dist under the content
+        // root's wwwroot/odv. RequireExplicitOpenDocViewerDistPath=true must refuse to probe
+        // (503); false is the unset-in-production default and must find it (200).
+        var contentRoot = CreateContentRootWithFallbackDist();
+        try
+        {
+            using var factory = new GatewayFactory(
+                distPath: null,
+                allowFallbackWithoutSession: true,
+                requireExplicitDistPath: requireExplicitDistPath,
+                contentRoot: contentRoot);
+            using var client = factory.CreateClient();
+
+            using var response = await client.GetAsync("/");
+
+            Assert.Equal(expected, response.StatusCode);
+        }
+        finally
+        {
+            DeleteTempDirectory(contentRoot);
+        }
+    }
+
     [Fact]
     public async Task Viewer_WhenDistExistsButIndexIsMissing_Returns503()
     {
@@ -116,8 +146,38 @@ public sealed class GatewayHttpStatusTests
     {
         var path = NewTempDirectoryPath();
         Directory.CreateDirectory(path);
-        File.WriteAllText(Path.Join(path, "index.html"), "<!doctype html><html></html>");
+        try
+        {
+            File.WriteAllText(Path.Join(path, "index.html"), "<!doctype html><html></html>");
+        }
+        catch
+        {
+            // Do not leak an empty directory when the index cannot be written.
+            DeleteTempDirectory(path);
+            throw;
+        }
+
         return path;
+    }
+
+    /// <summary>A content root whose wwwroot/odv holds a dist, so fallback probing has
+    /// something deterministic to find without touching the developer's sibling checkout.</summary>
+    private static string CreateContentRootWithFallbackDist()
+    {
+        var root = NewTempDirectoryPath();
+        var dist = Path.Join(root, "wwwroot", "odv");
+        Directory.CreateDirectory(dist);
+        try
+        {
+            File.WriteAllText(Path.Join(dist, "index.html"), "<!doctype html><html></html>");
+        }
+        catch
+        {
+            DeleteTempDirectory(root);
+            throw;
+        }
+
+        return root;
     }
 
     private static void DeleteTempDirectory(string path)
@@ -140,15 +200,23 @@ public sealed class GatewayHttpStatusTests
     {
         private readonly string? _distPath;
         private readonly bool _allowFallbackWithoutSession;
+        private readonly bool _requireExplicitDistPath;
+        private readonly string? _contentRoot;
 
         // allowFallbackWithoutSession lets a probe reach OpenDocViewerIndexRenderer
         // without a prepared session. Without it every request to "/" stops at the
         // 400/404 session guard, so the renderer's own 503 paths were unreachable
         // from a test — which is exactly why they were shipped untested.
-        public GatewayFactory(string? distPath, bool allowFallbackWithoutSession = false)
+        public GatewayFactory(
+            string? distPath,
+            bool allowFallbackWithoutSession = false,
+            bool requireExplicitDistPath = true,
+            string? contentRoot = null)
         {
             _distPath = distPath;
             _allowFallbackWithoutSession = allowFallbackWithoutSession;
+            _requireExplicitDistPath = requireExplicitDistPath;
+            _contentRoot = contentRoot;
         }
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -157,12 +225,17 @@ public sealed class GatewayHttpStatusTests
             // deterministic: appsettings.Development.json points at a sibling
             // OpenDocViewer checkout that may exist on a developer machine.
             builder.UseEnvironment("Test");
+            if (_contentRoot is not null)
+            {
+                builder.UseContentRoot(_contentRoot);
+            }
+
             builder.ConfigureAppConfiguration((_, configuration) =>
             {
                 configuration.AddInMemoryCollection(new Dictionary<string, string?>
                 {
                     ["ODVGateway:OpenDocViewerDistPath"] = _distPath ?? string.Empty,
-                    ["ODVGateway:RequireExplicitOpenDocViewerDistPath"] = "true",
+                    ["ODVGateway:RequireExplicitOpenDocViewerDistPath"] = _requireExplicitDistPath ? "true" : "false",
                     ["ODVGateway:AllowOpenDocViewerFallbackWithoutSession"] =
                         _allowFallbackWithoutSession ? "true" : "false"
                 });

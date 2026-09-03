@@ -94,6 +94,13 @@ $script:projectFullPath = Join-Path $script:root $ProjectPath
 $script:baseUrl = "http://localhost:$Port"
 $script:process = $null
 $script:smokeConfigPath = Join-Path $script:projectFullPath 'appsettings.Smoke.json'
+# A developer may keep their own appsettings.Smoke.json; it is moved aside before the
+# generated one is written and restored in the cleanup block, never overwritten.
+$script:smokeConfigBackupPath = "$($script:smokeConfigPath).smoke-backup"
+$script:smokeConfigBackedUp = $false
+# Server header values that reveal the hosting stack. One place to extend when a new
+# product name shows up in the wild.
+$script:revealingServerHeaderPattern = 'Kestrel|ASP.NET|IIS|nginx|apache'
 $script:failCount = 0
 $script:warnCount = 0
 $script:requiredCount = 0  # incremented by Register-CheckResult for every non-warning check
@@ -269,7 +276,12 @@ try {
         }
     }
 
-    $smokeConfig | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:smokeConfigPath -Encoding UTF8 -Force
+    if (Test-Path -LiteralPath $script:smokeConfigPath -PathType Leaf) {
+        Move-Item -LiteralPath $script:smokeConfigPath -Destination $script:smokeConfigBackupPath -Force
+        $script:smokeConfigBackedUp = $true
+        Write-Host 'Existing appsettings.Smoke.json moved aside; it is restored when the run ends.'
+    }
+    $smokeConfig | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:smokeConfigPath -Encoding UTF8
 
     # Start ODVGateway on the requested port using the built DLL.
     # This avoids launchSettings.json overriding ASPNETCORE_ENVIRONMENT.
@@ -292,9 +304,11 @@ try {
 
     $script:process = [System.Diagnostics.Process]::Start($startInfo)
 
-    # Give the process a moment to fail fast, then capture any early output.
-    Start-Sleep -Milliseconds 500
-    if ($script:process.HasExited) {
+    # A startup crash (bad config, port in use) normally surfaces within the first half
+    # second; WaitForExit returns as soon as the process dies, so this never waits longer
+    # than it has to. Anything slower is caught by the readiness loop below, which also
+    # checks for an exited process on every attempt.
+    if ($script:process.WaitForExit(500)) {
         $stdout = $script:process.StandardOutput.ReadToEnd()
         $stderr = $script:process.StandardError.ReadToEnd()
         if (-not [string]::IsNullOrWhiteSpace($stdout)) { Write-Host "Process stdout:`n$stdout" }
@@ -306,6 +320,9 @@ try {
     # (degraded); that still means the gateway itself is up and answering.
     Write-Host "Polling /health for up to $StartupTimeoutSeconds seconds..."
     $healthResponse = Invoke-WithRetry -MaxAttempts $StartupTimeoutSeconds -DelayMilliseconds 1000 -ScriptBlock {
+        if ($script:process.HasExited) {
+            throw "ODVGateway process exited during startup with code $($script:process.ExitCode)."
+        }
         $response = Invoke-SmokeWebRequest -Uri "$($script:baseUrl)/health" -Method GET
         if ($response.StatusCode -ne 200 -and $response.StatusCode -ne 503) {
             throw "Unexpected status code: $($response.StatusCode)"
@@ -334,7 +351,7 @@ try {
     Register-CheckResult -Check 'Header: X-Robots-Tag' -Passed ($null -ne $robots) -Message ($robots -join ', ') -WarningOnly
 
     $server = $headers['Server']
-    Register-CheckResult -Check 'Header: Server hidden/non-revealing' -Passed (($null -eq $server) -or [bool]($server -notmatch 'Kestrel|ASP.NET|IIS|nginx|apache')) -Message ($server -join ', ')
+    Register-CheckResult -Check 'Header: Server hidden/non-revealing' -Passed (($null -eq $server) -or [bool]($server -notmatch $script:revealingServerHeaderPattern)) -Message ($server -join ', ')
 
     # CSP warning only
     $csp = $headers['Content-Security-Policy']
@@ -403,5 +420,8 @@ finally {
 
     if (Test-Path -LiteralPath $script:smokeConfigPath -PathType Leaf) {
         Remove-Item -LiteralPath $script:smokeConfigPath -Force -ErrorAction SilentlyContinue
+    }
+    if ($script:smokeConfigBackedUp -and (Test-Path -LiteralPath $script:smokeConfigBackupPath -PathType Leaf)) {
+        Move-Item -LiteralPath $script:smokeConfigBackupPath -Destination $script:smokeConfigPath -Force
     }
 }
