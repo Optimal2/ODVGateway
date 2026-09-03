@@ -297,9 +297,10 @@ try {
     # The target framework is read from the project file so a TFM change cannot leave this
     # script silently looking for a DLL under the old folder.
     $csprojXml = [xml](Get-Content -LiteralPath $csprojPath -Raw -Encoding UTF8)
-    $targetFramework = @($csprojXml.Project.PropertyGroup |
+    $targetFramework = [string]($csprojXml.Project.PropertyGroup |
         ForEach-Object { [string]$_.TargetFramework } |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) })[0]
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Select-Object -First 1)
     if ([string]::IsNullOrWhiteSpace($targetFramework)) {
         throw "Could not read <TargetFramework> from $csprojPath."
     }
