@@ -98,6 +98,8 @@ $script:smokeConfigPath = Join-Path $script:projectFullPath 'appsettings.Smoke.j
 # generated one is written and restored in the cleanup block, never overwritten.
 $script:smokeConfigBackupPath = "$($script:smokeConfigPath).smoke-backup"
 $script:smokeConfigBackedUp = $false
+$script:smokeConfigWritten = $false
+$script:retryAbort = $false
 # Server header values that reveal the hosting stack. One place to extend when a new
 # product name shows up in the wild.
 $script:revealingServerHeaderPattern = 'Kestrel|ASP.NET|IIS|nginx|apache'
@@ -144,7 +146,9 @@ function Invoke-WithRetry {
             return & $ScriptBlock
         }
         catch {
-            if ($attempt -eq $MaxAttempts) {
+            # A block can mark its failure as final (the process is gone, for instance);
+            # retrying that only burns the remaining budget.
+            if ($script:retryAbort -or $attempt -eq $MaxAttempts) {
                 throw
             }
             Start-Sleep -Milliseconds $DelayMilliseconds
@@ -276,12 +280,16 @@ try {
         }
     }
 
+    if (Test-Path -LiteralPath $script:smokeConfigBackupPath -PathType Leaf) {
+        throw "A backup from an interrupted run exists at $($script:smokeConfigBackupPath). Restore or remove it before running the smoke test."
+    }
     if (Test-Path -LiteralPath $script:smokeConfigPath -PathType Leaf) {
-        Move-Item -LiteralPath $script:smokeConfigPath -Destination $script:smokeConfigBackupPath -Force
+        Move-Item -LiteralPath $script:smokeConfigPath -Destination $script:smokeConfigBackupPath
         $script:smokeConfigBackedUp = $true
         Write-Host 'Existing appsettings.Smoke.json moved aside; it is restored when the run ends.'
     }
     $smokeConfig | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:smokeConfigPath -Encoding UTF8
+    $script:smokeConfigWritten = $true
 
     # Start ODVGateway on the requested port using the built DLL.
     # This avoids launchSettings.json overriding ASPNETCORE_ENVIRONMENT.
@@ -330,6 +338,11 @@ try {
     Write-Host "Polling /health for up to $StartupTimeoutSeconds seconds..."
     $healthResponse = Invoke-WithRetry -MaxAttempts $StartupTimeoutSeconds -DelayMilliseconds 1000 -ScriptBlock {
         if ($script:process.HasExited) {
+            $script:retryAbort = $true
+            $stdout = $script:process.StandardOutput.ReadToEnd()
+            $stderr = $script:process.StandardError.ReadToEnd()
+            if (-not [string]::IsNullOrWhiteSpace($stdout)) { Write-Host "Process stdout:`n$stdout" }
+            if (-not [string]::IsNullOrWhiteSpace($stderr)) { Write-Host "Process stderr:`n$stderr" }
             throw "ODVGateway process exited during startup with code $($script:process.ExitCode)."
         }
         # Only a connection failure (no response at all) is worth retrying: the process
@@ -433,7 +446,9 @@ finally {
         $script:process.Dispose()
     }
 
-    if (Test-Path -LiteralPath $script:smokeConfigPath -PathType Leaf) {
+    # Only a file this run generated is removed. If the script failed before the config
+    # step (a build error, say) the file on disk is the developer's own and stays.
+    if ($script:smokeConfigWritten -and (Test-Path -LiteralPath $script:smokeConfigPath -PathType Leaf)) {
         Remove-Item -LiteralPath $script:smokeConfigPath -Force -ErrorAction SilentlyContinue
     }
     if ($script:smokeConfigBackedUp -and (Test-Path -LiteralPath $script:smokeConfigBackupPath -PathType Leaf)) {
