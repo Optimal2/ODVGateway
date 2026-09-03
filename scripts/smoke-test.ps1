@@ -286,7 +286,16 @@ try {
     # Start ODVGateway on the requested port using the built DLL.
     # This avoids launchSettings.json overriding ASPNETCORE_ENVIRONMENT.
     Write-Host "Starting ODVGateway on port $Port..."
-    $assemblyPath = Join-Path $script:projectFullPath "bin/Debug/net10.0/ODVGateway.dll"
+    # The target framework is read from the project file so a TFM change cannot leave this
+    # script silently looking for a DLL under the old folder.
+    $csprojXml = [xml](Get-Content -LiteralPath $csprojPath -Raw -Encoding UTF8)
+    $targetFramework = @($csprojXml.Project.PropertyGroup |
+        ForEach-Object { [string]$_.TargetFramework } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) })[0]
+    if ([string]::IsNullOrWhiteSpace($targetFramework)) {
+        throw "Could not read <TargetFramework> from $csprojPath."
+    }
+    $assemblyPath = Join-Path $script:projectFullPath "bin/Debug/$targetFramework/ODVGateway.dll"
     if (-not (Test-Path -LiteralPath $assemblyPath -PathType Leaf)) {
         throw "Built assembly not found: $assemblyPath. Run dotnet build first."
     }
@@ -323,11 +332,17 @@ try {
         if ($script:process.HasExited) {
             throw "ODVGateway process exited during startup with code $($script:process.ExitCode)."
         }
-        $response = Invoke-SmokeWebRequest -Uri "$($script:baseUrl)/health" -Method GET
-        if ($response.StatusCode -ne 200 -and $response.StatusCode -ne 503) {
-            throw "Unexpected status code: $($response.StatusCode)"
-        }
-        return $response
+        # Only a connection failure (no response at all) is worth retrying: the process
+        # is still binding the port. Any answered status is returned as-is so an
+        # unexpected code fails fast below with the real status and body instead of
+        # hiding behind a generic startup timeout.
+        return Invoke-SmokeWebRequest -Uri "$($script:baseUrl)/health" -Method GET
+    }
+
+    if ($healthResponse.StatusCode -ne 200 -and $healthResponse.StatusCode -ne 503) {
+        $bodyExcerpt = [string]$healthResponse.Content
+        if ($bodyExcerpt.Length -gt 300) { $bodyExcerpt = $bodyExcerpt.Substring(0, 300) + '...' }
+        throw "Unexpected /health status $($healthResponse.StatusCode) during startup. Body: $bodyExcerpt"
     }
 
     Register-CheckResult -Check 'Gateway readiness (/health)' -Passed $true -Message "status $($healthResponse.StatusCode)"
