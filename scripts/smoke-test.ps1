@@ -96,6 +96,7 @@ $script:process = $null
 $script:smokeConfigPath = Join-Path $script:projectFullPath 'appsettings.Smoke.json'
 $script:failCount = 0
 $script:warnCount = 0
+$script:requiredCount = 0  # incremented by Register-CheckResult for every non-warning check
 
 function Register-CheckResult {
     param(
@@ -104,6 +105,10 @@ function Register-CheckResult {
         [string]$Message = '',
         [switch]$WarningOnly
     )
+
+    if (-not $WarningOnly) {
+        $script:requiredCount++
+    }
 
     if ($Passed) {
         Write-SmokeResult -Check $Check -Status 'PASS' -Message $Message
@@ -359,7 +364,7 @@ try {
 
     # Summary
     Write-Host ''
-    $totalRequired = 10  # excludes warnings
+    $totalRequired = $script:requiredCount  # counted as checks register, so it cannot drift from the script body
     $passedRequired = $totalRequired - $script:failCount
     Write-Host "Summary: $passedRequired/$totalRequired required checks passed, $($script:warnCount) warning(s)."
 

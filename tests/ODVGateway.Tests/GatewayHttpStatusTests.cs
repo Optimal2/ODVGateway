@@ -43,7 +43,7 @@ public sealed class GatewayHttpStatusTests
         }
         finally
         {
-            Directory.Delete(distPath, recursive: true);
+            DeleteTempDirectory(distPath);
         }
     }
 
@@ -90,10 +90,10 @@ public sealed class GatewayHttpStatusTests
     {
         // The second renderer path: the dist folder resolves, but index.html cannot
         // be read (MissingIndexPage). A different failure with the same answer.
-        var distPath = Path.Join(Path.GetTempPath(), "odvgateway-tests-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(distPath);
+        var distPath = NewTempDirectoryPath();
         try
         {
+            Directory.CreateDirectory(distPath);
             using var factory = new GatewayFactory(distPath, allowFallbackWithoutSession: true);
             using var client = factory.CreateClient();
 
@@ -103,16 +103,29 @@ public sealed class GatewayHttpStatusTests
         }
         finally
         {
-            Directory.Delete(distPath, recursive: true);
+            DeleteTempDirectory(distPath);
         }
     }
 
+    /// <summary>A fresh, unique path under the temp root. Nothing is created yet, so the
+    /// caller can create it inside its own try block and clean up in finally.</summary>
+    private static string NewTempDirectoryPath()
+        => Path.Join(Path.GetTempPath(), "odvgateway-tests-" + Guid.NewGuid().ToString("N"));
+
     private static string CreateDistDirectory()
     {
-        var path = Path.Join(Path.GetTempPath(), "odvgateway-tests-" + Guid.NewGuid().ToString("N"));
+        var path = NewTempDirectoryPath();
         Directory.CreateDirectory(path);
         File.WriteAllText(Path.Join(path, "index.html"), "<!doctype html><html></html>");
         return path;
+    }
+
+    private static void DeleteTempDirectory(string path)
+    {
+        if (Directory.Exists(path))
+        {
+            Directory.Delete(path, recursive: true);
+        }
     }
 
     private static string EncodeBase64Url(string json)
