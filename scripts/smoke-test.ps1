@@ -302,6 +302,16 @@ try {
         Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
         Select-Object -First 1)
     if ([string]::IsNullOrWhiteSpace($targetFramework)) {
+        # A multi-targeted project declares <TargetFrameworks> (plural) instead, which
+        # builds into one output folder per TFM. Say so explicitly rather than reporting
+        # a generic read failure: this script supports single-target projects only.
+        $targetFrameworks = [string]($csprojXml.Project.PropertyGroup |
+            ForEach-Object { [string]$_.TargetFrameworks } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Select-Object -First 1)
+        if (-not [string]::IsNullOrWhiteSpace($targetFrameworks)) {
+            throw "$csprojPath is multi-targeted (<TargetFrameworks>$targetFrameworks</TargetFrameworks>). This smoke test supports single-target projects only; it needs one <TargetFramework> to locate the built ODVGateway.dll."
+        }
         throw "Could not read <TargetFramework> from $csprojPath."
     }
     $assemblyPath = Join-Path $script:projectFullPath "bin/Debug/$targetFramework/ODVGateway.dll"

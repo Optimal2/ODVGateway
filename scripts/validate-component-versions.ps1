@@ -873,8 +873,10 @@ else {
         $baseDefinitionText = Remove-Utf8Bom -Text ($baseDefinitionTextLines -join "`n")
         $baseDefinitionVersion = $null
         if (-not [string]::IsNullOrWhiteSpace($baseDefinitionText)) {
-            $baseDefinition = ConvertFrom-JsonDocument -Json $baseDefinitionText -Depth $jsonDepth
-            $baseDefinitionVersion = [string](Get-OptionalPropertyValue -Object $baseDefinition -Name 'definitionVersion')
+            # The parsed module-definition document at the base ref. Named distinctly from the
+            # $baseDefinition manifest entries iterated earlier so the two cannot be confused.
+            $baseDefinitionObject = ConvertFrom-JsonDocument -Json $baseDefinitionText -Depth $jsonDepth
+            $baseDefinitionVersion = [string](Get-OptionalPropertyValue -Object $baseDefinitionObject -Name 'definitionVersion')
         }
 
         $definitionBumpPresent = $false
@@ -922,7 +924,7 @@ else {
                     # be updated to at least the new version, otherwise packages can be imported
                     # into environments with an older definition and fail at runtime due to missing
                     # schema/metadata.
-                    Add-ValidationError -Errors $errors -Message "Component '$componentKey' has minModuleDefinitionVersion '$minModuleDefinitionVersion' which must equal the new definitionVersion '$newDefinitionVersion'"
+                    Add-ValidationError -Errors $errors -Message "Component '$componentKey' has minModuleDefinitionVersion '$minModuleDefinitionVersion' which must equal the new definitionVersion '$newDefinitionVersion'."
                 }
             }
         }
