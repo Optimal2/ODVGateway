@@ -70,7 +70,7 @@ function Test-ResponseLeaks {
     }
 
     $leakPatterns = @(
-        '\\[a-zA-Z]:\\',          # Windows local paths
+        '[a-zA-Z]:\\',            # Windows local paths (drive letter, colon, backslash)
         '\\\\[a-zA-Z0-9_-]+',      # UNC paths
         'at [A-Za-z0-9_]+\(',       # Stack frames
         'Exception:',              # Exception class names

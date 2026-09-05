@@ -13,11 +13,23 @@ omp-components.json component version: it is the official release version, owned
 by scripts/release.ps1, and an artifact-only build may bump one without the
 other. OMP artifact identity is determined by the component manifest version plus
 SHA-256 content hash, not by the application version.
+
+Check 15 (shared script drift) needs the OpenModulePlatform repository on disk.
+It is located through the OpenModulePlatformRoot environment variable; when that
+is not set, the script assumes a sibling directory named 'OpenModulePlatform'
+next to this repository. A clone under any other name must set the variable, or
+Check 15 reports "not verified" (a warning, or an error with -Strict).
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $false)]
-    [string]$BaseCommit = ''
+    [string]$BaseCommit = '',
+
+    # Treats "could not be checked" conditions in Check 15 as errors instead of
+    # warnings. A plain local run without the OpenModulePlatform sibling can
+    # omit it and still validate versions.
+    [Parameter(Mandatory = $false)]
+    [switch]$Strict
 )
 
 $ErrorActionPreference = 'Stop'
@@ -848,8 +860,13 @@ else {
             $manifestBumpPresent = -not [string]::Equals($baseManifestDefinitionVersion, $headManifestDefinitionVersion, [StringComparison]::Ordinal)
         }
 
-        $headDefinitionText = Get-Content -LiteralPath (Resolve-RepositoryPath -Path $relativeDefinitionPath -BasePath $repositoryRoot) -Raw -Encoding UTF8
-        $headDefinition = ConvertFrom-JsonDocument -Json $headDefinitionText -Depth $jsonDepth
+        # The HEAD definition was already read and parsed for Check 4; reuse it.
+        # A module missing from the cache had no readable definition file, which
+        # Check 4 has already reported as an error.
+        if (-not $moduleDefinitionObjectsByKey.ContainsKey($moduleKey)) {
+            continue
+        }
+        $headDefinition = $moduleDefinitionObjectsByKey[$moduleKey]
         $headDefinitionVersion = [string](Get-OptionalPropertyValue -Object $headDefinition -Name 'definitionVersion')
 
         $baseDefinitionTextLines = @(Invoke-GitQuiet -Arguments @('show', "$baseRef`:$relativeDefinitionPath"))
@@ -1083,32 +1100,28 @@ if ($transitiveCheckCount -gt 0 -or $transitiveErrorCount -gt 0) {
 # nothing held them that way: a stale copy looks green locally and only surfaces
 # when a bump behaves differently here than in a neighbouring repository -
 # typically mid-incident. Same neighbour resolution and Strict semantics as
-# Check 14; the guard is CALLED from the platform repository rather than copied
-# here, because a copied guard would be subject to the drift it detects.
+# Check 14 in the sibling repositories; the guard is CALLED from the platform
+# repository rather than copied here, because a copied guard would be subject
+# to the drift it detects. The platform repository is found through
+# $env:OpenModulePlatformRoot, else assumed to be the sibling directory named
+# 'OpenModulePlatform' (see the script help); a clone under another name
+# without the variable set is reported below as "not verified".
 $check15OmpRoot = $env:OpenModulePlatformRoot
 if ([string]::IsNullOrWhiteSpace($check15OmpRoot)) {
     $check15OmpRoot = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot '..\OpenModulePlatform'))
 }
-# This validator has no -Strict parameter (it had no Check 14 wiring to
-# introduce one). Read it defensively rather than assuming: under
-# Set-StrictMode, referencing a variable that was never set is a terminating
-# error, and a guard that kills the validator is worse than no guard.
-$check15Strict = $false
-if (Get-Variable -Name 'Strict' -ErrorAction SilentlyContinue) {
-    $check15Strict = [bool](Get-Variable -Name 'Strict' -ValueOnly)
-}
 $check15Script = Join-Path $check15OmpRoot 'scripts\omp\validate-shared-scripts.ps1'
 if (Test-Path -LiteralPath $check15Script -PathType Leaf) {
-    & $check15Script -ConsumerRepositoryRoot $repositoryRoot -PlatformRepositoryRoot $check15OmpRoot -Strict:$check15Strict
+    & $check15Script -ConsumerRepositoryRoot $repositoryRoot -PlatformRepositoryRoot $check15OmpRoot -Strict:$Strict
     if ($LASTEXITCODE -ne 0) {
         Add-ValidationError -Errors $errors -Message 'Check 15 (shared script drift) failed; see the Check 15 lines above.'
     }
 }
-elseif ($check15Strict) {
-    Add-ValidationError -Errors $errors -Message "Check 15: canonical script not found at '$check15Script'; shared script drift could not be checked. Strict mode treats a guard that could not run as an error."
+elseif ($Strict) {
+    Add-ValidationError -Errors $errors -Message "Check 15: canonical script not found at '$check15Script'; shared script drift could not be checked (set OpenModulePlatformRoot if the platform repository is cloned under another name). Strict mode treats a guard that could not run as an error."
 }
 else {
-    Write-Warning "Check 15: NOT VERIFIED - canonical script not found at '$check15Script'."
+    Write-Warning "Check 15: NOT VERIFIED - canonical script not found at '$check15Script' (set OpenModulePlatformRoot if the platform repository is cloned under another name)."
 }
 
 if ($warnings.Count -gt 0) {
