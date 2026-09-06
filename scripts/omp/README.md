@@ -142,14 +142,19 @@ What the guard protects against:
 > contains zero references to `Web.Shared` and still has no Check 14 delegation, so the
 > conclusion is unchanged.
 >
+> **Canonicalized 2026-09-06** (campaign kanonisera-versionsskripten-och-vakta-driften):
+> the validator moved to `scripts/omp/validate-component-versions.ps1`, the stable
+> check numbers are defined in `docs/VALIDATOR_CHECKS.md` in the OpenModulePlatform
+> repository, and this repository gained Checks 12, 13 and 16 plus `-SelfTest`.
+>
 > **Check 15 is a different thing from Check 14, and it DOES apply here.** It compares
 > this repository's copies of the shared `scripts/omp/*` files — `bump-version.ps1`
-> above all — against the canonical copies in the neighbouring OpenModulePlatform
-> checkout, by calling `validate-shared-scripts.ps1` there. It is about script drift,
-> not about shared project trees, which is why all eight consumers have it while only
-> the six Web.Shared consumers have Check 14. Note that this validator has no `-Strict`
-> parameter: when the neighbour cannot be resolved, Check 15 warns visibly instead of
-> failing, and it never passes silently.
+> and `validate-component-versions.helpers.ps1` — against the canonical copies in the
+> neighbouring OpenModulePlatform checkout, by calling `validate-shared-scripts.ps1`
+> there. It is about script drift, not about shared project trees, which is why all
+> eight consumers have it while only the six Web.Shared consumers have Check 14. When
+> the neighbour cannot be resolved, Check 15 warns visibly (and fails under `-Strict`,
+> which local CI and the pre-push hook use); it never passes silently.
 
 If the guard fails:
 
