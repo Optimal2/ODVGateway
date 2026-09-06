@@ -18,12 +18,26 @@
 
 .PARAMETER StartupTimeoutSeconds
     Maximum time to wait for the gateway to respond on /health.
+
+.PARAMETER LeakPatterns
+    Regular expressions used to detect sensitive details in response bodies.
+    Supply an array to replace the default patterns.
 #>
 [CmdletBinding()]
 param(
     [int]$Port = 5210,
     [string]$ProjectPath = 'src/ODVGateway',
-    [int]$StartupTimeoutSeconds = 20
+    [int]$StartupTimeoutSeconds = 20,
+    [string[]]$LeakPatterns = @(
+        '[a-zA-Z]:\\',                       # Windows local paths
+        '\\\\[a-zA-Z0-9_-]+',                 # UNC paths
+        '\bat\s+[A-Za-z0-9_]+\(',             # Stack frames
+        '\b[A-Za-z0-9_.]*Exception\s*:',       # Exception details
+        '\bConnectionString\s*=',             # Connection-string assignments
+        '\bServer\s*=[^;]+;\s*Database\s*=',  # SQL connection strings
+        '\bat\s+System\.[A-Za-z0-9.]+',        # Runtime stack frames
+        '\bat\s+Microsoft\.[A-Za-z0-9.]+'      # Framework stack frames
+    )
 )
 
 $ErrorActionPreference = 'Stop'
@@ -69,18 +83,7 @@ function Test-ResponseLeaks {
         return $null
     }
 
-    $leakPatterns = @(
-        '[a-zA-Z]:\\',            # Windows local paths (drive letter, colon, backslash)
-        '\\\\[a-zA-Z0-9_-]+',      # UNC paths
-        'at [A-Za-z0-9_]+\(',       # Stack frames
-        'Exception:',              # Exception class names
-        'ConnectionString',        # Connection-string leaks
-        'Server=[^;]+;Database=',  # SQL connection strings
-        'System\.[A-Za-z0-9.]+',   # .NET type names
-        'Microsoft\.[A-Za-z0-9.]+' # Microsoft type names
-    )
-
-    foreach ($pattern in $leakPatterns) {
+    foreach ($pattern in $LeakPatterns) {
         if ($Body -match $pattern) {
             return "Potential leak detected in the $Context body: matched '$pattern'"
         }
@@ -272,7 +275,7 @@ try {
 
     # Build
     Write-Host "Building ODVGateway..."
-    & dotnet build "$csprojPath" -c Debug 2>&1 | Tee-Object -Variable buildOutput | Write-Host
+    & dotnet build "$csprojPath" -c Debug
     if ($LASTEXITCODE -ne 0) {
         throw "dotnet build failed with exit code $LASTEXITCODE"
     }
@@ -349,14 +352,18 @@ try {
     $startInfo.Environment['ASPNETCORE_CONTENTROOT'] = $script:projectFullPath
 
     $script:process = [System.Diagnostics.Process]::Start($startInfo)
+    # Drain both pipes immediately, including while readiness/HTTP checks run.
+    # ReadToEndAsync works on Windows PowerShell 5.1 without runspace callbacks.
+    $stdoutTask = $script:process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $script:process.StandardError.ReadToEndAsync()
 
     # A startup crash (bad config, port in use) normally surfaces within the first half
     # second; WaitForExit returns as soon as the process dies, so this never waits longer
     # than it has to. Anything slower is caught by the readiness loop below, which also
     # checks for an exited process on every attempt.
     if ($script:process.WaitForExit(500)) {
-        $stdout = $script:process.StandardOutput.ReadToEnd()
-        $stderr = $script:process.StandardError.ReadToEnd()
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
         if (-not [string]::IsNullOrWhiteSpace($stdout)) { Write-Host "Process stdout:`n$stdout" }
         if (-not [string]::IsNullOrWhiteSpace($stderr)) { Write-Host "Process stderr:`n$stderr" }
         throw "ODVGateway process exited early with code $($script:process.ExitCode)."
@@ -368,8 +375,8 @@ try {
     $healthResponse = Invoke-WithRetry -MaxAttempts $StartupTimeoutSeconds -DelayMilliseconds 1000 -ScriptBlock {
         if ($script:process.HasExited) {
             $script:retryAbort = $true
-            $stdout = $script:process.StandardOutput.ReadToEnd()
-            $stderr = $script:process.StandardError.ReadToEnd()
+            $stdout = $stdoutTask.GetAwaiter().GetResult()
+            $stderr = $stderrTask.GetAwaiter().GetResult()
             if (-not [string]::IsNullOrWhiteSpace($stdout)) { Write-Host "Process stdout:`n$stdout" }
             if (-not [string]::IsNullOrWhiteSpace($stderr)) { Write-Host "Process stderr:`n$stderr" }
             throw "ODVGateway process exited during startup with code $($script:process.ExitCode)."
