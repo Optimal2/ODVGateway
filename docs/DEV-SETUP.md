@@ -78,7 +78,7 @@ This runs:
 1. `dotnet build` (Release configuration)
 2. `dotnet test tests/ODVGateway.Tests` (unit tests)
 3. `scripts/smoke-test.ps1` (starts the gateway, checks /health, security headers, error responses)
-4. `scripts/validate-component-versions.ps1` (`omp-components.json` manifest check)
+4. `scripts/omp/validate-component-versions.ps1` (`omp-components.json` manifest check)
 
 GitHub Actions CI is `workflow_dispatch`-only by deliberate choice. ODVGateway is a
 public repository, so Actions would be free, but the project gates on this local CI
@@ -91,7 +91,7 @@ Before a release, run the local release gate as well:
 pwsh scripts/release.ps1
 ```
 
-This runs the local CI checks plus `scripts/validate-component-versions.ps1` to
+This runs the local CI checks plus `scripts/omp/validate-component-versions.ps1` to
 confirm that `omp-components.json` has been updated for any deployable changes.
 Without `-ReleaseType` the script publishes nothing; it only validates that the
 repository is ready. With `-ReleaseType patch|minor|major` it also bumps the

@@ -16,7 +16,7 @@
     1. dotnet build src/ODVGateway/ODVGateway.csproj --configuration <Configuration>
     2. dotnet test tests/ODVGateway.Tests/ODVGateway.Tests.csproj
     3. scripts/smoke-test.ps1 -Port <SmokePort>
-    4. scripts/validate-component-versions.ps1 -BaseCommit 'origin/main'
+    4. scripts/omp/validate-component-versions.ps1 -BaseCommit 'origin/main'
 
     Exit codes: 0 = all executed checks passed, 1 = one or more checks failed.
 
@@ -73,7 +73,7 @@ $repoRoot = Split-Path -Parent $scriptDir
 $projectPath = Join-Path $repoRoot 'src/ODVGateway/ODVGateway.csproj'
 $testProject = Join-Path $repoRoot 'tests/ODVGateway.Tests/ODVGateway.Tests.csproj'
 $smokeScript = Join-Path $scriptDir 'smoke-test.ps1'
-$validatorScript = Join-Path $scriptDir 'validate-component-versions.ps1'
+$validatorScript = Join-Path $scriptDir 'omp\validate-component-versions.ps1'
 $componentsPath = Join-Path $repoRoot 'omp-components.json'
 
 function Write-StepResult {

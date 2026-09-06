@@ -101,7 +101,7 @@ jobs:
 
       - name: Validate component versions
         shell: pwsh
-        run: pwsh -File scripts/validate-component-versions.ps1 -BaseCommit 'origin/main'
+        run: pwsh -File scripts/omp/validate-component-versions.ps1 -BaseCommit 'origin/main'
 
       # Framework-dependent: the target is IIS on a host that already has the
       # ASP.NET Core hosting bundle, which is how the gateway is deployed today.

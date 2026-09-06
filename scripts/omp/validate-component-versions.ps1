@@ -7,6 +7,19 @@ Checks that every component listed in omp-components.json has a valid version,
 points to an existing .csproj project, references a declared module definition,
 and that module definition versions stay in sync with the manifest.
 
+Also verifies that embedded base64-utf8 sqlScripts content in each module
+definition matches the current SQL files on disk (embedded SQL freshness).
+This is a working-tree consistency check and runs with or without -BaseCommit.
+
+The "Check N" numbers are STABLE identifiers shared by every OMP-compatible
+repository: a given number means the same check in every validator. The
+canonical list, including which checks are platform-only or consumer-only by
+design, lives in docs/VALIDATOR_CHECKS.md in the OpenModulePlatform
+repository. The generic helper functions live in
+validate-component-versions.helpers.ps1 next to this script; that file is part
+of the shared core and is kept byte-identical across repositories by the
+shared-script drift guard (Check 15).
+
 This script validates the manifest only. The application version in
 Directory.Build.props (<Version>) is intentionally decoupled from the
 omp-components.json component version: it is the official release version, owned
@@ -24,6 +37,9 @@ Check 15 reports "not verified" (a warning, or an error with -Strict).
 param(
     [Parameter(Mandatory = $false)]
     [string]$BaseCommit = '',
+
+    [Parameter(Mandatory = $false)]
+    [switch]$SelfTest,
 
     # Treats "could not be checked" conditions in Check 15 as errors instead of
     # warnings. A plain local run without the OpenModulePlatform sibling can
@@ -56,235 +72,28 @@ function Get-ScriptDirectory {
     return Split-Path -Parent $scriptPath
 }
 
-function ConvertFrom-JsonDocument {
-    param(
-        [Parameter(Mandatory = $true)][string]$Json,
-        [Parameter(Mandatory = $true)][int]$Depth
-    )
-
-    $command = Get-Command ConvertFrom-Json
-    if ($command.Parameters.ContainsKey('Depth')) {
-        return $Json | ConvertFrom-Json -Depth $Depth
-    }
-
-    return $Json | ConvertFrom-Json
+# The shared validator core. Mandatory, not optional: without it most checks
+# cannot run at all, and a gate that cannot run must not read as a passing one.
+# The helpers file is kept byte-identical across repositories by the
+# shared-script drift guard (Check 15).
+$helpersPath = Join-Path (Get-ScriptDirectory) 'validate-component-versions.helpers.ps1'
+if (-not (Test-Path -LiteralPath $helpersPath -PathType Leaf)) {
+    throw "Shared validator helpers not found: $helpersPath. The helpers file is part of the shared validator core (see docs/VALIDATOR_CHECKS.md in the OpenModulePlatform repository) and must sit next to this script."
 }
-
-function Get-OptionalPropertyValue {
-    param(
-        [Parameter(Mandatory = $true)][object]$Object,
-        [Parameter(Mandatory = $true)][string]$Name
-    )
-
-    $property = $Object.PSObject.Properties[$Name]
-    if ($null -eq $property) {
-        return $null
-    }
-
-    return $property.Value
-}
-
-function Resolve-RepositoryPath {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$BasePath
-    )
-
-    if ([System.IO.Path]::IsPathRooted($Path)) {
-        return [System.IO.Path]::GetFullPath($Path)
-    }
-
-    return [System.IO.Path]::GetFullPath((Join-Path $BasePath $Path))
-}
-
-function Add-ValidationError {
-    param(
-        [Parameter(Mandatory = $true)]
-        [AllowEmptyCollection()]
-        [System.Collections.Generic.List[string]]$Errors,
-        [Parameter(Mandatory = $true)]
-        [string]$Message
-    )
-
-    [void]$Errors.Add($Message)
-}
-
-function Add-ValidationWarning {
-    param(
-        [Parameter(Mandatory = $true)]
-        [AllowEmptyCollection()]
-        [System.Collections.Generic.List[string]]$Warnings,
-        [Parameter(Mandatory = $true)]
-        [string]$Message
-    )
-
-    [void]$Warnings.Add($Message)
-}
-
-function Test-SemverLikeVersion {
-    param(
-        [Parameter(Mandatory = $true)][string]$Value
-    )
-
-    return $Value -match '^\d+\.\d+(?:\.\d+)?$'
-}
-
-function ConvertTo-VersionOrNull {
-    param(
-        [Parameter(Mandatory = $true)][string]$Value
-    )
-
-    $version = $null
-    if ([Version]::TryParse($Value, [ref]$version)) {
-        return $version
-    }
-
-    return $null
-}
-
-function Get-Sha256Hex {
-    param([Parameter(Mandatory = $true)][string]$Text)
-
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($Text)
-    $sha256 = [System.Security.Cryptography.SHA256]::Create()
-    try {
-        $hash = $sha256.ComputeHash($bytes)
-        return ([System.BitConverter]::ToString($hash)).Replace('-', '').ToLowerInvariant()
-    }
-    finally {
-        $sha256.Dispose()
-    }
-}
-
-function Remove-Utf8Bom {
-    <#
-    .SYNOPSIS
-    Removes a leading UTF-8 BOM from a string so it can be parsed as JSON or SQL.
-    Git may preserve BOMs written by some editors/encodings, and ConvertFrom-Json
-    treats a BOM as an unexpected character.
-    IMPORTANT: Must use $Text[0] -eq [char]0xFEFF (not StartsWith) because
-    StartsWith([char]) is culture-sensitive in Windows PowerShell 5.1 (.NET Framework)
-    where U+FEFF is an "ignorable" character - it returns true for ANY string,
-    silently stripping the first character. Measured on 5.1.19041.7663:
-    "hello world".StartsWith([char]0xFEFF) returns True.
-    #>
-    param(
-        [Parameter(Mandatory = $true)]
-        # Without this, a Mandatory [string] parameter rejects an empty string
-        # outright: "Cannot bind argument to parameter 'Text' because it is an
-        # empty string" (measured on 5.1.19041.7663). An empty file is a
-        # perfectly ordinary input here, and a hard binding error is a worse
-        # answer than returning it unchanged.
-        [AllowEmptyString()]
-        [string]$Text
-    )
-
-    if ($Text.Length -gt 0 -and $Text[0] -eq [char]0xFEFF) {
-        return $Text.Substring(1)
-    }
-
-    return $Text
-}
-
-function Get-ProjectReferences {
-    <#
-    .SYNOPSIS
-    Returns the parent directory paths of all projects referenced by the
-    specified .csproj file (or the first .csproj in the specified directory).
-    #>
-    param(
-        [Parameter(Mandatory = $true)][string]$CsprojPath
-    )
-
-    if ($script:projectReferenceCache.ContainsKey($CsprojPath)) {
-        return $script:projectReferenceCache[$CsprojPath]
-    }
-
-    $resolvedCsproj = $CsprojPath
-    if (Test-Path -LiteralPath $CsprojPath -PathType Container) {
-        $csprojFiles = @(Get-ChildItem -LiteralPath $CsprojPath -Filter '*.csproj' -File -ErrorAction SilentlyContinue)
-        if ($csprojFiles.Count -eq 0) {
-            return @()
-        }
-        $resolvedCsproj = $csprojFiles[0].FullName
-    }
-
-    if (-not (Test-Path -LiteralPath $resolvedCsproj -PathType Leaf)) {
-        return @()
-    }
-
-    $csprojDir = Split-Path -Parent $resolvedCsproj
-    $csprojText = Get-Content -LiteralPath $resolvedCsproj -Raw -Encoding UTF8
-
-    $referencedDirs = [System.Collections.Generic.List[string]]::new()
-    $matches = [System.Text.RegularExpressions.Regex]::Matches($csprojText, '<ProjectReference\s+Include="([^"]+)"')
-    foreach ($match in $matches) {
-        $includePath = $match.Groups[1].Value
-        $resolvedRefPath = [System.IO.Path]::GetFullPath((Join-Path $csprojDir $includePath))
-        if (Test-Path -LiteralPath $resolvedRefPath -PathType Leaf) {
-            $refDir = [System.IO.Path]::GetFullPath((Split-Path -Parent $resolvedRefPath))
-            if (-not $referencedDirs.Contains($refDir)) {
-                [void]$referencedDirs.Add($refDir)
-            }
-        }
-    }
-
-    $result = $referencedDirs.ToArray()
-    $script:projectReferenceCache[$CsprojPath] = $result
-    return $result
-}
-
-function ConvertTo-NormalizedSql {
-    param([Parameter(Mandatory = $true)][string]$SqlText)
-
-    # Strip the historical local development database switch so the same
-    # SQL can be compared across branches/installations.
-    $normalized = [System.Text.RegularExpressions.Regex]::Replace(
-        $SqlText,
-        '(?im)^\s*USE\s+\[OpenModulePlatform\]\s*;\s*\r?\n\s*GO\s*(?:--.*)?\s*(?:\r?\n)?',
-        '')
-
-    # Strip single-line comments.
-    $normalized = [System.Text.RegularExpressions.Regex]::Replace($normalized, '--[^\r\n]*', '')
-
-    # Strip block comments.
-    $normalized = [System.Text.RegularExpressions.Regex]::Replace($normalized, '/\*[\s\S]*?\*/', '')
-
-    # Collapse all whitespace to a single space and trim.
-    $normalized = [System.Text.RegularExpressions.Regex]::Replace($normalized, '\s+', ' ').Trim()
-
-    return $normalized
-}
-
-$scriptDirectory = Get-ScriptDirectory
-$repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptDirectory '..'))
-
-function Invoke-GitQuiet {
-    <#
-    .SYNOPSIS
-    Runs git with stderr discarded and returns its stdout lines; the exit code lands in
-    $script:lastGitExitCode. Windows PowerShell 5.1 turns native stderr output into
-    terminating errors under $ErrorActionPreference = 'Stop', so the preference is
-    lowered for the call only. Callers judge success on the exit code, never on text.
-    #>
-    param([Parameter(Mandatory = $true)][string[]]$Arguments)
-
-    $previousPreference = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        $lines = @(& git -C $repositoryRoot @Arguments 2>$null)
-        $script:lastGitExitCode = $LASTEXITCODE
-        return $lines
-    }
-    finally {
-        $ErrorActionPreference = $previousPreference
-    }
-}
-
+. $helpersPath
 
 $checkMark = [char]0x2713
 $warningSign = [char]0x26A0
 $crossMark = [char]0x2717
+
+if ($SelfTest) {
+    # Canonical self-test for the validator family: the PowerShell 5.1 pitfalls
+    # that have actually broken this gate (BOM strip, git change detection).
+    Invoke-ValidatorSelfTest -CheckMark $checkMark -CrossMark $crossMark
+}
+
+$scriptDirectory = Get-ScriptDirectory
+$repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path $scriptDirectory '..\..'))
 
 $manifestPath = Join-Path $repositoryRoot 'omp-components.json'
 if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
@@ -520,42 +329,27 @@ $baseRef = 'origin/main'
 $baseRefAvailable = $false
 
 if (-not [string]::IsNullOrWhiteSpace($BaseCommit)) {
-    try {
-        $null = git -C $repositoryRoot rev-parse --verify $BaseCommit 2>$null
-        if ($LASTEXITCODE -eq 0) {
-            $baseRef = $BaseCommit
-            $baseRefAvailable = $true
-        }
-        else {
-            Add-ValidationError -Errors $errors -Message "The specified -BaseCommit '$BaseCommit' could not be resolved. Verify the commit SHA exists in this repository."
-        }
+    if (Test-GitRefAvailable -RepositoryRoot $repositoryRoot -Ref $BaseCommit) {
+        $baseRef = $BaseCommit
+        $baseRefAvailable = $true
     }
-    catch {
+    else {
         Add-ValidationError -Errors $errors -Message "The specified -BaseCommit '$BaseCommit' could not be resolved. Verify the commit SHA exists in this repository."
     }
 }
 else {
     Add-ValidationWarning -Warnings $warnings -Message 'No -BaseCommit specified; cascade diff uses origin/main. Binary-affecting shared changes committed in earlier campaign phases may not trigger cascade bumps. Pass -BaseCommit <sha> to diff against a fixed baseline.'
 
-    try {
-        $null = git -C $repositoryRoot rev-parse --verify origin/main 2>$null
-        $baseRefAvailable = ($LASTEXITCODE -eq 0)
-    }
-    catch {
-        $baseRefAvailable = $false
-    }
-
+    $baseRefAvailable = Test-GitRefAvailable -RepositoryRoot $repositoryRoot -Ref 'origin/main'
     if (-not $baseRefAvailable) {
         Add-ValidationWarning -Warnings $warnings -Message 'origin/main could not be resolved; skipping shared-project cascade validation.'
     }
 }
 
 $baseManifest = $null
-# Always a dictionary: with no manifest at the base ref it is simply empty, so the
-# ContainsKey lookups below never dereference $null.
-$baseComponentsByKey = [System.Collections.Generic.Dictionary[string, object]]::new([StringComparer]::Ordinal)
+$baseComponentsByKey = $null
 if ($baseRefAvailable) {
-    $baseManifestText = Remove-Utf8Bom -Text ((Invoke-GitQuiet -Arguments @('show', "$baseRef`:omp-components.json")) -join "`n")
+    $baseManifestText = Get-GitFileTextAtRef -RepositoryRoot $repositoryRoot -BaseRef $baseRef -Path 'omp-components.json' -Errors $errors -CheckDescription 'The baseline manifest read'
     if (-not [string]::IsNullOrWhiteSpace($baseManifestText)) {
         $baseManifest = ConvertFrom-JsonDocument -Json $baseManifestText -Depth $jsonDepth
     }
@@ -576,82 +370,6 @@ if ($baseRefAvailable) {
 }
 
 # ---------------------------------------------------------------------------
-# One changed-file listing for the whole run. Checks 7, 8 and 9 used to spawn a
-# git diff per shared project, per SQL file and per referenced directory; the
-# set is computed once here and filtered in memory instead.
-# ---------------------------------------------------------------------------
-$script:changedFilesFromBase = $null
-# Parsed <ProjectReference> directories per csproj path; Check 9 asks for the same
-# files repeatedly for direct and transitive references.
-$script:projectReferenceCache = @{}
-
-function Get-ProjectDirectoryPath {
-    <#
-    .SYNOPSIS
-    The directory a shared-project entry refers to: the parent of a .csproj path, or the
-    path itself when it already names a directory. Checks 7 and 9 share this rule.
-    #>
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    if ($Path -like '*.csproj') {
-        return (Split-Path -Parent $Path)
-    }
-
-    return $Path
-}
-
-function Get-ChangedFilesFromBase {
-    if ($null -eq $script:changedFilesFromBase) {
-        $listing = @(Invoke-GitQuiet -Arguments @('diff', '--name-only', "$baseRef...HEAD"))
-        if ($script:lastGitExitCode -ne 0) {
-            Write-Warning "Could not list changes against '$baseRef' (git exit $($script:lastGitExitCode)); change-based checks see an empty set."
-        }
-        $script:changedFilesFromBase = @($listing |
-            ForEach-Object { ([string]$_).Trim().Replace('\', '/') } |
-            Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    }
-    return $script:changedFilesFromBase
-}
-
-function Get-ChangedFilesUnder {
-    <#
-    .SYNOPSIS
-    Returns the changed files (base...HEAD) that equal RelativePath or live under it,
-    joined by newlines, or an empty string. Same contract as the per-path git diff it replaces.
-    #>
-    param([Parameter(Mandatory = $true)][string]$RelativePath)
-
-    $prefix = $RelativePath.Trim().Replace('\', '/').TrimStart('/').TrimEnd('/')
-    if ([string]::IsNullOrWhiteSpace($prefix)) {
-        return ''
-    }
-
-    $hits = @(Get-ChangedFilesFromBase | Where-Object {
-        [string]::Equals($_, $prefix, [StringComparison]::OrdinalIgnoreCase) -or
-        $_.StartsWith($prefix + '/', [StringComparison]::OrdinalIgnoreCase)
-    })
-    return ($hits -join "`n")
-}
-
-function Get-RepositoryRelativePath {
-    <#
-    .SYNOPSIS
-    Repository-relative form of FullPath, or $null when the path is not inside the
-    repository root. Compares normalized, separator-terminated roots so a sibling
-    directory sharing the root's name prefix can never be mistaken for a child.
-    #>
-    param([Parameter(Mandatory = $true)][string]$FullPath)
-
-    $root = [System.IO.Path]::GetFullPath($repositoryRoot).TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
-    $full = [System.IO.Path]::GetFullPath($FullPath)
-    if (-not $full.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) {
-        return $null
-    }
-
-    return $full.Substring($root.Length).TrimStart('\', '/')
-}
-
-# ---------------------------------------------------------------------------
 # Check 7: Shared project cascade version bumps.
 # ---------------------------------------------------------------------------
 $sharedProjects = Get-OptionalPropertyValue -Object $manifest -Name 'sharedProjects'
@@ -666,9 +384,15 @@ if ($null -ne $sharedProjects -and $baseRefAvailable) {
             continue
         }
 
-        $diffPath = Get-ProjectDirectoryPath -Path $projectPath
+        $diffPath = $projectPath
+        if ($projectPath -like '*.csproj') {
+            $diffPath = Split-Path -Parent $projectPath
+        }
 
-        $changedFiles = Get-ChangedFilesUnder -RelativePath $diffPath
+        $changedFiles = Get-GitChangedFiles -RepositoryRoot $repositoryRoot -BaseRef $baseRef -Path $diffPath -Errors $errors -CheckDescription "The shared project cascade check (Check 7) for '$projectPath'"
+        if ($null -eq $changedFiles) {
+            continue
+        }
         if ([string]::IsNullOrWhiteSpace($changedFiles)) {
             continue
         }
@@ -810,7 +534,10 @@ else {
             continue
         }
 
-        $changedFiles = Get-ChangedFilesUnder -RelativePath $sqlPath
+        $changedFiles = Get-GitChangedFiles -RepositoryRoot $repositoryRoot -BaseRef $baseRef -Path $sqlPath -Errors $errors -CheckDescription "The SQL diff check (Check 8) for '$sqlPath'"
+        if ($null -eq $changedFiles) {
+            continue
+        }
         if ([string]::IsNullOrWhiteSpace($changedFiles)) {
             $sqlFilesPassed++
             continue
@@ -818,16 +545,11 @@ else {
 
         $headText = Get-Content -LiteralPath $fullSqlPath -Raw -Encoding UTF8
 
-        # Existence at the base commit is what makes a file new; an empty file that
-        # existed there is a change to an existing script, not a new one.
-        [void](Invoke-GitQuiet -Arguments @('cat-file', '-e', "$baseRef`:$sqlPath"))
-        $existedAtBase = ($script:lastGitExitCode -eq 0)
-        $baseText = ''
-        if ($existedAtBase) {
-            $baseTextLines = @(Invoke-GitQuiet -Arguments @('show', "$baseRef`:$sqlPath"))
-            $baseText = Remove-Utf8Bom -Text ($baseTextLines -join "`n")
+        $baseText = Get-GitFileTextAtRef -RepositoryRoot $repositoryRoot -BaseRef $baseRef -Path $sqlPath -Errors $errors -CheckDescription "The SQL diff check (Check 8) for '$sqlPath'"
+        if ($null -eq $baseText) {
+            continue
         }
-        $isNewFile = -not $existedAtBase
+        $isNewFile = [string]::IsNullOrWhiteSpace($baseText)
 
         $headNormalized = ConvertTo-NormalizedSql -SqlText $headText
         $baseNormalized = ConvertTo-NormalizedSql -SqlText $baseText
@@ -869,8 +591,10 @@ else {
         $headDefinition = $moduleDefinitionObjectsByKey[$moduleKey]
         $headDefinitionVersion = [string](Get-OptionalPropertyValue -Object $headDefinition -Name 'definitionVersion')
 
-        $baseDefinitionTextLines = @(Invoke-GitQuiet -Arguments @('show', "$baseRef`:$relativeDefinitionPath"))
-        $baseDefinitionText = Remove-Utf8Bom -Text ($baseDefinitionTextLines -join "`n")
+        $baseDefinitionText = Get-GitFileTextAtRef -RepositoryRoot $repositoryRoot -BaseRef $baseRef -Path $relativeDefinitionPath -Errors $errors -CheckDescription "The SQL diff check (Check 8) for module '$moduleKey'"
+        if ($null -eq $baseDefinitionText) {
+            continue
+        }
         $baseDefinitionVersion = $null
         if (-not [string]::IsNullOrWhiteSpace($baseDefinitionText)) {
             # The parsed module-definition document at the base ref. Named distinctly from the
@@ -910,23 +634,91 @@ else {
                 }
 
                 $minVersionObj = ConvertTo-VersionOrNull -Value $minModuleDefinitionVersion
-                if ($null -ne $minVersionObj -and $null -ne $newDefinitionVersionObj -and $minVersionObj -ne $newDefinitionVersionObj) {
+                if ($null -ne $minVersionObj -and $null -ne $newDefinitionVersionObj -and $minVersionObj -lt $newDefinitionVersionObj) {
                     $componentKey = [string](Get-OptionalPropertyValue -Object $component -Name 'componentKey')
                     if ([string]::IsNullOrWhiteSpace($componentKey)) {
                         $componentKey = '<unknown>'
                     }
 
-                    # Check 8b: minModuleDefinitionVersion must EQUAL a bumped definitionVersion — HARD ERROR.
-                    # Check 6 rejects a minimum above the module's version; this rejects one below it
-                    # (or otherwise different), so the two checks together pin min == definitionVersion.
+                    # Check 8b: minModuleDefinitionVersion lags a bumped definitionVersion — HARD ERROR.
                     # The module's SQL contract changed and the definitionVersion was raised. Any
                     # component that exposes a minModuleDefinitionVersion for the same module must
                     # be updated to at least the new version, otherwise packages can be imported
                     # into environments with an older definition and fail at runtime due to missing
                     # schema/metadata.
-                    Add-ValidationError -Errors $errors -Message "Component '$componentKey' has minModuleDefinitionVersion '$minModuleDefinitionVersion' which must equal the new definitionVersion '$newDefinitionVersion'."
+                    Add-ValidationError -Errors $errors -Message "Component '$componentKey' has minModuleDefinitionVersion '$minModuleDefinitionVersion' which is less than the new definitionVersion '$newDefinitionVersion' for module '$moduleKey'. Update minModuleDefinitionVersion to at least '$newDefinitionVersion'."
                 }
             }
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Check 12: Module-definition content diff enforcement.
+# HostAgent rejects re-importing a module definition whose version already
+# exists in the database with different JSON, and that rejection silently
+# skips every artifact item bundled in the same universal package (the import
+# summary only shows "Skipped"). Any content change to a .module-definition.json
+# therefore requires a definitionVersion bump - not only SQL-affecting changes,
+# which Check 8 already covers.
+# ---------------------------------------------------------------------------
+$definitionDiffChecked = 0
+$definitionDiffChanged = 0
+
+if (-not $baseRefAvailable) {
+    Add-ValidationWarning -Warnings $warnings -Message 'No valid base ref available; skipping module-definition content diff enforcement (Check 12). Pass -BaseCommit to enable it.'
+}
+else {
+    foreach ($manifestDefinition in @($manifest.moduleDefinitions)) {
+        if ($null -eq $manifestDefinition) {
+            continue
+        }
+
+        $moduleKey = [string](Get-OptionalPropertyValue -Object $manifestDefinition -Name 'moduleKey')
+        $relativeDefinitionPath = [string](Get-OptionalPropertyValue -Object $manifestDefinition -Name 'path')
+        if ([string]::IsNullOrWhiteSpace($moduleKey) -or [string]::IsNullOrWhiteSpace($relativeDefinitionPath)) {
+            continue
+        }
+
+        $definitionPath = Resolve-RepositoryPath -Path $relativeDefinitionPath -BasePath $repositoryRoot
+        if (-not (Test-Path -LiteralPath $definitionPath -PathType Leaf)) {
+            continue # missing file is already an error in Check 4
+        }
+
+        $definitionDiffChecked++
+
+        $changedFiles = Get-GitChangedFiles -RepositoryRoot $repositoryRoot -BaseRef $baseRef -Path $relativeDefinitionPath -Errors $errors -CheckDescription "The module-definition content diff check (Check 12) for '$relativeDefinitionPath'"
+        if ($null -eq $changedFiles) {
+            continue
+        }
+        if ([string]::IsNullOrWhiteSpace($changedFiles)) {
+            continue
+        }
+
+        $baseDefinitionText = Get-GitFileTextAtRef -RepositoryRoot $repositoryRoot -BaseRef $baseRef -Path $relativeDefinitionPath -Errors $errors -CheckDescription "The module-definition content diff check (Check 12) for '$relativeDefinitionPath'"
+        if ($null -eq $baseDefinitionText) {
+            continue
+        }
+        if ([string]::IsNullOrWhiteSpace($baseDefinitionText)) {
+            continue # new definition file; nothing to bump against
+        }
+
+        $headDefinitionText = Get-Content -LiteralPath $definitionPath -Raw -Encoding UTF8
+        $headNormalized = (Remove-Utf8Bom -Text $headDefinitionText).Replace("`r`n", "`n").TrimEnd("`n")
+        $baseNormalized = $baseDefinitionText.Replace("`r`n", "`n").TrimEnd("`n")
+        if ([string]::Equals($headNormalized, $baseNormalized, [StringComparison]::Ordinal)) {
+            continue
+        }
+
+        $definitionDiffChanged++
+
+        $headDefinition = ConvertFrom-JsonDocument -Json $headDefinitionText -Depth $jsonDepth
+        $headDefinitionVersion = [string](Get-OptionalPropertyValue -Object $headDefinition -Name 'definitionVersion')
+        $baseDefinition = ConvertFrom-JsonDocument -Json $baseDefinitionText -Depth $jsonDepth
+        $baseDefinitionVersion = [string](Get-OptionalPropertyValue -Object $baseDefinition -Name 'definitionVersion')
+
+        if (-not [string]::IsNullOrWhiteSpace($baseDefinitionVersion) -and [string]::Equals($baseDefinitionVersion, $headDefinitionVersion, [StringComparison]::Ordinal)) {
+            Add-ValidationError -Errors $errors -Message "Module definition '$relativeDefinitionPath' (module '$moduleKey') changed but definitionVersion is still '$headDefinitionVersion'. HostAgent rejects a re-imported definition version with different JSON and silently skips artifacts packaged with it. Bump definitionVersion in both the definition file and omp-components.json."
         }
     }
 }
@@ -957,7 +749,10 @@ else {
         }
 
         $fullSharedProjectPath = Resolve-RepositoryPath -Path $sharedProjectPath -BasePath $repositoryRoot
-        $sharedProjectDir = Get-ProjectDirectoryPath -Path $fullSharedProjectPath
+        $sharedProjectDir = $fullSharedProjectPath
+        if ($fullSharedProjectPath -like '*.csproj') {
+            $sharedProjectDir = Split-Path -Parent $fullSharedProjectPath
+        }
 
         if (Test-Path -LiteralPath $sharedProjectDir -PathType Container) {
             [void]$sharedProjectDirs.Add([System.IO.Path]::GetFullPath($sharedProjectDir))
@@ -1017,12 +812,11 @@ else {
                 continue
             }
 
-            $relRefDir = Get-RepositoryRelativePath -FullPath $refDir
-            if ($null -eq $relRefDir) {
-                Write-Warning "Check 9: referenced project directory '$refDir' is outside the repository root; skipped."
+            $relRefDir = $refDir.Substring($repositoryRoot.Length).TrimStart('\', '/')
+            $changedFiles = Get-GitChangedFiles -RepositoryRoot $repositoryRoot -BaseRef $baseRef -Path $relRefDir -Errors $errors -CheckDescription "The transitive ProjectReference check (Check 9) for '$componentKey'"
+            if ($null -eq $changedFiles) {
                 continue
             }
-            $changedFiles = Get-ChangedFilesUnder -RelativePath $relRefDir
             if (-not [string]::IsNullOrWhiteSpace($changedFiles)) {
                 [void]$changedRefDirs.Add($relRefDir)
             }
@@ -1051,6 +845,208 @@ else {
 }
 
 # ---------------------------------------------------------------------------
+# Check 13: LOCKSTEP version bump against baseline (own project source).
+# When a component's OWN project directory changed since the base ref, both
+# the component version and repositoryVersion must move. Check 9 covers
+# referenced projects only; this check covers the component's own tree.
+# Documentation-only changes (*.md) never reach the published payload, so they
+# do not force a bump.
+# ---------------------------------------------------------------------------
+$lockstepCheckCount = 0
+$lockstepErrorCount = 0
+
+if (-not $baseRefAvailable) {
+    Add-ValidationWarning -Warnings $warnings -Message 'No valid base ref available; skipping LOCKSTEP validation (Check 13). Pass -BaseCommit to enable it.'
+}
+elseif ($null -eq $baseManifest -or $null -eq $baseComponentsByKey) {
+    Add-ValidationWarning -Warnings $warnings -Message 'Baseline manifest unreadable; skipping LOCKSTEP validation (Check 13).'
+}
+else {
+    $baseRepositoryVersion = [string](Get-OptionalPropertyValue -Object $baseManifest -Name 'repositoryVersion')
+
+    foreach ($component in @($manifest.components)) {
+        if ($null -eq $component) {
+            continue
+        }
+
+        $componentKey = [string](Get-OptionalPropertyValue -Object $component -Name 'componentKey')
+        if ([string]::IsNullOrWhiteSpace($componentKey)) {
+            continue
+        }
+
+        $projectPath = [string](Get-OptionalPropertyValue -Object $component -Name 'projectPath')
+        if ([string]::IsNullOrWhiteSpace($projectPath)) {
+            continue
+        }
+
+        $diffPath = $projectPath
+        if ($projectPath -like '*.csproj') {
+            $diffPath = Split-Path -Parent $projectPath
+        }
+
+        $changedFilesText = Get-GitChangedFiles -RepositoryRoot $repositoryRoot -BaseRef $baseRef -Path $diffPath -Errors $errors -CheckDescription "The LOCKSTEP check (Check 13) for '$componentKey'"
+        if ($null -eq $changedFilesText) {
+            continue
+        }
+
+        # Markdown never reaches the published payload (dotnet publish does not
+        # copy it), so a docs-only change must not force a version bump.
+        $changedFiles = @($changedFilesText -split "`n" | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_) -and -not $_.Trim().EndsWith('.md', [StringComparison]::OrdinalIgnoreCase)
+        })
+        if ($changedFiles.Count -eq 0) {
+            continue
+        }
+
+        $lockstepCheckCount++
+
+        $currentVersion = [string](Get-OptionalPropertyValue -Object $component -Name 'version')
+        $baseVersion = ''
+        if ($baseComponentsByKey.ContainsKey($componentKey)) {
+            $baseVersion = [string](Get-OptionalPropertyValue -Object $baseComponentsByKey[$componentKey] -Name 'version')
+        }
+
+        $versionBumped = $false
+        if (-not [string]::IsNullOrWhiteSpace($baseVersion)) {
+            $versionBumped = -not [string]::Equals($baseVersion, $currentVersion, [StringComparison]::Ordinal)
+        }
+        else {
+            # No baseline version means this is a new component; treat as bumped if it has a valid version.
+            $versionBumped = (-not [string]::IsNullOrWhiteSpace($currentVersion))
+        }
+
+        $repositoryVersionBumped = $false
+        if (-not [string]::IsNullOrWhiteSpace($baseRepositoryVersion)) {
+            $repositoryVersionBumped = -not [string]::Equals($baseRepositoryVersion, $repositoryVersion, [StringComparison]::Ordinal)
+        }
+        else {
+            $repositoryVersionBumped = (-not [string]::IsNullOrWhiteSpace($repositoryVersion))
+        }
+
+        if (-not $versionBumped -or -not $repositoryVersionBumped) {
+            $missing = [System.Collections.Generic.List[string]]::new()
+            if (-not $versionBumped) {
+                [void]$missing.Add("component version (current '$currentVersion', baseline '$baseVersion')")
+            }
+            if (-not $repositoryVersionBumped) {
+                [void]$missing.Add("repositoryVersion (current '$repositoryVersion', baseline '$baseRepositoryVersion')")
+            }
+
+            $missingText = ($missing | Sort-Object) -join ' and '
+            Add-ValidationError -Errors $errors -Message "Component '$componentKey' project files changed since '$baseRef' but $missingText were not bumped (LOCKSTEP). Bump the component version and repositoryVersion."
+            $lockstepErrorCount++
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Check 16: Embedded sqlScripts freshness.
+# For every module definition listed in omp-components.json, every sqlScripts
+# entry with contentEncoding 'base64-utf8' must carry content/sha256 that match
+# the current SQL file bytes on disk, after the same USE/GO prologue stripping
+# applied by the OpenModulePlatform embed tool
+# (scripts/dev/embed-module-definition-sql.ps1). This is a working-tree/HEAD
+# consistency check, not a diff-range check, so it runs with or without
+# -BaseCommit.
+#
+# Line-ending tolerance: the SQL blobs in git are LF-only, but a working tree
+# checked out with core.autocrlf=true materializes CRLF files (and an embed
+# run on such a machine embeds CRLF bytes). Pure CRLF/LF drift is normalized
+# away on both sides; any other byte difference is reported as staleness.
+# ---------------------------------------------------------------------------
+$embeddedSqlChecked = 0
+$embeddedSqlFresh = 0
+
+foreach ($manifestDefinition in @($manifest.moduleDefinitions)) {
+    if ($null -eq $manifestDefinition) {
+        continue
+    }
+
+    $moduleKey = [string](Get-OptionalPropertyValue -Object $manifestDefinition -Name 'moduleKey')
+    $relativeDefinitionPath = [string](Get-OptionalPropertyValue -Object $manifestDefinition -Name 'path')
+    if ([string]::IsNullOrWhiteSpace($relativeDefinitionPath)) {
+        continue
+    }
+
+    $definitionPath = Resolve-RepositoryPath -Path $relativeDefinitionPath -BasePath $repositoryRoot
+    if (-not (Test-Path -LiteralPath $definitionPath -PathType Leaf)) {
+        continue
+    }
+
+    $definitionText = Get-Content -LiteralPath $definitionPath -Raw -Encoding UTF8
+    $definition = ConvertFrom-JsonDocument -Json $definitionText -Depth $jsonDepth
+
+    foreach ($sqlScript in @($definition.sqlScripts)) {
+        if ($null -eq $sqlScript) {
+            continue
+        }
+
+        $contentEncoding = [string](Get-OptionalPropertyValue -Object $sqlScript -Name 'contentEncoding')
+        if (-not [string]::Equals($contentEncoding, 'base64-utf8', [StringComparison]::Ordinal)) {
+            continue
+        }
+
+        $scriptKey = [string](Get-OptionalPropertyValue -Object $sqlScript -Name 'key')
+        if ([string]::IsNullOrWhiteSpace($scriptKey)) {
+            $scriptKey = '<no-key>'
+        }
+
+        $sqlPath = [string](Get-OptionalPropertyValue -Object $sqlScript -Name 'path')
+        if ([string]::IsNullOrWhiteSpace($sqlPath)) {
+            Add-ValidationError -Errors $errors -Message "Embedded SQL script '$scriptKey' (module '$moduleKey') has contentEncoding 'base64-utf8' but no path."
+            continue
+        }
+
+        $embeddedSqlChecked++
+
+        $fullSqlPath = Resolve-RepositoryPath -Path $sqlPath -BasePath $repositoryRoot
+        if (-not (Test-Path -LiteralPath $fullSqlPath -PathType Leaf)) {
+            Add-ValidationError -Errors $errors -Message "Embedded SQL script '$scriptKey' (module '$moduleKey') references a missing file: $sqlPath"
+            continue
+        }
+
+        $diskText = Get-Content -LiteralPath $fullSqlPath -Raw -Encoding UTF8
+        $portableText = ConvertTo-PortableModuleDefinitionSql -SqlText $diskText
+
+        $actualContent = [string](Get-OptionalPropertyValue -Object $sqlScript -Name 'content')
+        $actualSha256 = [string](Get-OptionalPropertyValue -Object $sqlScript -Name 'sha256')
+
+        $embeddedText = ''
+        if (-not [string]::IsNullOrWhiteSpace($actualContent)) {
+            try {
+                $embeddedText = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($actualContent))
+            }
+            catch {
+                $embeddedText = ''
+            }
+        }
+
+        # Compare with CRLF normalized to LF on both sides (see Check 16 note).
+        $normalizedDiskText = ConvertTo-LfLineEndings -Text $portableText
+        $normalizedEmbeddedText = ConvertTo-LfLineEndings -Text $embeddedText
+        $contentMatches = [string]::Equals($normalizedEmbeddedText, $normalizedDiskText, [StringComparison]::Ordinal)
+
+        # The stored hash was computed over whichever line-ending form the
+        # embed tool saw, so accept a match against the raw embedded text, the
+        # raw disk text, or the LF-normalized form.
+        $sha256Matches = $false
+        foreach ($shaCandidateText in @($embeddedText, $portableText, $normalizedDiskText)) {
+            if ([string]::Equals($actualSha256, (Get-Sha256Hex -Text $shaCandidateText), [StringComparison]::Ordinal)) {
+                $sha256Matches = $true
+                break
+            }
+        }
+
+        if (-not $contentMatches -or -not $sha256Matches) {
+            Add-ValidationError -Errors $errors -Message "Embedded SQL for script '$scriptKey' ($sqlPath, module '$moduleKey') is stale: sqlScripts content/sha256 do not match the current file bytes. Refresh it with the embed tool in the OpenModulePlatform repository: scripts/dev/embed-module-definition-sql.ps1 -RepositoryRoot '<path to this repository>'."
+            continue
+        }
+
+        $embeddedSqlFresh++
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Assembly version documentation (informational only, not enforced).
 # ---------------------------------------------------------------------------
 Write-Host 'Application version note:'
@@ -1059,6 +1055,11 @@ Write-Host '  It is decoupled from the omp-components.json component version by 
 Write-Host '  OMP artifact identity uses manifest version + SHA-256, not the application version.'
 Write-Host '  This script validates the manifest, not the application version.'
 Write-Host ''
+
+# Check 14 (cross-repository sharedDependencies cascade) is intentionally absent
+# here: this standalone repository declares no sharedDependencies in
+# omp-components.json. See docs/VALIDATOR_CHECKS.md in the OpenModulePlatform
+# repository for the canonical check list.
 
 # ---------------------------------------------------------------------------
 # Summaries.
@@ -1093,8 +1094,21 @@ if ($sqlFilesChecked -gt 0) {
     Write-Host "$checkMark $sqlFilesPassed of $sqlFilesChecked owned SQL file(s) passed diff validation ($sqlFilesChanged changed)"
 }
 
+if ($embeddedSqlChecked -gt 0) {
+    Write-Host "$checkMark $embeddedSqlFresh of $embeddedSqlChecked embedded SQL script(s) passed freshness validation"
+}
+
+if ($definitionDiffChecked -gt 0) {
+    Write-Host "$checkMark $definitionDiffChecked module definition(s) passed content diff validation ($definitionDiffChanged changed)"
+}
+
 if ($transitiveCheckCount -gt 0 -or $transitiveErrorCount -gt 0) {
     Write-Host "$checkMark $transitiveCheckCount component(s) passed transitive ProjectReference lockstep validation ($transitiveErrorCount error(s))"
+}
+
+if ($lockstepCheckCount -gt 0 -or $lockstepErrorCount -gt 0) {
+    $lockstepPassed = $lockstepCheckCount - $lockstepErrorCount
+    Write-Host "$checkMark $lockstepPassed of $lockstepCheckCount changed component(s) passed LOCKSTEP bump validation ($lockstepErrorCount error(s))"
 }
 
 # Check 15: the shared omp scripts must be byte-identical to the canonical copies

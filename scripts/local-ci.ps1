@@ -8,7 +8,7 @@
     1. dotnet build src/ODVGateway/ODVGateway.csproj --configuration Release
     2. dotnet test tests/ODVGateway.Tests/ODVGateway.Tests.csproj (unit tests)
     3. scripts/smoke-test.ps1 (builds, starts, and smoke-tests the gateway)
-    4. scripts/validate-component-versions.ps1
+    4. scripts/omp/validate-component-versions.ps1
 
     Each step reports PASS or FAIL. The script exits with code 0 when every
     step passes and 1 when any step fails. Steps 2 and 3 are skipped when the
@@ -56,7 +56,7 @@ $projectPath = Join-Path $repoRoot 'src/ODVGateway/ODVGateway.csproj'
 $testProjectPath = Join-Path $repoRoot 'tests/ODVGateway.Tests/ODVGateway.Tests.csproj'
 $testResultsDir = Join-Path $repoRoot 'TestResults'
 $smokeScript = Join-Path $scriptDir 'smoke-test.ps1'
-$validatorScript = Join-Path $scriptDir 'validate-component-versions.ps1'
+$validatorScript = Join-Path $scriptDir 'omp\validate-component-versions.ps1'
 
 # --- Local-ci telemetry (best-effort; never changes the gate's exit code) ----
 # One compact JSONL line per run under

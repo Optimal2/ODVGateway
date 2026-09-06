@@ -96,7 +96,7 @@ hardcoding machine-specific paths in repositories.
 > (`odvgateway.module-definition.json`) has an empty `sqlScripts` array, so
 > there is no embedded SQL to refresh. The scripts live in OpenModulePlatform.
 > Manifest/module-definition version drift in this repository is caught by
-> `scripts\validate-component-versions.ps1` (below) instead.
+> `scripts\omp\validate-component-versions.ps1` (below) instead.
 
 Use `validate-component-versions.ps1` in CI or before packaging to catch
 manifest drift that would produce mismatched or unbuildable artifacts. It
@@ -107,7 +107,7 @@ manifest component version plus SHA-256 content hash, not from assembly
 version.
 
 ```powershell
-.\scripts\validate-component-versions.ps1
+.\scripts\omp\validate-component-versions.ps1
 ```
 
 What the guard protects against:
