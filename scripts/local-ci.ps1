@@ -42,6 +42,14 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# $BaseCommit is shown in a display string and handed to the validator as an
+# argument, so it is checked against the shape of a git ref or commit first:
+# letters, digits and . _ / @ { } ~ ^ - only, no whitespace. Anything else is
+# refused here with a clear message instead of reaching git.
+if ($BaseCommit -notmatch '^[A-Za-z0-9._/@{}~^-]+$') {
+    throw "BaseCommit '$BaseCommit' is not a valid git ref or commit: only letters, digits and . _ / @ { } ~ ^ - are accepted, with no whitespace."
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
 $projectPath = Join-Path $repoRoot 'src/ODVGateway/ODVGateway.csproj'
@@ -145,7 +153,6 @@ if ($step1Pass) {
         $step2Message = "dotnet test failed: $_"
         $overallPass = $false
     }
-    $telemetryTestStatus = if ($step2Pass) { 'passed' } else { 'failed' }
     # test_count is null, never zero, whenever it was not measured: the
     # helper failed, a TRX file was malformed/unreadable, or no TRX file
     # exists. Zero is only ever what a readable TRX file actually reports.
@@ -170,7 +177,6 @@ if ($step1Pass) {
         $unreadableTrxReason = "$malformedTrxFiles of $seenTrxFiles TRX file(s) malformed or unreadable"
     }
     if (-not [string]::IsNullOrEmpty($unreadableTrxReason)) {
-        $telemetryTestStatus = 'unreadable-trx'
         $telemetryTestCount = $null
         $telemetrySkipReason = $unreadableTrxReason
     }
@@ -182,6 +188,10 @@ if ($step1Pass) {
     else {
         $telemetrySkipReason = 'no TRX file was written; test_count is unmeasured'
     }
+    # The telemetry test status is decided exactly once, here, after both of
+    # its inputs are known: the dotnet test outcome and whether the TRX
+    # counters could be read.
+    $telemetryTestStatus = if (-not [string]::IsNullOrEmpty($unreadableTrxReason)) { 'unreadable-trx' } elseif ($step2Pass) { 'passed' } else { 'failed' }
 }
 else {
     $step2Message = 'Skipped because dotnet build failed'

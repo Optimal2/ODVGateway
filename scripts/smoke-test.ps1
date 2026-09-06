@@ -82,7 +82,7 @@ function Test-ResponseLeaks {
 
     foreach ($pattern in $leakPatterns) {
         if ($Body -match $pattern) {
-            return "Potential leak detected: matched '$pattern'"
+            return "Potential leak detected in the $Context body: matched '$pattern'"
         }
     }
 
