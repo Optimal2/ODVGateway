@@ -848,9 +848,21 @@ else {
 # Check 13: LOCKSTEP version bump against baseline (own project source).
 # When a component's OWN project directory changed since the base ref, both
 # the component version and repositoryVersion must move. Check 9 covers
-# referenced projects only; this check covers the component's own tree.
-# Documentation-only changes (*.md) never reach the published payload, so they
-# do not force a bump.
+# referenced projects only; this check covers the component's own tree. Its
+# absence in this validator let an own-source change ship with untouched
+# versions (measured 2026-09-06: a committed own-project source edit passed
+# validation green).
+#
+# Two refinements, both proven against the BUILT artifact on 2026-09-06:
+# - Markdown outside wwwroot never reaches the published payload, so a
+#   docs-only change must not force a bump. Markdown UNDER wwwroot is payload
+#   (dotnet publish copies wwwroot verbatim; the portal artifact contains
+#   wwwroot/img/blank-widget/README.md) and must force one.
+# - A project can publish content from OUTSIDE its own directory: Portal's
+#   csproj includes ..\tools\universal-package-builder\** into wwwroot. Those
+#   bytes shape the artifact exactly like own source, so this check also
+#   watches every out-of-project Content/None/Compile/EmbeddedResource
+#   include directory that lives inside this repository.
 # ---------------------------------------------------------------------------
 $lockstepCheckCount = 0
 $lockstepErrorCount = 0
@@ -884,15 +896,76 @@ else {
             $diffPath = Split-Path -Parent $projectPath
         }
 
-        $changedFilesText = Get-GitChangedFiles -RepositoryRoot $repositoryRoot -BaseRef $baseRef -Path $diffPath -Errors $errors -CheckDescription "The LOCKSTEP check (Check 13) for '$componentKey'"
-        if ($null -eq $changedFilesText) {
+        $watchPaths = [System.Collections.Generic.List[string]]::new()
+        [void]$watchPaths.Add($diffPath)
+
+        # Watch out-of-project payload inputs as well (see the block comment).
+        $componentCsproj = $null
+        $projectFullPath = Resolve-RepositoryPath -Path $projectPath -BasePath $repositoryRoot
+        if (Test-Path -LiteralPath $projectFullPath -PathType Leaf) {
+            $componentCsproj = $projectFullPath
+        }
+        elseif (Test-Path -LiteralPath $projectFullPath -PathType Container) {
+            $foundCsproj = @(Get-ChildItem -LiteralPath $projectFullPath -Filter '*.csproj' -File -ErrorAction SilentlyContinue)
+            if ($foundCsproj.Count -gt 0) {
+                $componentCsproj = $foundCsproj[0].FullName
+            }
+        }
+
+        if ($null -ne $componentCsproj) {
+            $componentCsprojDir = Split-Path -Parent $componentCsproj
+            $componentCsprojText = Get-Content -LiteralPath $componentCsproj -Raw -Encoding UTF8
+            foreach ($includeMatch in [System.Text.RegularExpressions.Regex]::Matches($componentCsprojText, '<(?:Content|None|Compile|EmbeddedResource)\s+[^>]*?Include="([^"]+)"')) {
+                $includeValue = $includeMatch.Groups[1].Value
+                if (-not $includeValue.StartsWith('..') -or $includeValue.Contains('$')) {
+                    continue
+                }
+
+                $includeDir = $includeValue
+                $wildcardAt = $includeDir.IndexOf('*')
+                if ($wildcardAt -ge 0) {
+                    $includeDir = $includeDir.Substring(0, $wildcardAt)
+                }
+
+                $resolvedInclude = [System.IO.Path]::GetFullPath((Join-Path $componentCsprojDir $includeDir))
+                if (-not (Test-Path -LiteralPath $resolvedInclude -PathType Container)) {
+                    continue
+                }
+                if (-not $resolvedInclude.StartsWith($repositoryRoot, [StringComparison]::OrdinalIgnoreCase)) {
+                    continue # outside this repository: Check 14's jurisdiction, not this check's
+                }
+
+                $relativeInclude = $resolvedInclude.Substring($repositoryRoot.Length).TrimStart('\', '/')
+                if (-not $watchPaths.Contains($relativeInclude)) {
+                    [void]$watchPaths.Add($relativeInclude)
+                }
+            }
+        }
+
+        $changedFilesText = ''
+        $changedFilesFailed = $false
+        foreach ($watchPath in $watchPaths) {
+            $watchChanges = Get-GitChangedFiles -RepositoryRoot $repositoryRoot -BaseRef $baseRef -Path $watchPath -Errors $errors -CheckDescription "The LOCKSTEP check (Check 13) for '$componentKey'"
+            if ($null -eq $watchChanges) {
+                $changedFilesFailed = $true
+                break
+            }
+            if (-not [string]::IsNullOrWhiteSpace($watchChanges)) {
+                $changedFilesText = ($changedFilesText + "`n" + $watchChanges).Trim()
+            }
+        }
+        if ($changedFilesFailed) {
             continue
         }
 
-        # Markdown never reaches the published payload (dotnet publish does not
-        # copy it), so a docs-only change must not force a version bump.
+        # Markdown outside wwwroot never reaches the published payload, so a
+        # docs-only change must not force a version bump. Markdown UNDER
+        # wwwroot is payload (dotnet publish copies wwwroot verbatim) and does.
         $changedFiles = @($changedFilesText -split "`n" | Where-Object {
-            -not [string]::IsNullOrWhiteSpace($_) -and -not $_.Trim().EndsWith('.md', [StringComparison]::OrdinalIgnoreCase)
+            -not [string]::IsNullOrWhiteSpace($_) -and -not (
+                $_.Trim().EndsWith('.md', [StringComparison]::OrdinalIgnoreCase) -and
+                $_ -notmatch '[\\/]wwwroot[\\/]'
+            )
         })
         if ($changedFiles.Count -eq 0) {
             continue
