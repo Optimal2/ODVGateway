@@ -137,7 +137,7 @@ What the guard protects against:
 > EArkivChecker, Dokumentbibliotek, VajSkrivare and iKrock2 — not to ODVGateway.
 >
 > **Re-measured 2026-09-02** against `scripts/validate-component-versions.ps1` (1012
-> lines) at `fcfb8ff`. The inventory above was stale: the script now implements
+> lines) at `1f36e69`. The inventory above was stale: the script now implements
 > **Check 1–10 plus 8b**, and it gained **Check 15** (shared script drift). It still
 > contains zero references to `Web.Shared` and still has no Check 14 delegation, so the
 > conclusion is unchanged.
