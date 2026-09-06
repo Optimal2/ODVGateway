@@ -227,10 +227,28 @@ function Invoke-SmokeWebRequest {
             }
         }
 
+        # Under PowerShell 7 the error response is an HttpResponseMessage whose
+        # Headers is an HttpResponseHeaders collection; unlike the
+        # WebHeaderCollection returned under Windows PowerShell 5.1 it cannot be
+        # indexed by name, so the header checks below failed with "Unable to
+        # index into an object" whenever /health answered 503. Flatten the
+        # response and content headers into a case-insensitive dictionary of
+        # string arrays, the same shape Invoke-WebRequest returns for a
+        # successful response under PowerShell 7.
+        $headers = New-Object 'System.Collections.Generic.Dictionary[string,string[]]' ([System.StringComparer]::OrdinalIgnoreCase)
+        foreach ($header in $errorResponse.Headers) {
+            $headers[$header.Key] = [string[]]@($header.Value)
+        }
+        if ($null -ne $errorResponse.Content) {
+            foreach ($header in $errorResponse.Content.Headers) {
+                $headers[$header.Key] = [string[]]@($header.Value)
+            }
+        }
+
         return [pscustomobject]@{
             StatusCode = $statusCode
             Content = $content
-            Headers = $errorResponse.Headers
+            Headers = $headers
         }
     }
 }
