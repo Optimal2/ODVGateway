@@ -11,7 +11,9 @@
     4. scripts/validate-component-versions.ps1
 
     Each step reports PASS or FAIL. The script exits with code 0 when every
-    step passes and 1 when any step fails.
+    step passes and 1 when any step fails. Steps 2 and 3 are skipped when the
+    step before them failed; step 4 always runs because it validates the
+    component manifest only and does not depend on the build output.
 
     Run this before every push to catch build breaks and runtime regressions
     before they reach the shared main branch. GitHub Actions for this public
@@ -24,11 +26,17 @@
 .PARAMETER SmokePort
     TCP port used by smoke-test.ps1 while the gateway is running.
     Defaults to 5210.
+
+.PARAMETER BaseCommit
+    Baseline ref or commit passed to validate-component-versions.ps1 for its
+    diff-based checks. Defaults to origin/main; pass a commit SHA to pin the
+    baseline, for example across the phases of a multi-step change.
 #>
 [CmdletBinding()]
 param(
     [string]$Configuration = 'Release',
-    [int]$SmokePort = 5210
+    [int]$SmokePort = 5210,
+    [string]$BaseCommit = 'origin/main'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -138,19 +146,49 @@ if ($step1Pass) {
         $overallPass = $false
     }
     $telemetryTestStatus = if ($step2Pass) { 'passed' } else { 'failed' }
+    # test_count is null, never zero, whenever it was not measured: the
+    # helper failed, a TRX file was malformed/unreadable, or no TRX file
+    # exists. Zero is only ever what a readable TRX file actually reports.
+    $unreadableTrxReason = ''
     if (Get-Command Get-LocalCiTrxCounters -ErrorAction SilentlyContinue) {
         try {
             $suite = Get-LocalCiTrxCounters -ResultsDirectory $unitTrxDir -SuiteName 'unit tests'
             if ($null -ne $suite) { $telemetrySuites += $suite }
         }
         catch {
-            Write-Warning "TRX counters for the unit tests could not be parsed: $($_.Exception.Message)"
+            $unreadableTrxReason = "TRX counters for the unit tests could not be parsed: $($_.Exception.Message)"
+            Write-Warning $unreadableTrxReason
         }
+    }
+    $malformedTrxFiles = 0
+    $seenTrxFiles = 0
+    foreach ($suiteRow in $telemetrySuites) {
+        $malformedTrxFiles += [int]$suiteRow.malformed_files
+        $seenTrxFiles += [int]$suiteRow.trx_files
+    }
+    if ($malformedTrxFiles -gt 0 -and [string]::IsNullOrEmpty($unreadableTrxReason)) {
+        $unreadableTrxReason = "$malformedTrxFiles of $seenTrxFiles TRX file(s) malformed or unreadable"
+    }
+    if (-not [string]::IsNullOrEmpty($unreadableTrxReason)) {
+        $telemetryTestStatus = 'unreadable-trx'
+        $telemetryTestCount = $null
+        $telemetrySkipReason = $unreadableTrxReason
+    }
+    elseif ($telemetrySuites.Count -gt 0) {
+        $executedSum = 0
+        foreach ($suiteRow in $telemetrySuites) { $executedSum += [int]$suiteRow.executed }
+        $telemetryTestCount = $executedSum
+    }
+    else {
+        $telemetrySkipReason = 'no TRX file was written; test_count is unmeasured'
     }
 }
 else {
     $step2Message = 'Skipped because dotnet build failed'
     $overallPass = $false
+    # The test step was skipped, not run and not failed: the telemetry record
+    # says so explicitly, with test_count left null.
+    $telemetryTestStatus = 'skipped'
     $telemetrySkipReason = 'test step not run (build failed)'
 }
 Write-StepResult -Step 'dotnet test' -Passed $step2Pass -Message $step2Message
@@ -183,12 +221,17 @@ else {
 Write-StepResult -Step 'smoke-test.ps1' -Passed $step3Pass -Message $step3Message
 
 # Step 4: validate component versions
+# Deliberately NOT gated on steps 1-3: the validator checks omp-components.json
+# and the module definitions against $BaseCommit only and never reads the
+# build output, so a lockstep or manifest breach is reported in the same run
+# as a build or test failure instead of staying hidden behind it. The overall
+# verdict is still FAIL whenever any earlier step failed.
 $step4Pass = $false
 $step4Message = ''
 try {
     Write-Host ''
-    Write-Host "Running: $validatorScript -BaseCommit 'origin/main'"
-    & "$validatorScript" -BaseCommit 'origin/main'
+    Write-Host "Running: $validatorScript -BaseCommit '$BaseCommit'"
+    & "$validatorScript" -BaseCommit $BaseCommit
     if ($LASTEXITCODE -eq 0) {
         $step4Pass = $true
     }
@@ -205,13 +248,9 @@ Write-StepResult -Step 'validate-component-versions.ps1' -Passed $step4Pass -Mes
 
 # Telemetry: one compact JSONL line per run. Written AFTER the gate result is
 # decided, in its own try/catch: a failure here is a visible Write-Warning and
-# can never change the exit code.
+# can never change the exit code. test_count was decided inside step 2 (null
+# whenever it was not measured).
 $localCiTimer.Stop()
-if ($telemetrySuites.Count -gt 0 -and $null -eq $telemetryTestCount) {
-    $executedSum = 0
-    foreach ($suiteRow in $telemetrySuites) { $executedSum += [int]$suiteRow.executed }
-    $telemetryTestCount = $executedSum
-}
 $telemetryStatus = if ($overallPass) { 'pass' } else { 'fail' }
 try {
     if (Get-Command Write-LocalCiTelemetry -ErrorAction SilentlyContinue) {
