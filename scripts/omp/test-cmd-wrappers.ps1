@@ -453,13 +453,15 @@ function Get-JsonParseLocationDiagnostic {
         return 'Parser location: not reported by this PowerShell runtime.'
     }
 
-    $matches = [regex]::Matches($message, '(?i)\b(line|position)\s+(\d+)\b')
-    if ($matches.Count -eq 0) {
+    # Named $locationMatches rather than $matches so it does not shadow the
+    # automatic $Matches variable that the -match operator populates.
+    $locationMatches = [regex]::Matches($message, '(?i)\b(line|position)\s+(\d+)\b')
+    if ($locationMatches.Count -eq 0) {
         return 'Parser location: not reported by this PowerShell runtime.'
     }
 
     $parts = [System.Collections.Generic.List[string]]::new()
-    foreach ($match in $matches) {
+    foreach ($match in $locationMatches) {
         $parts.Add("$($match.Groups[1].Value): $($match.Groups[2].Value)")
     }
 
@@ -688,7 +690,7 @@ function Test-IsSubPath {
         $fullPath.StartsWith($fullBasePathWithSeparator, [StringComparison]::OrdinalIgnoreCase)
 }
 
-function Trim-TrailingDirectorySeparators {
+function ConvertTo-TrimmedDirectoryPath {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     # Trim both Windows separator styles so C:\path\ and C:/path/ compare the
@@ -720,7 +722,7 @@ function ConvertTo-ComparablePath {
     # The wrapper validation is Windows-only by design because it launches
     # cmd.exe and taskkill.exe. Use OrdinalIgnoreCase path comparisons to match
     # normal Windows filesystem behavior for local drives and UNC paths.
-    $fullPath = Trim-TrailingDirectorySeparators -Path (Resolve-FullPathSafely -Name $Name -Path $Path)
+    $fullPath = ConvertTo-TrimmedDirectoryPath -Path (Resolve-FullPathSafely -Name $Name -Path $Path)
     return $fullPath.Replace([System.IO.Path]::AltDirectorySeparatorChar, [System.IO.Path]::DirectorySeparatorChar)
 }
 
@@ -1403,17 +1405,22 @@ function Get-TaskKillDiagnosticCommand {
     return "taskkill $TaskKillForceSwitch $TaskKillProcessIdSwitch $processIdText $TaskKillTerminateTreeSwitch"
 }
 
+function Test-ValidProcessIdValue {
+    param([object]$ProcessId)
+
+    # Single definition of "a usable process id": an [int] at or above the
+    # minimum valid process id ($null is not [int], so it fails here too).
+    # Both the display and the sentinel helper rely on this one check.
+    return ($ProcessId -is [int] -and $ProcessId -ge $MinimumValidProcessId)
+}
+
 function Get-ProcessIdDisplayText {
     param(
         [object]$ProcessId,
         [Parameter(Mandatory = $true)][string]$Fallback
     )
 
-    if ($null -eq $ProcessId) {
-        return $Fallback
-    }
-
-    if ($ProcessId -is [int] -and $ProcessId -ge $MinimumValidProcessId) {
+    if (Test-ValidProcessIdValue -ProcessId $ProcessId) {
         return [string]$ProcessId
     }
 
@@ -1423,7 +1430,7 @@ function Get-ProcessIdDisplayText {
 function Get-ProcessIdOrSentinel {
     param([object]$ProcessId)
 
-    if ($ProcessId -is [int] -and $ProcessId -ge $MinimumValidProcessId) {
+    if (Test-ValidProcessIdValue -ProcessId $ProcessId) {
         return $ProcessId
     }
 
@@ -2082,6 +2089,11 @@ foreach ($repository in $repositories) {
             PassThru = $true
         }
         $process = Start-Process @processParameters
+        # Windows PowerShell 5.1 returns a Process object whose ExitCode stays
+        # $null after the process exits unless its handle was cached while it
+        # was still running. Touch the handle once so the final exit code can
+        # be read; without this every finished run reported 'No exit code'.
+        $null = $process.Handle
         $processStartTime = Get-ProcessStartTimeOrNull -Process $process
     }
     catch {
