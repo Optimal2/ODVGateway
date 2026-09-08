@@ -12,7 +12,7 @@
     <PackageProjectUrl>https://github.com/Optimal2/ODVGateway</PackageProjectUrl>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="NLog.Web.AspNetCore" Version="6.1.4" />
+    <PackageReference Include="NLog.Web.AspNetCore" Version="6.2.0" />
   </ItemGroup>
   <ItemGroup>
     <!-- Lets tests/ODVGateway.Tests probe the top-level Program via WebApplicationFactory. -->

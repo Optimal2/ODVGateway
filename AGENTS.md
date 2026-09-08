@@ -49,14 +49,14 @@ Re-measured 2026-09-02 across all eight .NET repos:
 | `Microsoft.NET.Test.Sdk` | 18.9.0 | 18.9.0 (7 of 7) | in line |
 | `xunit` | 2.9.3 | 2.9.3 (7 of 7) | in line |
 | `xunit.runner.visualstudio` | 4.0.0 | 4.0.0 (7 of 7) | in line |
-| `NLog.Web.AspNetCore` | 6.1.4 | 6.2.0 (4 of 4 that use it) | **behind** |
+| `NLog.Web.AspNetCore` | 6.2.0 | 6.2.0 (4 of 4 others that use it; 5 of 5 including this repository) | in line (since 2026-09-08) |
 
 Three of those four rows were brought in line by family-wide campaigns, not by this repository
 catching up on its own: `Microsoft.NET.Test.Sdk` reached 18.9.0 on 2026-09-01 and the xunit
-runner reached 4.0.0 on 2026-08-31. `NLog.Web.AspNetCore` is the one pin still behind, in
-`src/ODVGateway/ODVGateway.csproj`. When you bump a pin here, bump it to the version the rest
-of the family already carries rather than to whatever is newest, unless the task is explicitly
-a family-wide upgrade.
+runner reached 4.0.0 on 2026-08-31. `NLog.Web.AspNetCore` lagged at 6.1.4 in
+`src/ODVGateway/ODVGateway.csproj` until 2026-09-08, when it was lifted to the family's 6.2.0.
+When you bump a pin here, bump it to the version the rest of the family already carries rather
+than to whatever is newest, unless the task is explicitly a family-wide upgrade.
 
 This repository also stays outside the shared Playwright UI-test tier: the other seven link
 `$(OpenModulePlatformRoot)\tests\shared\Ui\*.cs` into a `*.UiTests` project, ODVGateway does
