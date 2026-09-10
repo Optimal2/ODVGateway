@@ -72,6 +72,58 @@ public sealed class GatewayHttpStatusTests
 
 
     [Fact]
+    public async Task Viewer_BundleHandoffRedirect_KeepsInitiatorVisibleForTheFollowUpRequest()
+    {
+        // Measured 2026-09-10 against a real WebClient handoff with allowedInitiatorUrls set:
+        // /prep and ?sessiondata passed the initiator guard, but the 302 to ?bundleUrl=...
+        // carried the blanket Referrer-Policy: no-referrer, the browser applied it to the
+        // request that followed the redirect, that request arrived without Referer, and the
+        // guard rejected the gateway's own redirect with 403 (Operation=viewer-bundle-query).
+        // The redirect must carry a policy that keeps the same-origin initiator visible.
+        var distPath = CreateDistDirectory();
+        try
+        {
+            const string initiator = "http://localhost/WebClientODV/DocumentView";
+            using var factory = new GatewayFactory(distPath, allowedInitiatorUrl: "/WebClientODV/DocumentView");
+            using var client = factory.CreateClient(new WebApplicationFactoryClientOptions { AllowAutoRedirect = false });
+
+            using var prepRequest = new HttpRequestMessage(HttpMethod.Post, "/prep")
+            {
+                Content = new StringContent(
+                    """{"userId":"u1","sessionId":"s1","aspxAuth":"a1","portableDocuments":[{"documentId":"d1","fileData":[]}]}""",
+                    Encoding.UTF8,
+                    "application/json")
+            };
+            prepRequest.Headers.Referrer = new Uri(initiator);
+            using var prepResponse = await client.SendAsync(prepRequest);
+            Assert.True(prepResponse.IsSuccessStatusCode, $"/prep answered {(int)prepResponse.StatusCode}");
+
+            var sessionData = EncodeBase64Url("""{"userId":"u1","sessionId":"s1","aspxAuth":"a1","caseIds":["d1"]}""");
+            using var viewerRequest = new HttpRequestMessage(HttpMethod.Get, "/?sessiondata=" + sessionData);
+            viewerRequest.Headers.Referrer = new Uri(initiator);
+            using var viewerResponse = await client.SendAsync(viewerRequest);
+
+            Assert.Equal(HttpStatusCode.Redirect, viewerResponse.StatusCode);
+            Assert.True(
+                viewerResponse.Headers.TryGetValues("Referrer-Policy", out var policies),
+                "the redirect carried no Referrer-Policy header");
+            Assert.Equal("strict-origin-when-cross-origin", Assert.Single(policies));
+
+            // The browser keeps the initiator's Referer on the follow-up request under that
+            // policy; the guard must then accept the gateway's own redirect target.
+            using var followUpRequest = new HttpRequestMessage(HttpMethod.Get, viewerResponse.Headers.Location);
+            followUpRequest.Headers.Referrer = new Uri(initiator);
+            using var followUpResponse = await client.SendAsync(followUpRequest);
+
+            Assert.Equal(HttpStatusCode.OK, followUpResponse.StatusCode);
+        }
+        finally
+        {
+            DeleteTempDirectory(distPath);
+        }
+    }
+
+    [Fact]
     public async Task Viewer_WhenDistPathIsMissing_Returns503()
     {
         // OpenDocViewerIndexRenderer.RenderAsync: no dist path configured. The commit
@@ -202,6 +254,7 @@ public sealed class GatewayHttpStatusTests
         private readonly bool _allowFallbackWithoutSession;
         private readonly bool _requireExplicitDistPath;
         private readonly string? _contentRoot;
+        private readonly string? _allowedInitiatorUrl;
 
         // allowFallbackWithoutSession lets a probe reach OpenDocViewerIndexRenderer
         // without a prepared session. Without it every request to "/" stops at the
@@ -211,12 +264,14 @@ public sealed class GatewayHttpStatusTests
             string? distPath,
             bool allowFallbackWithoutSession = false,
             bool requireExplicitDistPath = true,
-            string? contentRoot = null)
+            string? contentRoot = null,
+            string? allowedInitiatorUrl = null)
         {
             _distPath = distPath;
             _allowFallbackWithoutSession = allowFallbackWithoutSession;
             _requireExplicitDistPath = requireExplicitDistPath;
             _contentRoot = contentRoot;
+            _allowedInitiatorUrl = allowedInitiatorUrl;
         }
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -237,7 +292,8 @@ public sealed class GatewayHttpStatusTests
                     ["ODVGateway:OpenDocViewerDistPath"] = _distPath ?? string.Empty,
                     ["ODVGateway:RequireExplicitOpenDocViewerDistPath"] = _requireExplicitDistPath ? "true" : "false",
                     ["ODVGateway:AllowOpenDocViewerFallbackWithoutSession"] =
-                        _allowFallbackWithoutSession ? "true" : "false"
+                        _allowFallbackWithoutSession ? "true" : "false",
+                    ["ODVGateway:WebClientHandoff:AllowedInitiatorUrls:0"] = _allowedInitiatorUrl
                 });
             });
         }

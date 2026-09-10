@@ -502,6 +502,14 @@ static async Task<IResult> RenderViewerAsync(
 
     if (options.Value.UseBundleUrlHandoff)
     {
+        // The security middleware stamps Referrer-Policy: no-referrer on every response, and a
+        // browser applies a redirect's Referrer-Policy to the request that follows it. The
+        // follow-up GET ?bundleUrl=... then arrived without Referer, so the handoff guard
+        // rejected the gateway's own redirect whenever allowedInitiatorUrls was configured
+        // (measured 2026-09-10 against a real WebClient handoff). Keep the WebClient initiator
+        // visible to the same-origin viewer request; a cross-origin destination still receives
+        // only the origin, which is all a host-only allowlist entry needs.
+        context.Response.Headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
         return Results.Redirect(BuildViewerBundleUrl(context.Request, session));
     }
 
