@@ -8,7 +8,7 @@ Security issues should be reported privately before public disclosure.
 
 ## Supported Versions
 
-**ODVGateway v0.1.41** is the current supported release and the recommended
+**ODVGateway v0.1.42** is the current supported release and the recommended
 deployment target.
 
 Official releases are tagged `vX.Y.Z` and published with a
@@ -24,7 +24,8 @@ test-standard and dependency updates listed below.
 
 | Version | Security support | Notes |
 | --- | --- | --- |
-| 0.1.41 | :white_check_mark: | Current recommended release and only supported baseline |
+| 0.1.42 | :white_check_mark: | Current recommended release and only supported baseline |
+| 0.1.41 | :x: | Superseded by v0.1.42: the handoff redirect keeps the WebClient initiator visible, so `allowedInitiatorUrls` works with the default bundle handoff |
 | 0.1.40 | :x: | Superseded by v0.1.41: real `/health` and error status codes, reproducible assemblies, refreshed test baseline |
 | 0.1.39 | :x: | Superseded by v0.1.40 release-process hardening |
 | <= 0.1.38 | :x: | OMP-artifact-only builds with no published release; upgrade to v0.1.39 |
@@ -32,8 +33,13 @@ test-standard and dependency updates listed below.
 
 ## Recent release context
 
-The most recent releases are listed below for operational context. Only v0.1.41
+The most recent releases are listed below for operational context. Only v0.1.42
 is supported.
+
+### ODVGateway v0.1.42
+Changes since v0.1.41:
+
+- The `?sessiondata=` to `?bundleUrl=` redirect carries `Referrer-Policy: strict-origin-when-cross-origin` instead of the blanket `no-referrer`, so the browser keeps sending the WebClient initiator on the follow-up request and the handoff guard accepts the gateway's own redirect. Until this fix, `webClientHandoff.allowedInitiatorUrls` could only be used together with `useBundleUrlHandoff: false`, and operators were tempted to loosen the guard instead.
 
 ### ODVGateway v0.1.41
 Changes since v0.1.40:

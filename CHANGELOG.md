@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 for its `0.1.x` release line.
 
+## [0.1.42] - 2026-09-10
+
+### Fixed
+
+- The `302` from `?sessiondata=` to `?bundleUrl=` carried the blanket
+  `Referrer-Policy: no-referrer`, so the browser sent the follow-up viewer request
+  without `Referer` and the handoff guard rejected the gateway's own redirect
+  with `403` whenever `allowedInitiatorUrls` was configured. The redirect now
+  carries `strict-origin-when-cross-origin`; covered by an HTTP-level test that
+  also proves the follow-up without `Referer` is still rejected.
+- `web.config` no longer adds its own `Referrer-Policy: no-referrer`: IIS appends
+  `customHeaders` after the application's headers and browsers honour the last
+  value, so the IIS copy silently undid the fix above under IIS. The
+  application middleware is the header's only owner.
+
 ## [0.1.41] - 2026-09-10
 
 A maintenance release with two runtime fixes and a refreshed baseline.
