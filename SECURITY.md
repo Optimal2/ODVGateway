@@ -8,7 +8,7 @@ Security issues should be reported privately before public disclosure.
 
 ## Supported Versions
 
-**ODVGateway v0.1.40** is the current supported release and the recommended
+**ODVGateway v0.1.41** is the current supported release and the recommended
 deployment target.
 
 Official releases are tagged `vX.Y.Z` and published with a
@@ -24,15 +24,24 @@ test-standard and dependency updates listed below.
 
 | Version | Security support | Notes |
 | --- | --- | --- |
-| 0.1.40 | :white_check_mark: | Current recommended release and only supported baseline |
+| 0.1.41 | :white_check_mark: | Current recommended release and only supported baseline |
+| 0.1.40 | :x: | Superseded by v0.1.41: real `/health` and error status codes, reproducible assemblies, refreshed test baseline |
 | 0.1.39 | :x: | Superseded by v0.1.40 release-process hardening |
 | <= 0.1.38 | :x: | OMP-artifact-only builds with no published release; upgrade to v0.1.39 |
 | < 0.1.0 | :x: | Not supported |
 
 ## Recent release context
 
-The most recent releases are listed below for operational context. Only v0.1.40
+The most recent releases are listed below for operational context. Only v0.1.41
 is supported.
+
+### ODVGateway v0.1.41
+Changes since v0.1.40:
+
+- `/health` and the error pages return the HTTP status they describe (503 for an unavailable viewer, 4xx for rejected input) instead of 200 with an error body, so monitoring and load balancers see failures; the renderer's 503 paths are test-covered.
+- The git commit is kept out of the assembly bytes, so a rebuild of unchanged source produces byte-identical binaries and an OMP artifact cannot change content under one version.
+- NLog.Web.AspNetCore 6.2.0; test infrastructure on Microsoft.NET.Test.Sdk 18.10.0, xunit.runner.visualstudio 4.0.0, Microsoft.AspNetCore.Mvc.Testing 10.0.12.
+- Canonical component-version validator with lockstep, payload and shared-script drift checks; hardened smoke test and local CI gate.
 
 ### ODVGateway v0.1.40
 Hardening of the release process after an independent review; runtime behaviour

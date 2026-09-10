@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 for its `0.1.x` release line.
 
+## [0.1.41] - 2026-09-10
+
+A maintenance release with two runtime fixes and a refreshed baseline.
+
+### Fixed
+
+- `/health` and the error pages return real HTTP status codes (503 for an
+  unavailable viewer, 4xx for rejected input) instead of 200 with an error body.
+- The renderer's own 503 paths, which shipped untested, are covered by tests.
+- The git commit is kept out of the assembly bytes, so builds of unchanged
+  source are byte-identical and an OMP artifact keeps its content hash.
+
+### Changed
+
+- NLog.Web.AspNetCore 6.2.0 (the OpenModulePlatform family pin); test
+  infrastructure on Microsoft.NET.Test.Sdk 18.10.0, xunit.runner.visualstudio
+  4.0.0 and Microsoft.AspNetCore.Mvc.Testing 10.0.12.
+- The component-version validator is canonicalized under `scripts/omp` with
+  lockstep, payload and shared-script drift checks (Checks 12, 13, 15, 16).
+- The smoke test reads the target framework from the project file, fails fast on
+  an unexpected `/health` status, drains process output, detects leaked paths
+  reliably and never deletes a developer's `appsettings.Smoke.json`.
+- The local CI gate records a best-effort telemetry line per run; the pre-push
+  hook drops inherited `GIT_*` variables.
+- Documentation: removed sections copied from OpenModulePlatform that this
+  repository does not ship; corrected the version and validator paragraphs;
+  recorded the no-central-package-management pin situation.
+
 ## [0.1.40] - 2026-08-23
 
 Hardening of the release process after an independent review of v0.1.39. Runtime
