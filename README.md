@@ -175,10 +175,15 @@ Important settings:
   `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
   `X-Robots-Tag: noindex`, and `Content-Security-Policy`. Kestrel also disables
   the default `Server` response header. IIS deployments already set the first
-  three through `web.config` and can remove the `Server` header with
+  two through `web.config` and can remove the `Server` header with
   `web.config` requestFiltering or URL Rewrite configuration; deployment-specific
   `Strict-Transport-Security` headers remain the responsibility of the host
-  reverse proxy or IIS configuration.
+  reverse proxy or IIS configuration. `Referrer-Policy` must be emitted by the
+  application alone: IIS appends its `customHeaders` after the application's
+  headers and browsers honour the last value, so an IIS copy of `no-referrer`
+  overrides the `strict-origin-when-cross-origin` the gateway sets on the
+  `?sessiondata=` to `?bundleUrl=` redirect and breaks the initiator allowlist
+  (the follow-up request loses its `Referer` and is rejected with `403`).
 - `contentSecurityPolicy`: Optional override for the `Content-Security-Policy`
   response header. When omitted or null, the gateway emits a restrictive default
   policy that allows same-origin OpenDocViewer dist files, the inline bootstrap

@@ -116,6 +116,14 @@ public sealed class GatewayHttpStatusTests
             using var followUpResponse = await client.SendAsync(followUpRequest);
 
             Assert.Equal(HttpStatusCode.OK, followUpResponse.StatusCode);
+
+            // Negative edge (review finding 2026-09-10): without it the assertion above would
+            // also pass if the allowlist were never bound, because an empty allowlist lets
+            // everything through. The same follow-up without Referer must still be rejected.
+            using var blindFollowUpRequest = new HttpRequestMessage(HttpMethod.Get, viewerResponse.Headers.Location);
+            using var blindFollowUpResponse = await client.SendAsync(blindFollowUpRequest);
+
+            Assert.Equal(HttpStatusCode.Forbidden, blindFollowUpResponse.StatusCode);
         }
         finally
         {
