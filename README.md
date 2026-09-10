@@ -184,6 +184,14 @@ Important settings:
   overrides the `strict-origin-when-cross-origin` the gateway sets on the
   `?sessiondata=` to `?bundleUrl=` redirect and breaks the initiator allowlist
   (the follow-up request loses its `Referer` and is rejected with `403`).
+  A deployment that keeps its own copy of `web.config` must REPLACE it with
+  the published one when upgrading to 0.1.42 or later (or delete the
+  `Referrer-Policy` line by hand); the same goes for `applicationHost.config`,
+  URL Rewrite outbound rules and the reverse proxy. Verify on the redirect
+  itself, since `/health` cannot show it:
+  `curl -sD - -o NUL "https://<site>/ODVGateway/?sessiondata=<token>"` must
+  print exactly one `Referrer-Policy` line, with the value
+  `strict-origin-when-cross-origin`.
 - `contentSecurityPolicy`: Optional override for the `Content-Security-Policy`
   response header. When omitted or null, the gateway emits a restrictive default
   policy that allows same-origin OpenDocViewer dist files, the inline bootstrap

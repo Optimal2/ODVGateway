@@ -107,9 +107,16 @@ handoff and source-access configuration:
 - keep source proxy and source-pack byte limits aligned with the deployment's
   expected maximum source-file size
 - verify that baseline response headers (`X-Frame-Options`,
-  `X-Content-Type-Options`, `Referrer-Policy`, `X-Robots-Tag`, and
-  `Content-Security-Policy`) are emitted by the host reverse proxy or by the
-  gateway's Kestrel middleware
+  `X-Content-Type-Options`, `X-Robots-Tag`, and `Content-Security-Policy`)
+  are emitted by the host reverse proxy or by the gateway's Kestrel middleware
+- verify that `Referrer-Policy` is emitted by the gateway ALONE: never add it in
+  `web.config`, `applicationHost.config`, URL Rewrite outbound rules, or the
+  reverse proxy. Browsers honour the last value, and any extra `no-referrer`
+  overrides the `strict-origin-when-cross-origin` the gateway sets on the
+  `?sessiondata=` to `?bundleUrl=` redirect, which breaks the initiator
+  allowlist. Check the redirect itself, not `/health`: `curl -sD - -o NUL
+  "https://<site>/ODVGateway/?sessiondata=<token>"` must show exactly one
+  `Referrer-Policy` line with that value
 - verify that the Kestrel `Server` response header is disabled or removed by
   the host reverse proxy; the gateway disables it by default for standalone
   Kestrel deployments
