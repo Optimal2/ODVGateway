@@ -14,16 +14,24 @@ using ODVGateway.Services;
 // OpenDocViewerIndexRenderer, the inline styles used by GatewayHtml.StatusPage,
 // and the same-origin OpenDocViewer dist files. Deployments can override the
 // entire policy via ODVGateway:contentSecurityPolicy in appsettings.json.
+//
+// blob: is required in connect-src and frame-src by the viewer's PDF print
+// path: jsPDF fetches its generated blob, and printPdfBlob loads that blob in
+// a hidden iframe and calls contentWindow.print(). Without them the print flow
+// dies silently ("Förbereder utskrift 100 %", then nothing) — reproduced and
+// verified against a simulated WebClient handoff 2026-09-15. frame-src must be
+// explicit: when absent it falls back to default-src, which blocks blob:.
 const string DefaultContentSecurityPolicy =
     "default-src 'self'; " +
     "script-src 'self' 'unsafe-inline'; " +
     "style-src 'self' 'unsafe-inline'; " +
     "img-src 'self' data: blob:; " +
-    "connect-src 'self'; " +
+    "connect-src 'self' blob:; " +
     "font-src 'self'; " +
     "media-src 'self'; " +
     "object-src 'self'; " +
     "worker-src 'self' blob:; " +
+    "frame-src 'self' blob:; " +
     "frame-ancestors 'self'; " +
     "base-uri 'self'; " +
     "form-action 'self'";

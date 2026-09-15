@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 for its `0.1.x` release line.
 
+## [Unreleased]
+
+### Fixed
+
+- The default `Content-Security-Policy` blocked the viewer's PDF print path:
+  `connect-src 'self'` stopped jsPDF from fetching its generated blob, and the
+  missing `frame-src` made the hidden blob-PDF print iframe fall back to
+  `default-src 'self'` and get blocked, after which the cross-origin probe of
+  `contentWindow.print` threw an uncaught `SecurityError` in the viewer — the
+  user saw "Förbereder utskrift" reach 100 % and then nothing. The default now
+  carries `connect-src 'self' blob:` and an explicit `frame-src 'self' blob:`.
+  Reproduced and fix-verified against a simulated WebClient handoff 2026-09-15;
+  matches the SU Test incident console errors exactly. Deployments that
+  override `contentSecurityPolicy` need the same two `blob:` sources, and any
+  IIS-level CSP header must be removed or aligned — with two CSP headers the
+  browser enforces the intersection, so the stricter copy wins.
+
 ## [0.1.42] - 2026-09-10
 
 ### Fixed
