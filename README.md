@@ -198,7 +198,13 @@ Important settings:
   script injected by the gateway, inline styles used by error/status pages,
   blob/data image sources, and same-origin API calls. Set this only when the
   default policy breaks a specific OpenDocViewer build; include a comment in
-  deployment configuration explaining why the override is required.
+  deployment configuration explaining why the override is required. Any
+  override (and any CSP added at the web-server level) MUST keep
+  `frame-src 'self' blob:` and `connect-src 'self' blob:` or the viewer's PDF
+  printing breaks: the print iframe loads a blob PDF, and the PDF worker
+  fetches blob page images. With two CSP headers on one response the browser
+  enforces the intersection, so a stricter server-level copy silently wins —
+  prefer exactly one owner for this header.
 - `metadataAliases`: Optional alias mapping copied into the neutral ODV bundle
   so print templates such as `{{metadata.patientId}}` keep working. The
   `fieldId` values come from the deployment's WebClient metadata schema and

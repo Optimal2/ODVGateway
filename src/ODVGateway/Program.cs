@@ -15,12 +15,18 @@ using ODVGateway.Services;
 // and the same-origin OpenDocViewer dist files. Deployments can override the
 // entire policy via ODVGateway:contentSecurityPolicy in appsettings.json.
 //
-// blob: is required in connect-src and frame-src by the viewer's PDF print
-// path: jsPDF fetches its generated blob, and printPdfBlob loads that blob in
-// a hidden iframe and calls contentWindow.print(). Without them the print flow
-// dies silently ("Förbereder utskrift 100 %", then nothing) — reproduced and
-// verified against a simulated WebClient handoff 2026-09-15. frame-src must be
+// blob: is required in frame-src and connect-src by the viewer's PDF print
+// path. frame-src: printPdfBlob loads the generated PDF blob in a hidden
+// iframe and calls contentWindow.print(); without blob: the frame is blocked,
+// the probe throws cross-origin, and the print flow dies silently
+// ("Förbereder utskrift 100 %", then nothing) — reproduced and verified
+// against a simulated WebClient handoff 2026-09-15. frame-src must be
 // explicit: when absent it falls back to default-src, which blocks blob:.
+// connect-src: the viewer's external PDF worker fetches the page images'
+// blob: URLs, and a dedicated worker obeys the CSP served on its own script
+// response — which this middleware stamps on every response. Without blob:
+// the worker path degrades silently to the main thread (a logged warning,
+// slower prints). The generated PDF blob itself is never fetched.
 const string DefaultContentSecurityPolicy =
     "default-src 'self'; " +
     "script-src 'self' 'unsafe-inline'; " +

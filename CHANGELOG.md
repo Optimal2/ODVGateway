@@ -11,12 +11,15 @@ for its `0.1.x` release line.
 ### Fixed
 
 - The default `Content-Security-Policy` blocked the viewer's PDF print path:
-  `connect-src 'self'` stopped jsPDF from fetching its generated blob, and the
-  missing `frame-src` made the hidden blob-PDF print iframe fall back to
+  the missing `frame-src` made the hidden blob-PDF print iframe fall back to
   `default-src 'self'` and get blocked, after which the cross-origin probe of
   `contentWindow.print` threw an uncaught `SecurityError` in the viewer — the
   user saw "Förbereder utskrift" reach 100 % and then nothing. The default now
-  carries `connect-src 'self' blob:` and an explicit `frame-src 'self' blob:`.
+  carries an explicit `frame-src 'self' blob:` (the fix for the hang) and
+  `connect-src 'self' blob:` — the latter not for the generated PDF, which is
+  never fetched, but for the viewer's external PDF worker, which fetches the
+  page images' blob: URLs and obeys the CSP stamped on its own script
+  response; without it the worker path degrades silently to the main thread.
   Reproduced and fix-verified against a simulated WebClient handoff 2026-09-15;
   matches the SU Test incident console errors exactly. Deployments that
   override `contentSecurityPolicy` need the same two `blob:` sources, and any
