@@ -122,9 +122,11 @@ WebClient; the viewer issues the rest.
 flowchart TD
     A([User clicks a document<br/>in WebClient]) --> B[WebClient renders<br/>MediaViewerTwo iframe<br/>pointed at ODVGateway]
     B --> C[Browser POST /prep<br/>with WebClient payload]
-    C --> D{WebClientHandoffGuard<br/>allow Referer/Origin?}
-    D -- no --> E[/403 Forbidden<br/>or empty allowlist/]
-    D -- yes --> F[GatewaySessionStore.Store<br/>allocates sessionKey<br/>+ handoffLookupKey]
+    C --> D{WebClientHandoffGuard<br/>allowedInitiatorUrls empty?}
+    D -- yes --> F[GatewaySessionStore.Store<br/>allocates sessionKey<br/>+ handoffLookupKey<br/>(fail-open, dev only)]
+    D -- no --> E{Referer/Origin matches<br/>an allowedInitiatorUrls entry?}
+    E -- no --> EH[/403 Forbidden<br/>Referer/Origin not in allowlist/]
+    E -- yes --> F
     F --> G[Build GatewaySourceFile list<br/>FileTicket.Parse]
     G --> H[200 OK: sessionKey,<br/>document + file count, expiresUtc]
     H --> I[WebClient opens iframe<br/>GET /?sessiondata=&lt;token&gt;]
@@ -295,7 +297,7 @@ generic; override them per deployment.
 | `sessionTtlMinutes` | 30 | Effective minimum is 5 minutes; lower values are clamped and a startup warning is logged. |
 | `maxConcurrentSessions` | 50 000 | Per-process; new `/prep` requests receive 429 when full. |
 | `maxPrepBodyBytes` | 50 MiB | Drives `FormOptions.ValueLengthLimit`. |
-| `webClientHandoff.allowedInitiatorUrls` | `[]` | Empty list = dev only; production must name the host WebClient pages that may start viewer sessions. |
+| `webClientHandoff.allowedInitiatorUrls` | `[]` | Empty list **means "everything allowed"** (the guard fails open so a fresh clone can run locally without a configured allowlist). Production deployments must name the host WebClient pages that may start viewer sessions, otherwise the gateway accepts any initiator. |
 | `webClientHandoff.allowMissingInitiatorHeaders` | `false` | Compatibility escape hatch; startup logs a warning when enabled. |
 
 The store is process-local and non-durable. Restarts drop pending
