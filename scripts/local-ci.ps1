@@ -9,11 +9,12 @@
     2. dotnet test tests/ODVGateway.Tests/ODVGateway.Tests.csproj (unit tests)
     3. scripts/smoke-test.ps1 (builds, starts, and smoke-tests the gateway)
     4. scripts/omp/validate-component-versions.ps1 -Strict
+    5. tests/scripts/Check15Strict.Tests.ps1 (Check 15 strict wiring)
 
     Each step reports PASS or FAIL. The script exits with code 0 when every
     step passes and 1 when any step fails. Steps 2 and 3 are skipped when the
-    step before them failed; step 4 always runs because it validates the
-    component manifest only and does not depend on the build output.
+    step before them failed; steps 4 and 5 always run because they read the
+    component manifest and scripts only and do not depend on the build output.
 
     Run this before every push to catch build breaks and runtime regressions
     before they reach the shared main branch. GitHub Actions for this public
@@ -80,6 +81,7 @@ $testProjectPath = Join-Path $repoRoot 'tests/ODVGateway.Tests/ODVGateway.Tests.
 $testResultsDir = Join-Path $repoRoot 'TestResults'
 $smokeScript = Join-Path $scriptDir 'smoke-test.ps1'
 $validatorScript = Join-Path $scriptDir 'omp\validate-component-versions.ps1'
+$check15TestScript = Join-Path $repoRoot 'tests\scripts\Check15Strict.Tests.ps1'
 
 # --- Local-ci telemetry (best-effort; never changes the gate's exit code) ----
 # One compact JSONL line per run under
@@ -285,6 +287,35 @@ catch {
     $overallPass = $false
 }
 Write-StepResult -Step 'validate-component-versions.ps1' -Passed $step4Pass -Message $step4Message
+
+# Step 5: Check 15 strict-wiring tests
+# Not gated on earlier steps either: the tests read the validator and this
+# script and never need the build output. They pin that Check 15 fails when
+# the platform checkout cannot be found and that this gate runs it -Strict,
+# so a regression in that wiring fails local CI instead of passing silently.
+# A missing platform checkout is reported as skipped only when
+# -AllowUnverifiedSharedScripts was passed on purpose.
+$step5Pass = $false
+$step5Message = ''
+try {
+    $allowLabel = if ($AllowUnverifiedSharedScripts) { ' -AllowMissingPlatform' } else { '' }
+    $rootLabel = if ([string]::IsNullOrWhiteSpace($PlatformRepositoryRoot)) { '' } else { " -PlatformRepositoryRoot '$PlatformRepositoryRoot'" }
+    Write-Host ''
+    Write-Host "Running: $check15TestScript$rootLabel$allowLabel"
+    & "$check15TestScript" -PlatformRepositoryRoot $PlatformRepositoryRoot -AllowMissingPlatform:$AllowUnverifiedSharedScripts
+    if ($LASTEXITCODE -eq 0) {
+        $step5Pass = $true
+    }
+    else {
+        $step5Message = "Check15Strict.Tests.ps1 exited with code $LASTEXITCODE"
+        $overallPass = $false
+    }
+}
+catch {
+    $step5Message = "Check15Strict.Tests.ps1 failed: $_"
+    $overallPass = $false
+}
+Write-StepResult -Step 'Check15Strict.Tests.ps1' -Passed $step5Pass -Message $step5Message
 
 # Telemetry: one compact JSONL line per run. Written AFTER the gate result is
 # decided, in its own try/catch: a failure here is a visible Write-Warning and

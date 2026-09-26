@@ -1209,16 +1209,29 @@ if ($lockstepCheckCount -gt 0 -or $lockstepErrorCount -gt 0) {
 # 'OpenModulePlatform' (see the script help). The resolved root is passed on
 # explicitly, so this script and the guard can never look in different places;
 # an unresolvable root is reported below as "not verified".
-$check15OmpRoot = $PlatformRepositoryRoot
-if ([string]::IsNullOrWhiteSpace($check15OmpRoot)) {
-    $check15OmpRoot = $env:OMP_PLATFORM_ROOT
+# The resolution lives in one self-contained function (parameters and
+# environment only) so tests/scripts/Check15Strict.Tests.ps1 can reuse it
+# from this file's syntax tree instead of keeping its own copy.
+function Resolve-Check15PlatformRoot {
+    param(
+        [string]$PlatformRepositoryRoot,
+        [string]$RepositoryRoot
+    )
+
+    $root = $PlatformRepositoryRoot
+    if ([string]::IsNullOrWhiteSpace($root)) {
+        $root = $env:OMP_PLATFORM_ROOT
+    }
+    if ([string]::IsNullOrWhiteSpace($root)) {
+        $root = $env:OpenModulePlatformRoot
+    }
+    if ([string]::IsNullOrWhiteSpace($root)) {
+        $root = [System.IO.Path]::GetFullPath((Join-Path $RepositoryRoot '..\OpenModulePlatform'))
+    }
+    return $root
 }
-if ([string]::IsNullOrWhiteSpace($check15OmpRoot)) {
-    $check15OmpRoot = $env:OpenModulePlatformRoot
-}
-if ([string]::IsNullOrWhiteSpace($check15OmpRoot)) {
-    $check15OmpRoot = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot '..\OpenModulePlatform'))
-}
+
+$check15OmpRoot = Resolve-Check15PlatformRoot -PlatformRepositoryRoot $PlatformRepositoryRoot -RepositoryRoot $repositoryRoot
 $check15Script = Join-Path $check15OmpRoot 'scripts\omp\validate-shared-scripts.ps1'
 if (Test-Path -LiteralPath $check15Script -PathType Leaf) {
     & $check15Script -ConsumerRepositoryRoot $repositoryRoot -PlatformRepositoryRoot $check15OmpRoot -Strict:$Strict

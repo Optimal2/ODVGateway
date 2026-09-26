@@ -13,13 +13,23 @@
     The cases below pin the behaviour that closes that gap:
 
     1. A platform root that cannot be resolved fails the validator under
-       -Strict (exit 1, a Check 15 error).
+       -Strict (exit 1 with the exact Check 15 "canonical script not found"
+       error for that root, so an unrelated validator error cannot pass it).
     2. OMP_PLATFORM_ROOT is honoured and wins over OpenModulePlatformRoot, so
        the comparison actually runs.
     3. -PlatformRepositoryRoot wins over OMP_PLATFORM_ROOT.
     4. scripts/local-ci.ps1 runs the validator with -Strict unless
        -AllowUnverifiedSharedScripts is passed, and forwards
        -PlatformRepositoryRoot.
+    5. scripts/local-ci.ps1 runs this file as a step, so a regression in the
+       -Strict wiring fails the local gate.
+
+    The platform checkout for cases 2 and 3 is resolved with the validator's
+    own Resolve-Check15PlatformRoot function, taken from its syntax tree
+    rather than copied, so this file and the validator look in the same
+    places in the same order: -PlatformRepositoryRoot, OMP_PLATFORM_ROOT,
+    OpenModulePlatformRoot, then the sibling directory named
+    OpenModulePlatform.
 
     Cases 2 and 3 need a real OpenModulePlatform checkout. It is read, never
     written. Without one those cases fail rather than skip, because a check
@@ -31,7 +41,8 @@
 
 .PARAMETER PlatformRepositoryRoot
     A valid OpenModulePlatform checkout. Defaults to $env:OMP_PLATFORM_ROOT,
-    then $env:OpenModulePlatformRoot.
+    then $env:OpenModulePlatformRoot, then the sibling directory named
+    OpenModulePlatform (the validator's resolution order).
 
 .PARAMETER AllowMissingPlatform
     Report cases 2 and 3 as skipped when no platform checkout is available.
@@ -53,20 +64,35 @@ $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $validatorScript = Join-Path $repoRoot 'scripts\omp\validate-component-versions.ps1'
 $localCiScript = Join-Path $repoRoot 'scripts\local-ci.ps1'
 
-if ([string]::IsNullOrWhiteSpace($PlatformRepositoryRoot)) { $PlatformRepositoryRoot = $env:OMP_PLATFORM_ROOT }
-if ([string]::IsNullOrWhiteSpace($PlatformRepositoryRoot)) { $PlatformRepositoryRoot = $env:OpenModulePlatformRoot }
-$hasPlatform = -not [string]::IsNullOrWhiteSpace($PlatformRepositoryRoot) -and
-    (Test-Path -LiteralPath (Join-Path $PlatformRepositoryRoot 'scripts\omp\validate-shared-scripts.ps1') -PathType Leaf)
-
-# A path that is guaranteed not to be an OpenModulePlatform checkout.
-$missingRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('odvgw-no-omp-' + [guid]::NewGuid().ToString('N'))
-
 $results = New-Object System.Collections.Generic.List[object]
 
 function Add-Result {
     param([string]$Name, [string]$Outcome, [string]$Detail = '')
     $results.Add([pscustomobject]@{ Name = $Name; Outcome = $Outcome; Detail = $Detail })
 }
+
+# Reuse the validator's own platform-root resolution instead of a copy of it:
+# the function definition is taken from the validator's syntax tree and
+# defined here, without running the validator itself.
+$tokens = $null
+$parseErrors = $null
+$validatorAst = [System.Management.Automation.Language.Parser]::ParseFile($validatorScript, [ref]$tokens, [ref]$parseErrors)
+$resolverAst = $validatorAst.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Resolve-Check15PlatformRoot'
+}, $true)
+if ($null -eq $resolverAst) {
+    Add-Result 'validator resolves the platform root in one function' 'FAIL' 'Resolve-Check15PlatformRoot not found in validate-component-versions.ps1'
+}
+else {
+    . ([scriptblock]::Create($resolverAst.Extent.Text))
+    $PlatformRepositoryRoot = Resolve-Check15PlatformRoot -PlatformRepositoryRoot $PlatformRepositoryRoot -RepositoryRoot $repoRoot
+}
+$hasPlatform = -not [string]::IsNullOrWhiteSpace($PlatformRepositoryRoot) -and
+    (Test-Path -LiteralPath (Join-Path $PlatformRepositoryRoot 'scripts\omp\validate-shared-scripts.ps1') -PathType Leaf)
+
+# A path that is guaranteed not to be an OpenModulePlatform checkout.
+$missingRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('odvgw-no-omp-' + [guid]::NewGuid().ToString('N'))
 
 function Invoke-Validator {
     param([hashtable]$Environment, [hashtable]$Arguments)
@@ -80,7 +106,9 @@ function Invoke-Validator {
             [Environment]::SetEnvironmentVariable($name, $value, 'Process')
         }
         $global:LASTEXITCODE = 0
-        $output = & $validatorScript @Arguments *>&1 | Out-String
+        # One line per record, joined without Out-String so a long message is
+        # not wrapped at the console width before it is matched.
+        $output = (& $validatorScript @Arguments *>&1 | ForEach-Object { "$_" }) -join "`n"
         return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
     }
     catch {
@@ -99,13 +127,18 @@ function Test-ComparisonRan {
         ($Output -notmatch 'Shared scripts: NOT VERIFIED - the OpenModulePlatform checkout')
 }
 
-# Case 1: no resolvable root + -Strict => exit 1 with a Check 15 error.
+# Case 1: no resolvable root + -Strict => exit 1 with the exact Check 15 error
+# for that root. Matching only "Check 15" could pass on an unrelated validator
+# error that happens to coincide with a NOT VERIFIED warning.
 $case1 = Invoke-Validator -Environment @{ OMP_PLATFORM_ROOT = $missingRoot } -Arguments @{ Strict = $true }
-if ($case1.ExitCode -eq 1 -and $case1.Output -match 'Check 15') {
+$case1Script = Join-Path $missingRoot 'scripts\omp\validate-shared-scripts.ps1'
+$case1Expected = [regex]::Escape("Check 15: canonical script not found at '$case1Script'; shared script drift could not be checked") +
+    '.*' + [regex]::Escape('Strict mode treats a guard that could not run as an error.')
+if ($case1.ExitCode -eq 1 -and $case1.Output -match $case1Expected -and $case1.Output -notmatch 'Check 15: NOT VERIFIED') {
     Add-Result 'no platform root + -Strict fails' 'PASS'
 }
 else {
-    Add-Result 'no platform root + -Strict fails' 'FAIL' "exit $($case1.ExitCode); expected 1 with a Check 15 error"
+    Add-Result 'no platform root + -Strict fails' 'FAIL' "exit $($case1.ExitCode); expected 1 with the Check 15 'canonical script not found' error for '$missingRoot'"
 }
 
 if ($hasPlatform) {
@@ -129,14 +162,12 @@ if ($hasPlatform) {
 }
 else {
     $outcome = if ($AllowMissingPlatform) { 'SKIP' } else { 'FAIL' }
-    $detail = 'no OpenModulePlatform checkout: set OMP_PLATFORM_ROOT or pass -PlatformRepositoryRoot'
+    $detail = "no OpenModulePlatform checkout at '$PlatformRepositoryRoot': set OMP_PLATFORM_ROOT or pass -PlatformRepositoryRoot"
     Add-Result 'OMP_PLATFORM_ROOT runs the comparison' $outcome $detail
     Add-Result '-PlatformRepositoryRoot wins over OMP_PLATFORM_ROOT' $outcome $detail
 }
 
 # Case 4: local-ci passes -Strict unless explicitly allowed, and forwards the root.
-$tokens = $null
-$parseErrors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($localCiScript, [ref]$tokens, [ref]$parseErrors)
 $paramNames = @()
 if ($null -ne $ast.ParamBlock) { $paramNames = @($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) }
@@ -158,6 +189,29 @@ if ($case4Problems.Count -eq 0) {
 }
 else {
     Add-Result 'local-ci runs Check 15 strict by default' 'FAIL' ($case4Problems -join '; ')
+}
+
+# Case 5: local-ci runs this file as a step, forwards the root, and allows a
+# missing platform only when -AllowUnverifiedSharedScripts was passed.
+$testCalls = @($ast.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and
+        $node.CommandElements.Count -gt 0 -and
+        $node.CommandElements[0].Extent.Text -match 'check15TestScript'
+}, $true))
+$testCallText = ($testCalls | ForEach-Object { $_.Extent.Text }) -join "`n"
+$case5Problems = @()
+if ($ast.Extent.Text -notmatch '\$check15TestScript\s*=\s*Join-Path\s+\$repoRoot\s+[''"]tests[/\\]scripts[/\\]Check15Strict\.Tests\.ps1[''"]') {
+    $case5Problems += '$check15TestScript is not set to tests/scripts/Check15Strict.Tests.ps1'
+}
+if ($testCalls.Count -eq 0) { $case5Problems += 'Check15Strict.Tests.ps1 is not invoked' }
+elseif ($testCallText -notmatch 'PlatformRepositoryRoot') { $case5Problems += 'the test call does not forward -PlatformRepositoryRoot' }
+elseif ($testCallText -notmatch '-AllowMissingPlatform:\s*\$AllowUnverifiedSharedScripts') { $case5Problems += 'the test call is not made with -AllowMissingPlatform:$AllowUnverifiedSharedScripts' }
+if ($case5Problems.Count -eq 0) {
+    Add-Result 'local-ci runs Check15Strict.Tests.ps1 as a step' 'PASS'
+}
+else {
+    Add-Result 'local-ci runs Check15Strict.Tests.ps1 as a step' 'FAIL' ($case5Problems -join '; ')
 }
 
 $failed = 0
