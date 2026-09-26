@@ -127,6 +127,25 @@ This runs, in order:
 4. `scripts/omp/validate-component-versions.ps1` (lockstep, payload and
    shared-script drift checks against `omp-components.json`).
 
+Step 4 includes Check 15, which compares the shared scripts in
+`scripts/omp` with the canonical copies in an OpenModulePlatform checkout.
+Local CI runs it with `-Strict`, so a run that cannot find the platform
+checkout fails instead of printing `NOT VERIFIED` and passing. The
+checkout is found through `-PlatformRepositoryRoot`, then the
+`OMP_PLATFORM_ROOT` environment variable, then `OpenModulePlatformRoot`,
+then a sibling directory named `OpenModulePlatform`. A git worktree that
+does not sit beside the platform checkout must set `OMP_PLATFORM_ROOT`:
+
+```powershell
+$env:OMP_PLATFORM_ROOT = 'C:\src\OpenModulePlatform'
+pwsh scripts\local-ci.ps1
+```
+
+`-AllowUnverifiedSharedScripts` deliberately turns the strict mode off
+for a run where no platform checkout is available on purpose; detected
+drift still fails. Do not use it to get a push through.
+`tests\scripts\Check15Strict.Tests.ps1` pins this behaviour.
+
 GitHub Actions CI is `workflow_dispatch`-only by deliberate choice.
 ODVGateway is a public repository, so Actions would be free, but the
 project gates on this local CI instead of push-triggered runs. The

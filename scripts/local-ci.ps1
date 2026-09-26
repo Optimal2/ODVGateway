@@ -8,7 +8,7 @@
     1. dotnet build src/ODVGateway/ODVGateway.csproj --configuration Release
     2. dotnet test tests/ODVGateway.Tests/ODVGateway.Tests.csproj (unit tests)
     3. scripts/smoke-test.ps1 (builds, starts, and smoke-tests the gateway)
-    4. scripts/omp/validate-component-versions.ps1
+    4. scripts/omp/validate-component-versions.ps1 -Strict
 
     Each step reports PASS or FAIL. The script exits with code 0 when every
     step passes and 1 when any step fails. Steps 2 and 3 are skipped when the
@@ -19,6 +19,15 @@
     before they reach the shared main branch. GitHub Actions for this public
     repository are workflow_dispatch-only by choice, so local execution is
     the actual gate.
+
+    Step 4 includes Check 15, which compares the shared scripts in
+    scripts/omp against the canonical copies in an OpenModulePlatform
+    checkout. Local CI runs it with -Strict: when no platform checkout can be
+    found the gate FAILS instead of warning "NOT VERIFIED" and passing. The
+    checkout is found through -PlatformRepositoryRoot, then the
+    OMP_PLATFORM_ROOT environment variable, then OpenModulePlatformRoot, then
+    a sibling directory named OpenModulePlatform. A git worktree that does not
+    sit beside the platform checkout must set OMP_PLATFORM_ROOT.
 
 .PARAMETER Configuration
     Build configuration passed to dotnet build. Defaults to Release.
@@ -31,12 +40,26 @@
     Baseline ref or commit passed to validate-component-versions.ps1 for its
     diff-based checks. Defaults to origin/main; pass a commit SHA to pin the
     baseline, for example across the phases of a multi-step change.
+
+.PARAMETER PlatformRepositoryRoot
+    OpenModulePlatform checkout used by Check 15, forwarded to
+    validate-component-versions.ps1. Overrides OMP_PLATFORM_ROOT. Optional:
+    when omitted the validator resolves the checkout itself (see above).
+
+.PARAMETER AllowUnverifiedSharedScripts
+    Deliberately runs Check 15 without -Strict, so a missing platform checkout
+    is a visible NOT VERIFIED warning instead of a failure. Use it only for a
+    run where no OpenModulePlatform checkout is available on purpose; never
+    to get past a push, because an unverified run is exactly how shared-script
+    drift reached main on 2026-09-26. Detected drift still fails either way.
 #>
 [CmdletBinding()]
 param(
     [string]$Configuration = 'Release',
     [int]$SmokePort = 5210,
-    [string]$BaseCommit = 'origin/main'
+    [string]$BaseCommit = 'origin/main',
+    [string]$PlatformRepositoryRoot = '',
+    [switch]$AllowUnverifiedSharedScripts
 )
 
 $ErrorActionPreference = 'Stop'
@@ -236,12 +259,19 @@ Write-StepResult -Step 'smoke-test.ps1' -Passed $step3Pass -Message $step3Messag
 # build output, so a lockstep or manifest breach is reported in the same run
 # as a build or test failure instead of staying hidden behind it. The overall
 # verdict is still FAIL whenever any earlier step failed.
+# Check 15 runs strict unless -AllowUnverifiedSharedScripts is passed: a guard
+# that could not find the platform checkout must not read as a passing one.
 $step4Pass = $false
 $step4Message = ''
 try {
+    $strictLabel = if ($AllowUnverifiedSharedScripts) { '' } else { ' -Strict' }
+    $rootLabel = if ([string]::IsNullOrWhiteSpace($PlatformRepositoryRoot)) { '' } else { " -PlatformRepositoryRoot '$PlatformRepositoryRoot'" }
     Write-Host ''
-    Write-Host "Running: $validatorScript -BaseCommit '$BaseCommit'"
-    & "$validatorScript" -BaseCommit $BaseCommit
+    if ($AllowUnverifiedSharedScripts) {
+        Write-Warning 'Check 15 runs WITHOUT -Strict (-AllowUnverifiedSharedScripts): a missing OpenModulePlatform checkout is only a warning in this run.'
+    }
+    Write-Host "Running: $validatorScript -BaseCommit '$BaseCommit'$strictLabel$rootLabel"
+    & "$validatorScript" -BaseCommit $BaseCommit -Strict:(-not $AllowUnverifiedSharedScripts) -PlatformRepositoryRoot $PlatformRepositoryRoot
     if ($LASTEXITCODE -eq 0) {
         $step4Pass = $true
     }

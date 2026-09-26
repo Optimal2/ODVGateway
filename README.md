@@ -501,7 +501,10 @@ Hooks:
 - `pre-push` — runs `scripts\local-ci.ps1`, which builds the gateway,
   runs the xUnit unit tests in `tests\ODVGateway.Tests` (in-memory, no
   I/O or network dependencies), runs the smoke test, and validates OMP
-  component version lockstep.
+  component version lockstep. Its shared-script drift check (Check 15)
+  is strict: set `OMP_PLATFORM_ROOT` to an OpenModulePlatform checkout
+  when this repository is not beside one, or the push is blocked. See
+  [docs/DEV-SETUP.md](docs/DEV-SETUP.md#local-ci).
 
 The push is blocked if the local CI gate fails. Because this
 repository's GitHub Actions are `workflow_dispatch`-only by deliberate

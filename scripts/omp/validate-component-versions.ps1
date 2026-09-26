@@ -28,10 +28,17 @@ other. OMP artifact identity is determined by the component manifest version plu
 SHA-256 content hash, not by the application version.
 
 Check 15 (shared script drift) needs the OpenModulePlatform repository on disk.
-It is located through the OpenModulePlatformRoot environment variable; when that
-is not set, the script assumes a sibling directory named 'OpenModulePlatform'
-next to this repository. A clone under any other name must set the variable, or
-Check 15 reports "not verified" (a warning, or an error with -Strict).
+It is located in the same order as the canonical validate-shared-scripts.ps1:
+the -PlatformRepositoryRoot parameter, then the OMP_PLATFORM_ROOT environment
+variable, then the OpenModulePlatformRoot environment variable, then a sibling
+directory named 'OpenModulePlatform' next to this repository. A checkout that is
+not beside the platform - typically a git worktree under another root - must
+set one of them, or Check 15 reports "not verified" (a warning, or an error with
+-Strict). scripts/local-ci.ps1 passes -Strict by default.
+
+.PARAMETER PlatformRepositoryRoot
+Root of the OpenModulePlatform checkout used by Check 15. Overrides
+OMP_PLATFORM_ROOT, OpenModulePlatformRoot and the sibling-directory default.
 #>
 [CmdletBinding()]
 param(
@@ -45,7 +52,12 @@ param(
     # warnings. A plain local run without the OpenModulePlatform sibling can
     # omit it and still validate versions.
     [Parameter(Mandatory = $false)]
-    [switch]$Strict
+    [switch]$Strict,
+
+    # The OpenModulePlatform checkout for Check 15; see the script help for
+    # the resolution order when it is omitted.
+    [Parameter(Mandatory = $false)]
+    [string]$PlatformRepositoryRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -1191,11 +1203,19 @@ if ($lockstepCheckCount -gt 0 -or $lockstepErrorCount -gt 0) {
 # typically mid-incident. Same neighbour resolution and Strict semantics as
 # Check 14 in the sibling repositories; the guard is CALLED from the platform
 # repository rather than copied here, because a copied guard would be subject
-# to the drift it detects. The platform repository is found through
-# $env:OpenModulePlatformRoot, else assumed to be the sibling directory named
-# 'OpenModulePlatform' (see the script help); a clone under another name
-# without the variable set is reported below as "not verified".
-$check15OmpRoot = $env:OpenModulePlatformRoot
+# to the drift it detects. The platform repository is found in the same order
+# as the canonical guard: -PlatformRepositoryRoot, $env:OMP_PLATFORM_ROOT,
+# $env:OpenModulePlatformRoot, else the sibling directory named
+# 'OpenModulePlatform' (see the script help). The resolved root is passed on
+# explicitly, so this script and the guard can never look in different places;
+# an unresolvable root is reported below as "not verified".
+$check15OmpRoot = $PlatformRepositoryRoot
+if ([string]::IsNullOrWhiteSpace($check15OmpRoot)) {
+    $check15OmpRoot = $env:OMP_PLATFORM_ROOT
+}
+if ([string]::IsNullOrWhiteSpace($check15OmpRoot)) {
+    $check15OmpRoot = $env:OpenModulePlatformRoot
+}
 if ([string]::IsNullOrWhiteSpace($check15OmpRoot)) {
     $check15OmpRoot = [System.IO.Path]::GetFullPath((Join-Path $repositoryRoot '..\OpenModulePlatform'))
 }
@@ -1207,10 +1227,10 @@ if (Test-Path -LiteralPath $check15Script -PathType Leaf) {
     }
 }
 elseif ($Strict) {
-    Add-ValidationError -Errors $errors -Message "Check 15: canonical script not found at '$check15Script'; shared script drift could not be checked (set OpenModulePlatformRoot if the platform repository is cloned under another name). Strict mode treats a guard that could not run as an error."
+    Add-ValidationError -Errors $errors -Message "Check 15: canonical script not found at '$check15Script'; shared script drift could not be checked (set OMP_PLATFORM_ROOT, or pass -PlatformRepositoryRoot, when this checkout is not beside the platform repository). Strict mode treats a guard that could not run as an error."
 }
 else {
-    Write-Warning "Check 15: NOT VERIFIED - canonical script not found at '$check15Script' (set OpenModulePlatformRoot if the platform repository is cloned under another name)."
+    Write-Warning "Check 15: NOT VERIFIED - canonical script not found at '$check15Script' (set OMP_PLATFORM_ROOT, or pass -PlatformRepositoryRoot, when this checkout is not beside the platform repository)."
 }
 
 if ($warnings.Count -gt 0) {
