@@ -33,16 +33,16 @@ Unit tests live in `tests/ODVGateway.Tests` (xUnit, `net10.0`), outside `src/` s
 
 ## Dependency pins - this repo is the one WITHOUT central package management
 
-Every other .NET repository in the family (OpenModulePlatform, IbsPackager, LogSearch,
-EArkivChecker, Dokumentbibliotek, VajSkrivare, iKrock2) pins package versions centrally in a
-`Directory.Packages.props`. **ODVGateway does not** - it has a `Directory.Build.props` (analysis
-and version properties only) and pins inline in the two `.csproj` files. Adding a package here
-means adding a `Version=` attribute; do not assume a central pin exists.
+Every other .NET repository in the family (OpenModulePlatform and its private consumer
+repositories) pins package versions centrally in a `Directory.Packages.props`. **ODVGateway
+does not** - it has a `Directory.Build.props` (analysis and version properties only) and pins
+inline in the two `.csproj` files. Adding a package here means adding a `Version=` attribute;
+do not assume a central pin exists.
 
 That difference has an observable consequence, so treat it as a known state rather than
 rediscovering it: because a family-wide pin bump does not reach this repository automatically,
 a shared pin has to be lifted here by hand, and this repository is where such a pin lags.
-Re-measured 2026-09-02 across all eight .NET repos:
+Re-measured 2026-09-02 across all eight .NET repos in this family:
 
 | Package | Here | Rest of the family | State |
 | --- | --- | --- | --- |

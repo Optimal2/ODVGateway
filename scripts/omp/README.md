@@ -133,8 +133,8 @@ What the guard protects against:
 > `.csproj` references `OpenModulePlatform.Web.Shared.csproj`, and there is no Check 14
 > delegation. Do not port the check here, and do not cite a "Check 11" for this
 > repository. The Web.Shared cascade guards (Check 11 and Check 14) live in
-> OpenModulePlatform and apply to its six declared consumers — IbsPackager, LogSearch,
-> EArkivChecker, Dokumentbibliotek, VajSkrivare and iKrock2 — not to ODVGateway.
+> OpenModulePlatform and apply to its declared private consumer repositories — not
+> to ODVGateway.
 >
 > **Re-measured 2026-09-02** against `scripts/validate-component-versions.ps1` (1012
 > lines) at `1f36e69`. The inventory above was stale: the script now implements
