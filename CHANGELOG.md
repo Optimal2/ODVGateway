@@ -20,11 +20,12 @@ for its `0.1.x` release line.
   never fetched, but for the viewer's external PDF worker, which fetches the
   page images' blob: URLs and obeys the CSP stamped on its own script
   response; without it the worker path degrades silently to the main thread.
-  Reproduced and fix-verified against a simulated WebClient handoff 2026-09-15;
-  matches the SU Test incident console errors exactly. Deployments that
-  override `contentSecurityPolicy` need the same two `blob:` sources, and any
-  IIS-level CSP header must be removed or aligned — with two CSP headers the
-  browser enforces the intersection, so the stricter copy wins.
+  Reproduced and fix-verified against a simulated WebClient handoff 2026-09-15
+  where the viewer's print pipeline hung at "Förbereder utskrift" 100 % and
+  the worker degraded silently to the main thread. Deployments that override
+  `contentSecurityPolicy` need the same two `blob:` sources, and any IIS-level
+  CSP header must be removed or aligned — with two CSP headers the browser
+  enforces the intersection, so the stricter copy wins.
 
 ## [0.1.42] - 2026-09-10
 
