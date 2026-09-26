@@ -69,10 +69,19 @@ First official release. Changes since the 0.1.38 artifact:
 
 ## Reporting a Vulnerability
 
-Use GitHub private vulnerability reporting for this repository if that feature
-is enabled. If private vulnerability reporting is not enabled, contact the
-project maintainers through a private channel before disclosing details
-publicly.
+Report vulnerabilities privately before any public disclosure. The
+maintainers can be reached by either of these channels:
+
+- e-mail: **dev@optimal2.se** (the address under the LICENSE holder
+  [Optimal2](https://github.com/Optimal2))
+- GitHub private vulnerability reporting — the **Report a vulnerability**
+  button on the repository's **Security** tab on GitHub. This repository
+  has GitHub's private vulnerability reporting enabled.
+
+Please report the issue before opening a public GitHub issue, a public
+discussion, or a pull request that demonstrates the problem. If both
+channels can reach the maintainers, prefer the one that lets you share
+proof-of-concept material without exposing it publicly.
 
 Please include, when possible:
 
