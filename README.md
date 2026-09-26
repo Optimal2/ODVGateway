@@ -1,257 +1,355 @@
 # ODVGateway
 
-ODVGateway is a companion application for OpenDocViewer. It adapts the existing
-WebClient `MediaViewerTwo.cshtml` handoff into an OpenDocViewer session where
-source files are streamed directly by the gateway.
+ODVGateway is a small ASP.NET Core service that turns the existing
+WebClient `MediaViewerTwo.cshtml` handoff into an OpenDocViewer session. It
+keeps the original iframe URL the host application already renders, but
+serves the selected files itself from server-side paths, the WebClient
+ticket stream, or both. ODVGateway is also packaged as an OpenModulePlatform
+(OMP) web-app artifact (`odvgateway-web`).
 
-ODVGateway can read source files directly from server-side paths when an
-installation explicitly enables that mode and restricts it to configured trusted
-source roots. The safer default is to use the WebClient ticket fallback instead
-of trusting client-supplied file paths.
+Current application version (`Directory.Build.props` `<Version>`):
+**v0.1.42**. Current OMP artifact version (`omp-components.json`):
+**0.1.50**. The two lines are deliberately independent — the OMP artifact
+can move for a deployable change without an official release, and an
+official release can ship without bumping the artifact. Read both numbers
+out of their files; this paragraph names them once and can lag. Verified
+2026-09-26 against `Directory.Build.props`, `omp-components.json`, and
+`odvgateway.module-definition.json`.
 
-## Why This Exists
+The companion SPA it serves is the public
+[OpenDocViewer](https://github.com/niclas-berg/OpenDocViewer) project.
+ODVGateway contains no viewer code of its own; it only hands off to and
+streams bytes for that viewer.
 
-The standard WebClient integration sends OpenDocViewer one URL per source file.
-For TIFF/JPEG runs where every page is a separate source file, the initial load
-is dominated by hundreds of WebClient ticket requests. ODVGateway keeps the
-original WebClient iframe contract but serves the selected files itself from
-server-side paths.
+## What it is
 
-## WebClient Contract
+- A minimal-API ASP.NET Core 10 application that adapts a host WebClient
+  `prep` payload into an OpenDocViewer bootstrap (`/bundle/{key}`) and
+  serves the document bytes (`/source/{key}/{idx}` or
+  `/source-pack/{key}`).
+- A reusable WebClient ticket-stream proxy: when the host WebClient sends
+  a `filePath` the gateway cannot read directly, ODVGateway can either
+  pass the original ticket URL to the viewer or proxy the bytes itself,
+  byte-capped and chunked.
+- An OMP-compatible web-app component (`moduleKey: odvgateway`,
+  `appKey: odvgateway_webapp`, `packageType: web-app`,
+  `targetName: odvgateway`) built through the shared `scripts/omp/*`
+  tooling.
 
-The original `MediaViewerTwo.cshtml` can remain unchanged when
-`model.MediaConfiguration.PathToVideoEditUtility` points at ODVGateway with a
-trailing slash:
+## What it is not
+
+- Not an OpenDocViewer fork and not a viewer. The viewer HTML, JS, CSS and
+  viewer-side print/PDF pipeline live in the OpenDocViewer project and are
+  consumed as a built `dist/` folder.
+- Not an OpenModulePlatform host. ODVGateway intentionally does not
+  require OMP authentication, because the WebClient handoff is the trust
+  boundary in front of it. It can run as a standalone IIS or Kestrel
+  application outside OMP.
+- Not a shared session store. The prepared session table is in process
+  memory (see [Session store](#session-store)), so multi-instance
+  deployments need sticky routing or a shared store added before traffic
+  can move between instances.
+- Not a generic file server. Direct server-side reads only fire when
+  `trustClientFilePath=true` AND every requested path resolves below a
+  configured `trustedSourceRoots` entry (see
+  [Direct source access](#direct-source-access)).
+
+## Architecture
+
+The gateway sits between the host WebClient and the OpenDocViewer SPA. The
+viewer is served out of a sibling `dist/` folder; the gateway only owns
+the `/prep`, `/`, `/bundle/{key}`, `/source/{key}/{idx}` and
+`/source-pack/{key}` endpoints and the trust boundary around them.
+
+```mermaid
+flowchart LR
+    User([Browser]) -->|HTTPS| WC[WebClient<br/>MediaViewerTwo.cshtml]
+    WC -->|POST /prep<br/>sessiondata JSON| GW[ODVGateway<br/>ASP.NET Core 10]
+
+    subgraph Boundary[ODVGateway trust boundary]
+        direction TB
+        Prep[/prep<br/>WebClientHandoffGuard<br/>GatewaySessionStore/]
+        Viewer[/<br/>OpenDocViewerIndexRenderer/]
+        Bundle[/bundle/&#123;key&#125;<br/>OpenDocViewerBundleFactory/]
+        Source[/source/&#123;key&#125;/&#123;i&#125;<br/>DirectSourceFileResolver/]
+        Pack[/source-pack/&#123;key&#125;<br/>odvsp1 stream/]
+    end
+
+    GW --- Prep
+    GW --- Viewer
+    GW --- Bundle
+    GW --- Source
+    GW --- Pack
+
+    Prep -. in-memory .-> Bundle
+    Bundle -->|window.ODV bootstrap| Viewer
+    Viewer -->|/bundle/&#123;key&#125;| Bundle
+    Viewer -->|/source-pack/&#123;key&#125;| Pack
+
+    Source -->|file read| FS[(Trusted source root<br/>local or UNC)]
+    Pack -->|file read| FS
+    Pack -->|HttpClient| WCF[WebClient<br/>GetStream ticket]
+    Source -->|HttpClient| WCF
+
+    ODV[OpenDocViewer dist/<br/>index.html + bundles] -->|StaticFileProvider| Viewer
+
+    style GW fill:#eef,stroke:#446
+    style Boundary fill:#fafafa,stroke:#999,stroke-dasharray: 4 3
+```
+
+Sources for this diagram:
+
+- `src/ODVGateway/Program.cs` — endpoint mapping (`/`, `/prep`,
+  `/bundle/{sessionKey}`, `/source/{sessionKey}/{fileIndex:int}`,
+  `/source-pack/{sessionKey}`, `/health`).
+- `src/ODVGateway/Services/WebClientHandoffGuard.cs` — initiator
+  allowlist check.
+- `src/ODVGateway/Services/GatewaySessionStore.cs` — in-memory session
+  table.
+- `src/ODVGateway/Services/OpenDocViewerBundleFactory.cs` — bundle
+  shape.
+- `src/ODVGateway/Services/DirectSourceFileResolver.cs` — trusted-root
+  enforcement.
+- `src/ODVGateway/Services/OpenDocViewerDistResolver.cs` — dist folder
+  resolution.
+
+## Request lifecycle for one document
+
+The handoff is split into three calls. The first two are initiated by
+WebClient; the viewer issues the rest.
+
+```mermaid
+flowchart TD
+    A([User clicks a document<br/>in WebClient]) --> B[WebClient renders<br/>MediaViewerTwo iframe<br/>pointed at ODVGateway]
+    B --> C[Browser POST /prep<br/>with WebClient payload]
+    C --> D{WebClientHandoffGuard<br/>allow Referer/Origin?}
+    D -- no --> E[/403 Forbidden<br/>or empty allowlist/]
+    D -- yes --> F[GatewaySessionStore.Store<br/>allocates sessionKey<br/>+ handoffLookupKey]
+    F --> G[Build GatewaySourceFile list<br/>FileTicket.Parse]
+    G --> H[200 OK: sessionKey,<br/>document + file count, expiresUtc]
+    H --> I[WebClient opens iframe<br/>GET /?sessiondata=&lt;token&gt;]
+
+    I --> J{useBundleUrlHandoff?}
+    J -- no --> K[Decode sessiondata<br/>+ match by handoffLookupKey<br/>+ render index.html inline<br/>with window.ODV payload]
+    J -- yes --> L[Decode sessiondata<br/>+ match by handoffLookupKey]
+    L --> M[302 redirect<br/>Referrer-Policy: strict-origin-when-cross-origin]
+    M --> N[Browser GET /?bundleUrl=&lt;url&gt;]
+    N --> K
+
+    K --> O[OpenDocViewer dist runs<br/>window.ODV.start]
+    O --> P[Viewer fetches<br/>GET /bundle/&#123;key&#125;]
+    P --> Q[OpenDocViewerBundleFactory.CreateAsync]
+    Q --> R[Viewer fetches sources<br/>GET /source-pack/&#123;key&#125;<br/>or /source/&#123;key&#125;/&#123;i&#125;]
+    R --> S{DirectSourceFileResolver<br/>under trustedSourceRoots?}
+    S -- yes --> T[Stream file with range support<br/>Results.File + enableRangeProcessing]
+    S -- no --> U{ShouldProxyWebClientFallback?}
+    U -- yes --> V[HttpClient GET WebClient<br/>byte-capped + chunked]
+    U -- no --> W[Pass WebClient ticket URL<br/>to viewer]
+```
+
+Sources for this diagram:
+
+- `Program.cs` `MapPost("/prep", ...)` — `/prep` handler and
+  `GatewaySessionStore.Store`.
+- `Program.cs` `RenderViewerAsync` — `?sessiondata=` redirect path and
+  `useBundleUrlHandoff` switch.
+- `Program.cs` `MapGet("/bundle/{sessionKey}", ...)` — bundle fetch.
+- `Program.cs` `MapGet("/source/{sessionKey}/{fileIndex:int}", ...)` —
+  single-file route with range support and WebClient proxy fallback.
+- `Program.cs` `MapGet("/source-pack/{sessionKey}", ...)` —
+  `application/vnd.opendocviewer.source-pack` stream format (`odvsp1`).
+- `Services/DirectSourceFileResolver.cs` — trusted-root check.
+- `Services/WebClientFallbackUrlBuilder.cs` — fallback URL construction.
+
+## API surface and error paths
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Browser
+    participant WC as WebClient<br/>(host)
+    participant GW as ODVGateway
+    participant Store as GatewaySessionStore
+    participant Files as DirectSourceFileResolver
+    participant FS as Source files / WebClient
+
+    Browser->>WC: click document
+    WC->>Browser: render MediaViewerTwo iframe<br/>URL = /ODVGateway/
+    Browser->>GW: POST /prep
+    GW->>GW: WebClientHandoffGuard.Validate<br/>(Referer / Origin vs allowedInitiatorUrls)
+    alt initiator rejected
+        GW-->>Browser: 403 Forbidden
+    else store full
+        GW->>Store: Store(prep)
+        Store-->>GW: CapacityExceeded
+        GW-->>Browser: 429 Too Many Requests<br/>(maxConcurrentSessions)
+    else accepted
+        Store-->>GW: session, sessionKey, expiresUtc
+        GW-->>Browser: 200 OK { sessionKey, ... }
+    end
+
+    Browser->>GW: GET /?sessiondata=<base64-json>
+    GW->>GW: Validate handoff headers again
+    alt sessiondata malformed
+        GW-->>Browser: 400 Bad Request
+    else no matching prepared session
+        GW-->>Browser: 404 with status page
+    else useBundleUrlHandoff true
+        GW-->>Browser: 302 ?bundleUrl=&lt;absolute&gt;<br/>Referrer-Policy: strict-origin-when-cross-origin
+        Browser->>GW: GET /?bundleUrl=&lt;absolute&gt;
+    end
+
+    GW->>Store: TryGetByHandoffLookupKey
+    Store-->>GW: GatewaySession
+    GW->>GW: OpenDocViewerIndexRenderer.RenderAsync
+    GW-->>Browser: 200 text/html<br/>OpenDocViewer index.html + window.ODV bootstrap
+
+    Browser->>GW: GET /bundle/{sessionKey}
+    GW->>Store: TryGet(sessionKey)
+    Store-->>GW: GatewaySession
+    GW->>GW: OpenDocViewerBundleFactory.CreateAsync
+    GW-->>Browser: 200 application/json<br/>X-ODVGateway-* diagnostics headers
+
+    Browser->>GW: GET /source-pack/{sessionKey}
+    GW->>Store: TryGet(sessionKey)
+    GW-->>Browser: 200 application/vnd.opendocviewer.source-pack<br/>Content-Type: odvsp1<br/>X-ODVGateway-Source-Pack: odvsp1
+    loop per source file
+        GW->>Files: TryResolve(source)
+        alt direct path under trustedSourceRoots
+            Files-->>GW: DirectSourceFile
+            GW-->>Browser: per-file JSON header + bytes
+        else WebClient fallback
+            GW->>FS: HttpClient GET with ASPXAUTH + ASP.NET_SessionId cookies
+            alt success
+                FS-->>GW: 200 bytes
+                GW-->>Browser: per-file JSON header + bytes
+            else payload &gt; maxSourcePackFrameBytes
+                GW-->>Browser: per-file JSON header<br/>error: source too large
+            else retryable status / timeout
+                GW->>FS: retry up to retryCount
+            end
+        end
+    end
+
+    Browser->>GW: GET /health
+    GW->>Store: Count
+    GW-->>Browser: 200 OK { status: "ok", ... }<br/>or 503 if dist path missing
+```
+
+Sources for this diagram: the full pipeline in
+`src/ODVGateway/Program.cs`, plus `Services/GatewaySessionStore.cs`
+(capacity and lookup), `Services/WebClientHandoffGuard.cs` (Referer /
+Origin allowlist), `Services/OpenDocViewerIndexRenderer.cs`
+(`window.ODV` bootstrap injection), `Services/OpenDocViewerBundleFactory.cs`
+(bundle diagnostics headers), and `Services/ContentTypeMapper.cs`.
+
+## Quickstart
+
+Prerequisites:
+
+- .NET 10 SDK (see `global.json`)
+- PowerShell 5.1 or PowerShell 7 for the local CI scripts
+- A built OpenDocViewer `dist/` folder (sibling checkout or absolute
+  path); see `OpenDocViewerDistResolver.ResolveDistPath`
+
+Clone alongside OpenDocViewer so the default sibling probe
+(`../../../OpenDocViewer/dist`) finds it:
 
 ```text
-https://example/WebClientODVGateway/
+~/GitHub/
+├── ODVGateway/
+└── OpenDocViewer/dist/    ← must contain index.html
 ```
 
-The existing page already performs the two calls ODVGateway needs:
+Run locally:
 
-```text
-POST {baseUrl}prep
-GET  {baseUrl}?sessiondata=<base64-json>
+```powershell
+dotnet run --project .\src\ODVGateway\ODVGateway.csproj
 ```
 
-`POST /prep` stores the WebClient prep payload in process memory for a short
-time.
-`GET /?sessiondata=...` decodes the existing WebClient session data, finds the
-matching prepared payload, and redirects the viewer to OpenDocViewer's
-`bundleUrl` startup flow. The bundle itself is served by ODVGateway as one JSON
-request. The public session key used in `/bundle`, `/source`, and
-`/source-pack` URLs is random; the deterministic WebClient handoff value is kept
-internal and is never returned in URLs. Because prepared sessions are kept only
-in the running gateway process, an application restart drops pending handoffs
-and a multi-instance deployment needs sticky routing or a shared store added
-before requests can move between instances.
+Default URLs:
 
-ODVGateway intentionally does not depend on OpenModulePlatform authentication.
-For production use, lock the handoff to the WebClient pages that are allowed to
-start viewer sessions by configuring `webClientHandoff.allowedInitiatorUrls`.
-This checks the browser `Referer`/`Origin` headers on `/prep` and viewer startup
-requests. Leave the list empty only for local development or environments where
-an upstream system already restricts access to the gateway.
+| URL | Purpose |
+| --- | --- |
+| `GET /health` | Liveness + configuration snapshot. Returns 503 when the OpenDocViewer dist folder is missing. |
+| `POST /prep` | Store a WebClient payload in the in-memory session table. |
+| `GET /` (and `GET /index.html`) | Viewer bootstrap. |
+| `GET /bundle/{sessionKey}` | One-shot JSON bundle (with diagnostics headers). |
+| `GET /source/{sessionKey}/{fileIndex:int}` | Single source file (range-supported when served from a trusted root). |
+| `GET /source-pack/{sessionKey}` | `application/vnd.opendocviewer.source-pack` (odvsp1) stream of all source files. |
 
-`GET /health` reports whether the OpenDocViewer dist path resolved, active
-session count, the configured session cap, `useBundleUrlHandoff`, and inline
-source limits. The literal dist path is hidden by default and is only returned when
-`exposeOpenDocViewerDistPathInHealth` is enabled. Use this during deployment
-checks to verify that the running gateway picked up the expected configuration.
+Standalone IIS deployment: see [Standalone IIS Deployment](#standalone-iis-deployment).
+OMP deployment: see [OpenModulePlatform Packaging](#openmoduleplatform-packaging).
 
-When direct server-side source paths are enabled and the WebClient `filePath`
-points at a file below a configured trusted source root, source files are then
-loaded from:
+## Configuration
 
-```text
-GET /source/{sessionKey}/{fileIndex}
-```
+Gateway configuration lives in `appsettings.json` or environment
+variables under the `ODVGateway` section. ASP.NET Core host filtering
+uses the top-level `AllowedHosts` setting. The shipped defaults are
+generic; override them per deployment.
 
-The source endpoint opens the trusted file path on the server and streams it
-with range support. If direct path access is disabled, outside the trusted
-roots, or not readable, ODVGateway can fall back to the original WebClient
-ticket stream URL instead of giving OpenDocViewer a broken `/source` URL. The
-diagnostics overlay reports how many files were routed through direct disk
-access, gateway source URLs, inline source bytes, and WebClient fallback URLs.
-The WebClient proxy fallback is byte-capped and streamed to the client without
-full-response buffering in gateway memory; range handling remains focused on
-direct server-side file reads.
+### Session store
 
-## Runtime Configuration
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `sessionTtlMinutes` | 30 | Effective minimum is 5 minutes; lower values are clamped and a startup warning is logged. |
+| `maxConcurrentSessions` | 50 000 | Per-process; new `/prep` requests receive 429 when full. |
+| `maxPrepBodyBytes` | 50 MiB | Drives `FormOptions.ValueLengthLimit`. |
+| `webClientHandoff.allowedInitiatorUrls` | `[]` | Empty list = dev only; production must name the host WebClient pages that may start viewer sessions. |
+| `webClientHandoff.allowMissingInitiatorHeaders` | `false` | Compatibility escape hatch; startup logs a warning when enabled. |
 
-Gateway configuration lives in `appsettings.json` or environment variables
-under the `ODVGateway` section. ASP.NET Core host filtering uses the top-level
-`AllowedHosts` setting.
+The store is process-local and non-durable. Restarts drop pending
+handoffs; multi-node production needs sticky routing or a shared session
+store added before traffic can move between instances.
 
-Important settings:
+### Direct source access
 
-- `AllowedHosts`: Top-level ASP.NET Core host allowlist. The repository default
-  is `localhost;127.0.0.1`, which is only suitable for development. Set this to
-  the public host names that serve the gateway in production, without schemes or
-  paths (for example `gateway.example;gateway.internal.example`). Keep `*` only
-  for local development or a deployment where another trusted front door performs
-  equivalent host validation.
-- `openDocViewerDistPath`: Path to an OpenDocViewer `dist` folder. If empty,
-  the gateway tries `wwwroot/odv`, `wwwroot/OpenDocViewer`, a sibling
-  `OpenDocViewer` IIS folder, and sibling `OpenDocViewer/dist` checkout paths.
-  Set this explicitly in production so the gateway always serves the intended
-  OpenDocViewer build.
-- `requireExplicitOpenDocViewerDistPath`: When `true`, disables development
-  fallback probing and requires `openDocViewerDistPath` to point at a valid ODV
-  dist folder. Keep this `true` in production and `false` for local development.
-- `sessionTtlMinutes`: How long prepared WebClient sessions remain in memory.
-  Values below five minutes are treated as five minutes so a bad override does
-  not make handoffs expire before the viewer can finish loading; the gateway
-  logs a warning when it has to apply this minimum.
-- `maxConcurrentSessions`: Upper bound for the in-memory prepared session store.
-  New `/prep` requests are rejected with HTTP `429` when the cap is reached.
-  The store is process-local and not durable; restart clears all prepared
-  sessions and multi-node production deployments must keep each browser on the
-  same gateway instance unless a shared session store is implemented.
-- `maxSourcePackFrameBytes`: Maximum payload size for one
-  `application/vnd.opendocviewer.source-pack` frame. Direct files above this
-  size are rejected before reading; WebClient fallback responses are bounded
-  while streamed into the frame so missing `Content-Length` cannot cause
-  unbounded memory use.
-- `maxSourceProxyBytes`: Maximum payload size for one proxied `/source`
-  response when ODVGateway has to fetch the file from WebClient instead of
-  reading a trusted server-side path. Keep this aligned with
-  `maxSourcePackFrameBytes` unless a deployment needs a distinct proxy limit.
-  Proxied source responses are streamed through this cap instead of being fully
-  buffered in memory first.
-- `sourcePackStreamBufferBytes`: Chunk size used when streaming a known-length
-  source-pack frame. Direct source files are streamed from disk without loading
-  the full file into a byte array.
-- `exposeOpenDocViewerDistPathInHealth`: When `true`, `/health` includes the
-  resolved OpenDocViewer dist filesystem path. Keep this `false` in production
-  unless a trusted monitor explicitly needs the literal path.
-- `trustClientFilePath`: Enables direct server-side file reads from WebClient
-  `filePath` values. Keep this `false` unless the gateway process runs in the
-  same trust boundary as the file paths it receives.
-- `trustedSourceRoots`: Required when `trustClientFilePath` is `true`. Every
-  direct source file must resolve below one of these absolute local or UNC
-  roots. Startup rejects missing, empty, or relative entries, and runtime
-  reloads keep rejecting invalid configurations.
-- `useBundleUrlHandoff`: Redirects the existing WebClient iframe URL to
-  OpenDocViewer's `bundleUrl` startup flow. Keep this enabled for large batches
-  so the viewer HTML stays small and the prepared bundle is fetched as one
-  explicit JSON request.
-- `sourceCacheControl`: Cache header for streamed source files. The default is
-  `no-store`.
-- `webClientHandoff.allowedInitiatorUrls`: Optional allowlist for WebClient
-  URLs that may initialize gateway sessions. Entries may be absolute URLs, host
-  names, or root-relative paths on the gateway host. Path-specific entries match
-  `Referer` headers; `Origin` headers can only satisfy host-level entries because
-  browsers do not include a path in `Origin`. The gateway logs a startup warning
-  when this list is empty.
-- `webClientHandoff.allowMissingInitiatorHeaders`: Optional compatibility escape
-  hatch if a trusted deployment strips both `Referer` and `Origin`. Keep this
-  `false` unless the gateway is protected by another boundary. The gateway logs
-  a startup warning when this setting is enabled.
-- `webClientSourceFallback`: Optional fallback used when `filePath` is not
-  readable by the gateway process. By default the gateway first reuses `filePath`
-  when it already looks like a browser URL, matching the legacy OpenDocViewer
-  parent-page flow. If that is not possible, the configured URL template is used.
-  The default template is `/WebClientODV/DocumentView/GetStream/?ticket={fileId}`
-  and supports `{fileId}`, `{sessionKey}`, `{fileIndex}`, and `{extension}`
-  tokens. Absolute fallback URLs must target the same host as the gateway
-  request unless `allowedHosts` is configured.
-- `inlineSources`: Embeds small raster source files directly into the prepared
-  OpenDocViewer bundle as native inline source bytes when the configured
-  per-file and total size limits allow it. This avoids hundreds of
-  browser-to-gateway source requests for small TIF/JPG/PNG batches while larger
-  files keep using `/source`.
-- `remoteInlineSources`: Optional server-side prefetch for small same-host
-  raster source URLs. This lets ODVGateway turn many WebClient source URLs into
-  inline bundle bytes when direct file paths are not readable, reducing
-  browser-to-WebClient roundtrips over slow/VPN clients. The default profile is
-  deliberately sequential with short retries because WebClient ticket endpoints
-  can be sensitive to concurrent source requests.
-- `web.config`: The published IIS config raises `maxUrl` and `maxQueryString`
-  to 65536 so the existing WebClient `sessiondata` query handoff can carry large
-  case selections.
-- Standalone Kestrel deployments add a baseline set of response headers to every
-  response, including static files: `X-Frame-Options: SAMEORIGIN`,
-  `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
-  `X-Robots-Tag: noindex`, and `Content-Security-Policy`. Kestrel also disables
-  the default `Server` response header. IIS deployments already set the first
-  two through `web.config` and can remove the `Server` header with
-  `web.config` requestFiltering or URL Rewrite configuration; deployment-specific
-  `Strict-Transport-Security` headers remain the responsibility of the host
-  reverse proxy or IIS configuration. `Referrer-Policy` must be emitted by the
-  application alone: IIS appends its `customHeaders` after the application's
-  headers and browsers honour the last value, so an IIS copy of `no-referrer`
-  overrides the `strict-origin-when-cross-origin` the gateway sets on the
-  `?sessiondata=` to `?bundleUrl=` redirect and breaks the initiator allowlist
-  (the follow-up request loses its `Referer` and is rejected with `403`).
-  A deployment that keeps its own copy of `web.config` must REPLACE it with
-  the published one when upgrading to 0.1.42 or later (or delete the
-  `Referrer-Policy` line by hand); the same goes for `applicationHost.config`,
-  URL Rewrite outbound rules and the reverse proxy. Verify on the redirect
-  itself, since `/health` cannot show it:
-  `curl -sD - -o NUL "https://<site>/ODVGateway/?sessiondata=<token>"` must
-  print exactly one `Referrer-Policy` line, with the value
-  `strict-origin-when-cross-origin`.
-- `contentSecurityPolicy`: Optional override for the `Content-Security-Policy`
-  response header. When omitted or null, the gateway emits a restrictive default
-  policy that allows same-origin OpenDocViewer dist files, the inline bootstrap
-  script injected by the gateway, inline styles used by error/status pages,
-  blob/data image sources, and same-origin API calls. Set this only when the
-  default policy breaks a specific OpenDocViewer build; include a comment in
-  deployment configuration explaining why the override is required. Any
-  override (and any CSP added at the web-server level) MUST keep
-  `frame-src 'self' blob:` and `connect-src 'self' blob:` or the viewer's PDF
-  printing breaks: the print iframe loads a blob PDF, and the PDF worker
-  fetches blob page images. With two CSP headers on one response the browser
-  enforces the intersection, so a stricter server-level copy silently wins —
-  prefer exactly one owner for this header.
-- `metadataAliases`: Optional alias mapping copied into the neutral ODV bundle
-  so print templates such as `{{metadata.patientId}}` keep working. The
-  `fieldId` values come from the deployment's WebClient metadata schema and
-  should be supplied in private deployment configuration rather than committed
-  as public defaults. Separately from this optional alias map, ODVGateway also
-  reads metadata field `504` internally as a page-count hint; that code path
-  does not make other metadata field IDs product-standard defaults.
-- `contentTypes`: Extension-to-content-type mapping for source files.
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `trustClientFilePath` | `false` | Enables direct server-side reads from WebClient `filePath`. Keep disabled unless the gateway is in the same trust boundary as the file paths it receives. |
+| `trustedSourceRoots` | `[]` | Required when `trustClientFilePath=true`. Every accepted direct file must resolve below one of these absolute local or UNC roots. Startup rejects missing, empty, or relative entries. `{ContentRoot}` is supported as a literal prefix. |
 
-Example production snippet:
+### Source transport
 
-```json
-{
-  "AllowedHosts": "gateway.example;gateway.internal.example",
-  "ODVGateway": {
-    "openDocViewerDistPath": "C:\\path\\to\\OpenDocViewer\\dist",
-    "requireExplicitOpenDocViewerDistPath": true,
-    "sessionTtlMinutes": 30,
-    "maxConcurrentSessions": 50000,
-    "maxSourcePackFrameBytes": 67108864,
-    "maxSourceProxyBytes": 67108864,
-    "sourcePackStreamBufferBytes": 131072,
-    "exposeOpenDocViewerDistPathInHealth": false,
-    "trustClientFilePath": true,
-    "trustedSourceRoots": [
-      "\\\\<file-server>\\<trusted-share>"
-    ],
-    "useBundleUrlHandoff": true,
-    "sourceCacheControl": "no-store",
-    "contentSecurityPolicy": null,
-    "webClientHandoff": {
-      "allowedInitiatorUrls": [
-        "https://webclient.example/WebClientODV/MediaViewerTwo.cshtml"
-      ],
-      "allowMissingInitiatorHeaders": false
-    },
-    "webClientSourceFallback": {
-      "enabled": true,
-      "requireSameHost": true,
-      "allowedHosts": [],
-      "useFilePathUrlWhenDirectFileMissing": true,
-      "useWhenDirectFileMissing": true,
-      "urlTemplate": "/WebClientODV/DocumentView/GetStream/?ticket={fileId}"
-    }
-  }
-}
-```
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `useBundleUrlHandoff` | `true` | Redirect `?sessiondata=` to `?bundleUrl=`. Keep enabled for large batches; the inline HTML stays small and the bundle is fetched as one JSON request. |
+| `sourceCacheControl` | `no-store` | Cache header for streamed source files. |
+| `webClientSourceFallback.enabled` | `true` | Enables WebClient ticket-stream fallback when direct files are not readable. |
+| `webClientSourceFallback.requireSameHost` | `true` | Reject fallback URLs whose host differs from the gateway request. |
+| `webClientSourceFallback.proxyThroughGateway` | `true` | Proxy fallback bytes through the gateway instead of handing the ticket URL to the viewer. |
+| `webClientSourceFallback.proxyThroughGatewayAboveSourceCount` | `1000` | Below this count the viewer is given the WebClient ticket URL; above it the gateway proxies. |
+| `maxSourcePackFrameBytes` | 64 MiB | Per-frame cap for `application/vnd.opendocviewer.source-pack`. |
+| `maxSourceProxyBytes` | `maxSourcePackFrameBytes` | Per-response cap for the proxied `/source` path. |
+| `sourcePackStreamBufferBytes` | 128 KiB | Stream copy chunk size (clamped to 4 KiB – 1 MiB). |
+| `inlineSources.enabled` | `true` | Embed small raster sources directly into the bundle. |
+| `remoteInlineSources.*` | see `appsettings.json` | Server-side prefetch for small same-host raster WebClient URLs (sequential, retry-on-transient). |
+
+### Viewer and response hardening
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `openDocViewerDistPath` | `""` | Absolute path to the OpenDocViewer `dist/` folder. Empty triggers sibling probe. |
+| `requireExplicitOpenDocViewerDistPath` | `false` | Set to `true` in production to disable the sibling probe. |
+| `exposeOpenDocViewerDistPathInHealth` | `false` | When `true`, `/health` includes the resolved filesystem path. Keep disabled in production. |
+| `contentSecurityPolicy` | `null` (uses `DefaultContentSecurityPolicy`) | Optional override for the `Content-Security-Policy` response header. When omitted, the gateway emits a restrictive default that allows same-origin dist files, the inline `odvgateway-bootstrap` script, inline status-page styles, `blob:`/`data:` images, and same-origin API calls. |
+| `metadataAliases` | `{}` | Optional alias mapping copied into the neutral ODV bundle so print templates such as `{{metadata.patientId}}` keep working. Deployments own these mappings in private config; the public repo ships an empty alias map. |
+| `contentTypes` | pdf/tif/jpg/png/bmp/gif/webp | Extension-to-content-type mapping for source files. |
+
+Kestrel middleware always stamps `X-Frame-Options: SAMEORIGIN`,
+`X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
+`X-Robots-Tag: noindex`, and `Content-Security-Policy`. The
+`?sessiondata=` to `?bundleUrl=` redirect stamps
+`Referrer-Policy: strict-origin-when-cross-origin` on top, so the
+follow-up browser request still carries the WebClient `Referer`. The
+redirect itself is the only place to verify it; `/health` cannot show
+it. See [SECURITY.md](SECURITY.md) for the full baseline.
+
+`Referrer-Policy` and `Content-Security-Policy` must be owned by the
+gateway alone. With two copies on one response the browser enforces
+the intersection, so a stricter reverse-proxy or IIS copy silently wins
+— usually in the wrong direction. The published `web.config` ships
+without them, with comments explaining the constraint.
 
 ## Standalone IIS Deployment
 
@@ -262,49 +360,49 @@ Example production snippet:
    dotnet publish .\src\ODVGateway\ODVGateway.csproj -c Release -o $publishRoot
    ```
 
-   Treat the publish output as a deployment folder or a disposable staging copy
-   outside this repository. Do not keep long-lived deployment configuration in
-   `.\artifacts\publish\...` under the repo worktree because ignored local
-   publish folders can preserve stale `appsettings*.json` across source updates.
+   Treat the publish output as a deployment folder or a disposable
+   staging copy outside this repository. Do not keep long-lived
+   deployment configuration under `.\artifacts\publish\...` in the
+   repo worktree: ignored local publish folders can preserve stale
+   `appsettings*.json` across source updates.
 
-2. Put or reference an OpenDocViewer `dist` folder.
+2. Put or reference an OpenDocViewer `dist/` folder.
 
 3. Configure `appsettings.json` in the deployed gateway folder.
 
    Replace the sample paths with deployment-specific values in private
-   environment configuration. Keep deployment-specific `metadataAliases`
-   mappings in that private config as well; the public repo intentionally ships
-   an empty alias map because WebClient metadata field IDs vary by deployment.
-   Set the top-level `AllowedHosts` value to the gateway's public host names.
-   The prepared session store is in memory, so plan production restarts and any
-   load balancing around process-local, non-durable handoffs.
+   environment configuration. Keep deployment-specific
+   `metadataAliases` mappings in that private config as well; the public
+   repo intentionally ships an empty alias map because WebClient
+   metadata field IDs vary by deployment. Set the top-level
+   `AllowedHosts` value to the gateway's public host names. The
+   prepared session store is in memory, so plan production restarts and
+   any load balancing around process-local, non-durable handoffs.
 
-4. Create an IIS application that points to the published gateway folder.
+4. Create an IIS application that points to the published gateway
+   folder.
 
-5. Set WebClient `PathToVideoEditUtility` to the gateway URL, including the
-   trailing slash.
+5. Set WebClient `PathToVideoEditUtility` to the gateway URL, including
+   the trailing slash.
 
-OpenDocViewer site configuration, including print logging endpoints such as
-`/WebClientODV/DocumentView/LogPrint`, remains in the OpenDocViewer
-`odv.site.config.js` loaded from the configured `dist` folder.
+OpenDocViewer site configuration, including print logging endpoints such
+as `/WebClientODV/DocumentView/LogPrint`, remains in the OpenDocViewer
+`odv.site.config.js` loaded from the configured `dist/` folder.
 
-## Security and Public Repository Hygiene
-
-This repository intentionally ships only generic defaults. Keep production URLs,
-trusted source roots, metadata alias mappings, credentials, and customer-specific
-deployment settings in private configuration outside this public source tree.
-
-See [SECURITY.md](SECURITY.md) for supported versions, vulnerability reporting,
-and deployment hardening guidance.
+The published `src/ODVGateway/web.config` ships with
+`maxUrl="65536"` and `maxQueryString="65536"` so the WebClient
+`sessiondata` query handoff can carry large case selections. It does
+**not** add `Referrer-Policy` or `Content-Security-Policy`; the
+application middleware is the header's only owner.
 
 ## OpenModulePlatform Packaging
 
 ODVGateway is its own OMP module:
 
 ```text
-moduleKey: odvgateway
-appKey:    odvgateway_webapp
-target:    web-app / odvgateway
+moduleKey:  odvgateway
+appKey:     odvgateway_webapp
+target:     web-app / odvgateway
 ```
 
 Build OMP portable objects:
@@ -320,17 +418,18 @@ Export a universal package:
 ```
 
 Runtime `appsettings.json` is not part of the immutable artifact payload.
-The package ships a baseline `appsettings.json` (NLog file/console logging with
-correlation-id layout plus environment-neutral `ODVGateway` defaults) as an
-artifact configuration file: `src/ODVGateway/Packaging/appsettings.json`, wired
-through `artifactConfigurationFiles` in `omp-components.json`. The OMP HostAgent
-writes it to the site at deploy time and deep-merges its built-in web-app
-sections underneath. Site-specific values (dist paths, trusted roots, aliases)
-belong in host-specific config overlays or deployment files, never in this
-repository.
-Packaging scripts warn when ignored standalone publish `appsettings*.json`
-files remain under `artifacts/publish` because those files are easy to confuse
-with package input but are excluded from OMP artifact payloads.
+The package ships a baseline `appsettings.json` (NLog file/console
+logging with correlation-id layout plus environment-neutral `ODVGateway`
+defaults) as an artifact configuration file:
+`src/ODVGateway/Packaging/appsettings.json`, wired through
+`artifactConfigurationFiles` in `omp-components.json`. The OMP HostAgent
+writes it to the site at deploy time and deep-merges its built-in
+web-app sections underneath. Site-specific values (dist paths, trusted
+roots, aliases) belong in host-specific config overlays or deployment
+files, never in this repository. Packaging scripts warn when ignored
+standalone publish `appsettings*.json` files remain under
+`artifacts/publish`, because those files are easy to confuse with
+package input but are excluded from OMP artifact payloads.
 
 ## Development
 
@@ -340,179 +439,73 @@ Run locally against a sibling OpenDocViewer checkout:
 dotnet run --project .\src\ODVGateway\ODVGateway.csproj
 ```
 
-The development config resolves `../../../OpenDocViewer/dist` from the project
-folder, which matches the default sibling repository layout.
+The development config resolves `../../../OpenDocViewer/dist` from the
+project folder, which matches the default sibling repository layout.
 
-Health check:
+Run the xUnit unit tests:
 
-```text
-GET /health
+```powershell
+dotnet test tests\ODVGateway.Tests\ODVGateway.Tests.csproj --configuration Release
 ```
 
-## Running tests
+They are in-memory, net10.0, and need nothing installed. The local CI
+gate (`scripts/local-ci.ps1`) runs them between build and smoke test.
 
-The unit tests are xUnit, in-memory, and need nothing installed:
-
-```bash
-dotnet test tests/ODVGateway.Tests/ODVGateway.Tests.csproj --configuration Release
-```
-
-They also run automatically as part of the local pre-push gate below.
-
-There is no UiTests project in this repository, and that is deliberate: the
-gateway is a minimal-API service with no Razor pages or server-rendered UI of
-its own. The user interface it serves is the OpenDocViewer SPA, which is
-tested with its own suite in the OpenDocViewer repository.
+There is no UiTests project in this repository, and that is deliberate:
+the gateway is a minimal-API service with no Razor pages or
+server-rendered UI of its own. The user interface it serves is the
+OpenDocViewer SPA, which is tested with its own suite in the
+OpenDocViewer repository.
 
 ## Local pre-push gate
 
-This repository uses tracked Git hooks to run the local CI gate before every
-push. Configure the hooks once after cloning:
+This repository uses tracked Git hooks to run the local CI gate before
+every push. Configure the hooks once after cloning:
 
 ```powershell
 .\scripts\setup-hooks.ps1
 ```
 
-The configuration points Git at the `.githooks` directory in this repository.
+The configuration points Git at the `.githooks` directory in this
+repository.
 
 Hooks:
 
 - `pre-commit` — light static checks only (`git diff --cached --check`).
   Does not build or run tests.
-- `pre-push` — runs `scripts\local-ci.ps1`, which builds the gateway, runs
-  the xUnit unit tests in `tests\ODVGateway.Tests` (in-memory, no I/O or
-  network dependencies), runs smoke tests, and validates OMP component
-  version lockstep.
+- `pre-push` — runs `scripts\local-ci.ps1`, which builds the gateway,
+  runs the xUnit unit tests in `tests\ODVGateway.Tests` (in-memory, no
+  I/O or network dependencies), runs the smoke test, and validates OMP
+  component version lockstep.
 
-The push is blocked if the local CI gate fails. Because this repository's
-GitHub Actions are `workflow_dispatch`-only (a deliberate choice — as a public
-repo it gets free Actions), the local gate is the actual pre-push verification.
+The push is blocked if the local CI gate fails. Because this
+repository's GitHub Actions are `workflow_dispatch`-only by deliberate
+choice — public repositories get free Actions, so the trigger is a
+design choice rather than a metering constraint — the local gate is
+the actual pre-push verification.
 
-## Release Process
+## Security and Public Repository Hygiene
 
-Official releases are tagged `vX.Y.Z` and publish a GitHub release with
-`ODVGateway-vX.Y.Z.zip` — the framework-dependent publish output, ready to
-deploy to an IIS host that has the ASP.NET Core hosting bundle.
+This repository intentionally ships only generic defaults. Keep
+production URLs, trusted source roots, metadata alias mappings,
+credentials, and customer-specific deployment settings in private
+configuration outside this public source tree.
 
-### The approval gate
+See [SECURITY.md](SECURITY.md) for supported versions, vulnerability
+reporting, and deployment hardening guidance.
 
-**One command, run by a maintainer:**
+## Documentation Index
 
-```powershell
-pwsh scripts/release.ps1 -ReleaseType patch -Publish
-```
-
-That is the approval gate. It validates, bumps `<Version>` in
-`Directory.Build.props`, commits, tags, and pushes. Without `-Publish` the
-release is prepared locally and nothing leaves the machine. Without
-`-ReleaseType` the script is the same local gate it has always been.
-
-Never hand-edit `<Version>`, and never push a release tag directly — the tag is
-what triggers publishing.
-
-### Before running it
-
-1. Write `release-notes/vX.Y.Z.md`. It becomes the release body, and the script
-   refuses to release without it. No top-level `#` heading; GitHub adds the title.
-2. Add the version's entry to `CHANGELOG.md`.
-3. Update `SECURITY.md` so the supported-version table names the version about to
-   be released.
-4. Commit and push those. The script releases a commit; it does not create one
-   from your working tree.
-
-### What the script refuses
-
-Each of these would otherwise produce a tag describing something that exists
-nowhere, or a release from a commit nobody can find:
-
-- a dirty working tree, or commits not pushed to origin
-- a branch other than `main`, or a detached HEAD
-- a local `main` behind `origin/main`
-- a missing `release-notes/vX.Y.Z.md`
-- a tag that already exists, locally **or** on origin
-
-If a step fails partway, the script prints what exists and the exact command to
-undo or finish it.
-
-### What happens next
-
-`.github/workflows/release.yml` triggers on the tag. It verifies the tag matches
-`<Version>`, runs the build, unit tests, smoke test and version validation,
-publishes the application, and attaches the archive to a GitHub release.
-
-This is the one workflow in this repository that runs on push rather than manual
-dispatch. The reason is in AGENTS.md: building the published archive has to happen
-on a clean machine from the tagged commit, not from whatever a developer had on
-disk. The workflow can still be dispatched manually to run the checks without
-publishing.
-
-### After the release
-
-If the released build should reach OpenModulePlatform, bump the OMP artifact
-version **from the post-release commit** so the delivered artifact carries the
-released build:
-
-```powershell
-pwsh scripts/omp/bump-version.ps1 -ComponentKey odvgateway-web
-```
-
-### Two version lines
-
-| Where | What it is |
+| Document | Purpose |
 | --- | --- |
-| `Directory.Build.props` `<Version>` | the official application version, reported by the binaries |
-| `omp-components.json` | the OMP artifact version |
-
-They are independent by design. An artifact-only test build may bump the artifact
-without an official release, and an official release may happen without an
-artifact rebuild. Never force them to match.
-
-Note that the two archives are one character apart and are **not** the same file:
-`ODVGateway-v0.1.39.zip` is the published release, `ODVGateway-0.1.39.zip` is the
-OMP artifact package.
-
-## Current 0.1.x Scope
-
-The repository and web component version is **`0.1.41`** and the official
-application version (`Directory.Build.props` `<Version>`) is **`0.1.40`** —
-the two lines are independent, as described above. The module definition
-version remains `0.1.11` because the public OMP module contract did not need
-a schema change for the later runtime hardening work.
-
-*(This paragraph names three numbers that move independently and it went stale
-once already — it claimed `0.1.38` while `omp-components.json` had reached
-`0.1.41`. Read the numbers out of `omp-components.json`,
-`Directory.Build.props` and `odvgateway.module-definition.json` rather than
-from here, and correct this paragraph when you notice it lagging. All three
-verified 2026-08-26.)*
-
-Included:
-
-- Existing WebClient `prep` and iframe contract.
-- In-memory prepared session store.
-- Direct server-side file streaming from WebClient `filePath`.
-- Explicit WebClient ticket fallback when direct file paths are not readable.
-- Conservative same-host remote inline source prefetch for small raster
-  WebClient URLs.
-- OpenDocViewer `index.html` injection using the supported `window.ODV` API.
-- Metadata preservation and configurable alias projection.
-- WebClient metadata fields tolerate string, number, boolean, and null values.
-- Standalone and OMP-compatible packaging.
-- Bundle URL handoff and diagnostics for source routing.
-- Conservative source page-count hints for better initial OpenDocViewer totals.
-- Same-host remote inline source prefetch for small raster WebClient URLs.
-- A default `Content-Security-Policy` response header with an optional
-  deployment override.
-- NLog file/console logging with request-correlation middleware, with the NLog
-  runtime configuration shipped as an OMP artifact configuration file.
-- A global exception handler and an xUnit unit-test baseline wired into the local CI gate.
-
-Deferred:
-
-- Database-backed path lookup.
-- File path allowlists and per-root authorization.
-- Multi-node/shared session storage.
-- Bundled archive/manifest streaming for very large raster runs.
+| [AGENTS.md](AGENTS.md) | Repository workflow, dependency-pin policy, release gate, two-version-line model. |
+| [SECURITY.md](SECURITY.md) | Supported versions, vulnerability reporting, security model, operational guidance. |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Build, packaging, public-readiness checklist. |
+| [CHANGELOG.md](CHANGELOG.md) | Release history in Keep-a-Changelog format. |
+| [LICENSE](LICENSE) | MIT license (Copyright Optimal2). |
+| [docs/DEV-SETUP.md](docs/DEV-SETUP.md) | Local clone layout, dev-only settings, demo source files. |
+| [scripts/omp/README.md](scripts/omp/README.md) | OMP packaging and version-lockstep tooling. |
+| [release-notes/](release-notes/) | Per-version release notes (v0.1.39 – v0.1.42). |
 
 ## License
 
