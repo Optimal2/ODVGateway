@@ -760,13 +760,10 @@ try {
 
         # -------------------------------------------------------------------
         # Keep compatibleArtifacts.maxVersion in sync with the bumped
-        # component. A past import failure in a downstream consumer
-        # repository showed that leaving this step manual let the version
-        # matrix drift: the component was bumped but the module definition
-        # still capped the artifact version, so the host rejected the
-        # produced artifact. Specific incident history (consumer name and
-        # date) is maintained in the internal DEV knowledge base; it is
-        # intentionally not recorded in this public repository.
+        # component. The 2026-08-18 module import failure showed that
+        # leaving this step manual let the version matrix drift: the
+        # component was bumped but the module definition still capped the
+        # artifact version, so the host rejected the produced artifact.
         # -------------------------------------------------------------------
         $componentAppKey = [string](Get-JsonPropertyValue -Object $component -Name 'appKey')
         $componentModuleKey = [string](Get-JsonPropertyValue -Object $component -Name 'moduleKey')
