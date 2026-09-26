@@ -353,6 +353,29 @@ the intersection, so a stricter reverse-proxy or IIS copy silently wins
 — usually in the wrong direction. The published `web.config` ships
 without them, with comments explaining the constraint.
 
+## Known limitations
+
+These are things ODVGateway intentionally does **not** do today. Each has
+been verified against the current source — none of them is a documentation
+oversight:
+
+- **No database-backed path lookup.** The session store and the direct
+  source resolver read only from in-memory state. A database or catalogue
+  source for client-supplied `filePath` values is out of scope.
+- **Single shared allowlist for client `filePath`, not per-root
+  authorization.** `trustedSourceRoots` is a flat allowlist: every
+  configured root grants identical read access. Fine-grained access
+  policies per root are not implemented.
+- **No shared session store.** Prepared sessions live in process memory
+  (see [Session store](#session-store)), so multi-instance deployments
+  need sticky routing or a shared store added before traffic can move
+  between instances.
+- **No bundled archive/manifest streaming for very large raster runs.**
+  Source bytes flow as per-file frames inside
+  `application/vnd.opendocviewer.source-pack` (or per-file `/source`
+  responses); very large raster runs must keep every individual file
+  inside `maxSourcePackFrameBytes` / `maxSourceProxyBytes`.
+
 ## Standalone IIS Deployment
 
 1. Publish the app:
@@ -508,6 +531,29 @@ reporting, and deployment hardening guidance.
 | [docs/DEV-SETUP.md](docs/DEV-SETUP.md) | Local clone layout, dev-only settings, demo source files. |
 | [scripts/omp/README.md](scripts/omp/README.md) | OMP packaging and version-lockstep tooling. |
 | [release-notes/](release-notes/) | Per-version release notes (v0.1.39 – v0.1.42). |
+
+### Published release vs OMP artifact
+
+The two distribution outputs share the `ODVGateway-` prefix and the same
+`<application-version>` number, but they are different files:
+
+- `ODVGateway-v<application-version>.zip` — the published GitHub release:
+  framework-dependent `dotnet publish` output, attached to the
+  `v<application-version>` tag by `.github/workflows/release.yml`. Example:
+  `ODVGateway-v0.1.39.zip`. The leading `v` matches the git tag.
+- `odvgateway__odvgateway_webapp__web-app__odvgateway__<artifact-version>.zip`
+  — the OMP portable-object package produced by
+  `scripts/omp/export-universal-package.ps1`; the file name is built by
+  `scripts/omp/build-repository-objects.ps1:Get-ArtifactPackageName` from
+  the five `omp-components.json` fields (`moduleKey`, `appKey`,
+  `packageType`, `targetName`, `version`). Example for the current build:
+  `odvgateway__odvgateway_webapp__web-app__odvgateway__0.1.51.zip`.
+
+The two archives are rebuilt independently: an official release may or
+may not roll into the next OMP artifact, and vice versa — the
+OpenModulePlatform packaging section below describes the version
+relationship and the trigger to bump the OMP artifact after an official
+release.
 
 ## License
 
