@@ -8,9 +8,9 @@ Security issues should be reported privately before public disclosure.
 
 ## Supported Versions
 
-**ODVGateway v0.1.42** is the current supported release and the recommended
+**ODVGateway v0.1.43** is the current supported release and the recommended
 deployment target. The OMP artifact version that ships the supported build is
-`0.1.50` (`odvgateway-web` in `omp-components.json`); the two lines are
+`0.1.52` (`odvgateway-web` in `omp-components.json`); the two lines are
 deliberately independent and are not forced to match. Read each version out of
 its source file — `Directory.Build.props` for the application version and
 `omp-components.json` for the OMP artifact.
@@ -28,7 +28,8 @@ test-standard and dependency updates listed below.
 
 | Version | Security support | Notes |
 | --- | --- | --- |
-| 0.1.42 | :white_check_mark: | Current recommended release and only supported baseline |
+| 0.1.43 | :white_check_mark: | Current recommended release and only supported baseline |
+| 0.1.42 | :x: | Superseded by v0.1.43: the default Content-Security-Policy no longer blocks the viewer's PDF print path or its PDF worker |
 | 0.1.41 | :x: | Superseded by v0.1.42: the handoff redirect keeps the WebClient initiator visible, so `allowedInitiatorUrls` works with the default bundle handoff |
 | 0.1.40 | :x: | Superseded by v0.1.41: real `/health` and error status codes, reproducible assemblies, refreshed test baseline |
 | 0.1.39 | :x: | Superseded by v0.1.40 release-process hardening |
@@ -37,8 +38,14 @@ test-standard and dependency updates listed below.
 
 ## Recent release context
 
-The most recent releases are listed below for operational context. Only v0.1.42
+The most recent releases are listed below for operational context. Only v0.1.43
 is supported.
+
+### ODVGateway v0.1.43
+Changes since v0.1.42:
+
+- The default `Content-Security-Policy` carries an explicit `frame-src 'self' blob:` and `connect-src 'self' blob:`. Without them the hidden blob-PDF print frame fell back to `default-src 'self'` and was blocked (printing hung at 100 %), and the viewer's external PDF worker degraded silently to the main thread. Deployments that override `contentSecurityPolicy` need the same two `blob:` sources, and any IIS-level CSP header must be removed or aligned, because the browser enforces the intersection of two CSP headers.
+- NLog.Web.AspNetCore 6.2.1; .NET SDK pin 10.0.400; tests on xunit.v3 4.0.1 and Microsoft.NET.Test.Sdk 18.10.1; CI and CodeQL workflow actions on their latest majors. No known vulnerable packages (`dotnet list package --vulnerable --include-transitive`).
 
 ### ODVGateway v0.1.42
 Changes since v0.1.41:

@@ -8,6 +8,8 @@ for its `0.1.x` release line.
 
 ## [Unreleased]
 
+## [0.1.43] - 2026-09-27
+
 ### Fixed
 
 - The default `Content-Security-Policy` blocked the viewer's PDF print path:
@@ -26,6 +28,17 @@ for its `0.1.x` release line.
   `contentSecurityPolicy` need the same two `blob:` sources, and any IIS-level
   CSP header must be removed or aligned — with two CSP headers the browser
   enforces the intersection, so the stricter copy wins.
+
+### Changed
+
+- NLog.Web.AspNetCore 6.2.1; .NET SDK pin 10.0.400.
+- Unit tests migrated from xunit v2 to xunit.v3 4.0.1 (self-hosting test
+  executable); Microsoft.NET.Test.Sdk 18.10.1.
+- CI and CodeQL workflow actions lifted to their latest majors; the local CI
+  gate runs the shared-script check (Check 15) strictly and honours
+  `OMP_PLATFORM_ROOT`.
+- Documentation refers to private companion repositories generically; README
+  restores a 'Known limitations' section.
 
 ## [0.1.42] - 2026-09-10
 
