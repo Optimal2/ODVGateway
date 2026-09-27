@@ -11,7 +11,7 @@ dotnet build src/ODVGateway/ODVGateway.csproj --configuration Release
 ```
 
 The project targets `net10.0` (see `src/ODVGateway/ODVGateway.csproj`) and
-pins `NLog.Web.AspNetCore 6.2.0` inline. There is no central package
+pins `NLog.Web.AspNetCore 6.2.1` inline. There is no central package
 management in this repository — see `AGENTS.md` for the dependency-pin
 rationale.
 
