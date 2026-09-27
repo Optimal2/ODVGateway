@@ -19,8 +19,8 @@ public sealed class GatewayHttpStatusTests
         using var factory = new GatewayFactory(distPath: null);
         using var client = factory.CreateClient();
 
-        using var response = await client.GetAsync("/health");
-        var payload = await response.Content.ReadAsStringAsync();
+        using var response = await client.GetAsync("/health", TestContext.Current.CancellationToken);
+        var payload = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
         Assert.Contains(""""{"status":"degraded"""", payload);
@@ -35,8 +35,8 @@ public sealed class GatewayHttpStatusTests
             using var factory = new GatewayFactory(distPath);
             using var client = factory.CreateClient();
 
-            using var response = await client.GetAsync("/health");
-            var payload = await response.Content.ReadAsStringAsync();
+            using var response = await client.GetAsync("/health", TestContext.Current.CancellationToken);
+            var payload = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
             Assert.Contains(""""{"status":"ok"""", payload);
@@ -53,7 +53,7 @@ public sealed class GatewayHttpStatusTests
         using var factory = new GatewayFactory(distPath: null);
         using var client = factory.CreateClient();
 
-        using var response = await client.GetAsync("/");
+        using var response = await client.GetAsync("/", TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
@@ -65,7 +65,7 @@ public sealed class GatewayHttpStatusTests
         using var client = factory.CreateClient();
         var sessionData = EncodeBase64Url("""{"userId":"u1","sessionId":"s1"}""");
 
-        using var response = await client.GetAsync("/?sessiondata=" + sessionData);
+        using var response = await client.GetAsync("/?sessiondata=" + sessionData, TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
@@ -95,13 +95,13 @@ public sealed class GatewayHttpStatusTests
                     "application/json")
             };
             prepRequest.Headers.Referrer = new Uri(initiator);
-            using var prepResponse = await client.SendAsync(prepRequest);
+            using var prepResponse = await client.SendAsync(prepRequest, TestContext.Current.CancellationToken);
             Assert.True(prepResponse.IsSuccessStatusCode, $"/prep answered {(int)prepResponse.StatusCode}");
 
             var sessionData = EncodeBase64Url("""{"userId":"u1","sessionId":"s1","aspxAuth":"a1","caseIds":["d1"]}""");
             using var viewerRequest = new HttpRequestMessage(HttpMethod.Get, "/?sessiondata=" + sessionData);
             viewerRequest.Headers.Referrer = new Uri(initiator);
-            using var viewerResponse = await client.SendAsync(viewerRequest);
+            using var viewerResponse = await client.SendAsync(viewerRequest, TestContext.Current.CancellationToken);
 
             Assert.Equal(HttpStatusCode.Redirect, viewerResponse.StatusCode);
             Assert.True(
@@ -113,7 +113,7 @@ public sealed class GatewayHttpStatusTests
             // policy; the guard must then accept the gateway's own redirect target.
             using var followUpRequest = new HttpRequestMessage(HttpMethod.Get, viewerResponse.Headers.Location);
             followUpRequest.Headers.Referrer = new Uri(initiator);
-            using var followUpResponse = await client.SendAsync(followUpRequest);
+            using var followUpResponse = await client.SendAsync(followUpRequest, TestContext.Current.CancellationToken);
 
             Assert.Equal(HttpStatusCode.OK, followUpResponse.StatusCode);
 
@@ -121,7 +121,7 @@ public sealed class GatewayHttpStatusTests
             // also pass if the allowlist were never bound, because an empty allowlist lets
             // everything through. The same follow-up without Referer must still be rejected.
             using var blindFollowUpRequest = new HttpRequestMessage(HttpMethod.Get, viewerResponse.Headers.Location);
-            using var blindFollowUpResponse = await client.SendAsync(blindFollowUpRequest);
+            using var blindFollowUpResponse = await client.SendAsync(blindFollowUpRequest, TestContext.Current.CancellationToken);
 
             Assert.Equal(HttpStatusCode.Forbidden, blindFollowUpResponse.StatusCode);
         }
@@ -140,7 +140,7 @@ public sealed class GatewayHttpStatusTests
         using var factory = new GatewayFactory(distPath: null, allowFallbackWithoutSession: true);
         using var client = factory.CreateClient();
 
-        using var response = await client.GetAsync("/");
+        using var response = await client.GetAsync("/", TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
     }
@@ -165,7 +165,7 @@ public sealed class GatewayHttpStatusTests
                 contentRoot: contentRoot);
             using var client = factory.CreateClient();
 
-            using var response = await client.GetAsync("/");
+            using var response = await client.GetAsync("/", TestContext.Current.CancellationToken);
 
             Assert.Equal(expected, response.StatusCode);
         }
@@ -187,7 +187,7 @@ public sealed class GatewayHttpStatusTests
             using var factory = new GatewayFactory(distPath, allowFallbackWithoutSession: true);
             using var client = factory.CreateClient();
 
-            using var response = await client.GetAsync("/");
+            using var response = await client.GetAsync("/", TestContext.Current.CancellationToken);
 
             Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
         }

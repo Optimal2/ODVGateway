@@ -44,19 +44,30 @@ do not assume a central pin exists.
 That difference has an observable consequence, so treat it as a known state rather than
 rediscovering it: because a family-wide pin bump does not reach this repository automatically,
 a shared pin has to be lifted here by hand, and this repository is where such a pin lags.
-Re-measured 2026-09-02 across all eight .NET repos in this family:
+Re-measured 2026-09-27 against the OpenModulePlatform central pins:
 
-| Package | Here | Rest of the family | State |
+| Package | Here | OpenModulePlatform | State |
 | --- | --- | --- | --- |
-| `Microsoft.NET.Test.Sdk` | 18.9.0 | 18.9.0 (7 of 7) | in line |
-| `xunit` | 2.9.3 | 2.9.3 (7 of 7) | in line |
-| `xunit.runner.visualstudio` | 4.0.0 | 4.0.0 (7 of 7) | in line |
-| `NLog.Web.AspNetCore` | 6.2.0 | 6.2.0 (4 of 4 others that use it; 5 of 5 including this repository) | in line (since 2026-09-08) |
+| `Microsoft.NET.Test.Sdk` | 18.10.1 | 18.10.1 | in line |
+| `xunit.v3.mtp-off` | 4.0.1 | `xunit` 2.9.3 (v2) | ahead, deliberately (see below) |
+| `xunit.runner.visualstudio` | 4.0.0 | 4.0.0 | in line |
+| `Microsoft.AspNetCore.Mvc.Testing` | 10.0.12 | 10.0.12 | in line |
+| `NLog.Web.AspNetCore` | 6.2.1 | 6.2.1 | in line |
 
-Three of those four rows were brought in line by family-wide campaigns, not by this repository
-catching up on its own: `Microsoft.NET.Test.Sdk` reached 18.9.0 on 2026-09-01 and the xunit
-runner reached 4.0.0 on 2026-08-31. `NLog.Web.AspNetCore` lagged at 6.1.4 in
-`src/ODVGateway/ODVGateway.csproj` until 2026-09-08, when it was lifted to the family's 6.2.0.
+Earlier rows were brought in line by family-wide campaigns rather than by this repository
+catching up on its own; `NLog.Web.AspNetCore` lagged at 6.1.4 until 2026-09-08.
+
+The xunit row is the one deliberate divergence. ODVGateway ships standalone to production
+and its third-party dependencies are kept at the latest stable versions before each official
+release, so on 2026-09-27 its tests moved from xunit v2 (2.9.3, the last v2 release) to
+xunit.v3. The test project is therefore an `Exe`, and it references the `xunit.v3.mtp-off`
+flavour on purpose: the default `xunit.v3` package enables Microsoft.Testing.Platform, which
+the .NET 10 SDK refuses to run under the VSTest-mode `dotnet test` that `scripts/local-ci.ps1`
+and the CI workflows use (`--logger trx`). `mtp-off` keeps VSTest through
+`xunit.runner.visualstudio`, so the TRX output and the commands stay unchanged. The rest of the
+family keeps xunit v2 until its own deliberate migration, which is possible because this
+repository does not link the shared UI-test sources (below).
+
 When you bump a pin here, bump it to the version the rest of the family already carries rather
 than to whatever is newest, unless the task is explicitly a family-wide upgrade.
 

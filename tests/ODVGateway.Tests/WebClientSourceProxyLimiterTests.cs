@@ -26,11 +26,11 @@ public sealed class WebClientSourceProxyLimiterTests
         var first = await limiter.WaitAsync(CancellationToken.None);
         var secondTask = limiter.WaitAsync(CancellationToken.None);
 
-        var completedBeforeRelease = await Task.WhenAny(secondTask, Task.Delay(200)) == secondTask;
+        var completedBeforeRelease = await Task.WhenAny(secondTask, Task.Delay(200, TestContext.Current.CancellationToken)) == secondTask;
         Assert.False(completedBeforeRelease, "Second lease should block while the first is held.");
 
         first.Dispose();
-        var second = await secondTask.WaitAsync(TimeSpan.FromSeconds(5));
+        var second = await secondTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.NotNull(second);
         second.Dispose();
     }
@@ -44,11 +44,11 @@ public sealed class WebClientSourceProxyLimiterTests
         var second = await limiter.WaitAsync(CancellationToken.None);
         var thirdTask = limiter.WaitAsync(CancellationToken.None);
 
-        var completedBeforeRelease = await Task.WhenAny(thirdTask, Task.Delay(200)) == thirdTask;
+        var completedBeforeRelease = await Task.WhenAny(thirdTask, Task.Delay(200, TestContext.Current.CancellationToken)) == thirdTask;
         Assert.False(completedBeforeRelease, "Third lease should block while two leases are held.");
 
         first.Dispose();
-        var third = await thirdTask.WaitAsync(TimeSpan.FromSeconds(5));
+        var third = await thirdTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
         Assert.NotNull(third);
 
         second.Dispose();
@@ -63,11 +63,11 @@ public sealed class WebClientSourceProxyLimiterTests
         var first = await limiter.WaitAsync(CancellationToken.None);
         var secondTask = limiter.WaitAsync(CancellationToken.None);
 
-        var completedBeforeRelease = await Task.WhenAny(secondTask, Task.Delay(200)) == secondTask;
+        var completedBeforeRelease = await Task.WhenAny(secondTask, Task.Delay(200, TestContext.Current.CancellationToken)) == secondTask;
         Assert.False(completedBeforeRelease, "A zero configured limit must still behave as limit one.");
 
         first.Dispose();
-        (await secondTask.WaitAsync(TimeSpan.FromSeconds(5))).Dispose();
+        (await secondTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken)).Dispose();
     }
 
     [Fact]
@@ -95,10 +95,10 @@ public sealed class WebClientSourceProxyLimiterTests
         // waiter should get exactly one slot and a second waiter must block.
         var next = await limiter.WaitAsync(CancellationToken.None);
         var blockedTask = limiter.WaitAsync(CancellationToken.None);
-        var completedEarly = await Task.WhenAny(blockedTask, Task.Delay(200)) == blockedTask;
+        var completedEarly = await Task.WhenAny(blockedTask, Task.Delay(200, TestContext.Current.CancellationToken)) == blockedTask;
         Assert.False(completedEarly, "Double dispose must not release the semaphore twice.");
 
         next.Dispose();
-        (await blockedTask.WaitAsync(TimeSpan.FromSeconds(5))).Dispose();
+        (await blockedTask.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken)).Dispose();
     }
 }
