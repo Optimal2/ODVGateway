@@ -1,0 +1,10 @@
+<Project>
+  <!--
+    Keep the published static web assets endpoints manifest free of file system
+    timestamps, so the same source at the same version gives the same artifact
+    SHA-256 regardless of when or where it was checked out. The imported file is
+    a verbatim copy of the OpenModulePlatform file at the same path; Check 15
+    (validate-shared-scripts.ps1) fails when it drifts or is not imported.
+  -->
+  <Import Project="$(MSBuildThisFileDirectory)build\OpenModulePlatform.DeterministicStaticWebAssets.targets" />
+</Project>
