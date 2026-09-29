@@ -126,6 +126,9 @@ This runs, in order:
    security headers, error responses).
 4. `scripts/omp/validate-component-versions.ps1` (lockstep, payload and
    shared-script drift checks against `omp-components.json`).
+5. `scripts/omp/run-script-tests.ps1` (the canonical OMP Pester step:
+   Pester 6.1.0 from the gitignored `.psmodules/` cache, every
+   `tests/**/*.Tests.ps1` suite).
 
 Step 4 includes Check 15, which compares the shared scripts in
 `scripts/omp` with the canonical copies in an OpenModulePlatform checkout.
@@ -144,7 +147,8 @@ pwsh scripts\local-ci.ps1
 `-AllowUnverifiedSharedScripts` deliberately turns the strict mode off
 for a run where no platform checkout is available on purpose; detected
 drift still fails. Do not use it to get a push through.
-`tests\scripts\Check15Strict.Tests.ps1` pins this behaviour.
+`tests\scripts\Check15Strict.Tests.ps1` pins this behaviour and runs in
+step 5.
 
 GitHub Actions CI is `workflow_dispatch`-only by deliberate choice.
 ODVGateway is a public repository, so Actions would be free, but the

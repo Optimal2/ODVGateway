@@ -9,7 +9,8 @@
     2. dotnet test tests/ODVGateway.Tests/ODVGateway.Tests.csproj (unit tests)
     3. scripts/smoke-test.ps1 (builds, starts, and smoke-tests the gateway)
     4. scripts/omp/validate-component-versions.ps1 -Strict
-    5. tests/scripts/Check15Strict.Tests.ps1 (Check 15 strict wiring)
+    5. scripts/omp/run-script-tests.ps1 (the canonical OMP Pester step: runs
+       every tests/**/*.Tests.ps1 suite, including Check15Strict.Tests.ps1)
 
     Each step reports PASS or FAIL. The script exits with code 0 when every
     step passes and 1 when any step fails. Steps 2 and 3 are skipped when the
@@ -81,7 +82,7 @@ $testProjectPath = Join-Path $repoRoot 'tests/ODVGateway.Tests/ODVGateway.Tests.
 $testResultsDir = Join-Path $repoRoot 'TestResults'
 $smokeScript = Join-Path $scriptDir 'smoke-test.ps1'
 $validatorScript = Join-Path $scriptDir 'omp\validate-component-versions.ps1'
-$check15TestScript = Join-Path $repoRoot 'tests\scripts\Check15Strict.Tests.ps1'
+$scriptTestsRunner = Join-Path $scriptDir 'omp\run-script-tests.ps1'
 
 # --- Local-ci telemetry (best-effort; never changes the gate's exit code) ----
 # One compact JSONL line per run under
@@ -288,34 +289,45 @@ catch {
 }
 Write-StepResult -Step 'validate-component-versions.ps1' -Passed $step4Pass -Message $step4Message
 
-# Step 5: Check 15 strict-wiring tests
-# Not gated on earlier steps either: the tests read the validator and this
-# script and never need the build output. They pin that Check 15 fails when
-# the platform checkout cannot be found and that this gate runs it -Strict,
-# so a regression in that wiring fails local CI instead of passing silently.
-# A missing platform checkout is reported as skipped only when
-# -AllowUnverifiedSharedScripts was passed on purpose.
+# Step 5: Pester script tests
+# The canonical OMP Pester step (scripts/omp/run-script-tests.ps1, kept
+# verbatim by Check 15) pins Pester 6.1.0 and runs every tests/**/*.Tests.ps1
+# suite, among them Check15Strict.Tests.ps1, which pins that Check 15 fails
+# when the platform checkout cannot be found and that this gate runs it
+# -Strict. Not gated on earlier steps: the suites read scripts only and never
+# need the build output. The runner takes no suite parameters, so the platform
+# root is handed over as OMP_PLATFORM_ROOT and a missing platform checkout is
+# reported as skipped only when -AllowUnverifiedSharedScripts was passed on
+# purpose. Both environment variables are restored afterwards.
 $step5Pass = $false
 $step5Message = ''
+$savedPlatformRoot = $env:OMP_PLATFORM_ROOT
+$savedAllowMissing = $env:ODVGATEWAY_CHECK15_ALLOW_MISSING_PLATFORM
 try {
-    $allowLabel = if ($AllowUnverifiedSharedScripts) { ' -AllowMissingPlatform' } else { '' }
-    $rootLabel = if ([string]::IsNullOrWhiteSpace($PlatformRepositoryRoot)) { '' } else { " -PlatformRepositoryRoot '$PlatformRepositoryRoot'" }
+    if (-not [string]::IsNullOrWhiteSpace($PlatformRepositoryRoot)) {
+        $env:OMP_PLATFORM_ROOT = $PlatformRepositoryRoot
+    }
+    $env:ODVGATEWAY_CHECK15_ALLOW_MISSING_PLATFORM = if ($AllowUnverifiedSharedScripts) { '1' } else { $null }
     Write-Host ''
-    Write-Host "Running: $check15TestScript$rootLabel$allowLabel"
-    & "$check15TestScript" -PlatformRepositoryRoot $PlatformRepositoryRoot -AllowMissingPlatform:$AllowUnverifiedSharedScripts
+    Write-Host "Running: $scriptTestsRunner"
+    & "$scriptTestsRunner"
     if ($LASTEXITCODE -eq 0) {
         $step5Pass = $true
     }
     else {
-        $step5Message = "Check15Strict.Tests.ps1 exited with code $LASTEXITCODE"
+        $step5Message = "run-script-tests.ps1 exited with code $LASTEXITCODE"
         $overallPass = $false
     }
 }
 catch {
-    $step5Message = "Check15Strict.Tests.ps1 failed: $_"
+    $step5Message = "run-script-tests.ps1 failed: $_"
     $overallPass = $false
 }
-Write-StepResult -Step 'Check15Strict.Tests.ps1' -Passed $step5Pass -Message $step5Message
+finally {
+    $env:OMP_PLATFORM_ROOT = $savedPlatformRoot
+    $env:ODVGATEWAY_CHECK15_ALLOW_MISSING_PLATFORM = $savedAllowMissing
+}
+Write-StepResult -Step 'run-script-tests.ps1 (Pester)' -Passed $step5Pass -Message $step5Message
 
 # Telemetry: one compact JSONL line per run. Written AFTER the gate result is
 # decided, in its own try/catch: a failure here is a visible Write-Warning and
