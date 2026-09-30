@@ -144,9 +144,10 @@ $env:OMP_PLATFORM_ROOT = 'C:\src\OpenModulePlatform'
 pwsh scripts\local-ci.ps1
 ```
 
-`-AllowUnverifiedSharedScripts` deliberately turns the strict mode off
-for a run where no platform checkout is available on purpose; detected
-drift still fails. Do not use it to get a push through.
+`-AllowUnverifiedSharedScripts` deliberately accepts an unresolvable
+platform checkout as NOT VERIFIED (it sets `OMP_ALLOW_MISSING_PLATFORM=1`)
+for a run where no OpenModulePlatform checkout is available on purpose;
+detected drift still fails. Do not use it to get a push through.
 `tests\scripts\Check15Strict.Tests.ps1` pins this behaviour and runs in
 step 5.
 

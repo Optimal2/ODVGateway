@@ -278,6 +278,151 @@ function Get-IncompatiblePesterMessage {
         ' (in an editor host, restart its PowerShell session first; do not Import-Module Pester before the gate).')
 }
 
+# Directory names whose contents never belong to the repository's tests: build
+# output and dependencies. A .NET test project under tests/ writes generated
+# scripts (for example playwright.ps1) into bin/, and counting them turned a
+# correct run red in a consumer repository (2026-09-29).
+$script:PesterInventoryExcludedDirectories = @('bin', 'obj', 'node_modules', '.git')
+
+function Get-GitWorkTreeFileList {
+    <#
+    .SYNOPSIS
+        Lists the files under Directory that git considers part of the
+        repository -- tracked, plus untracked files that are not ignored --
+        as full paths, or returns $null when git is unavailable or Directory
+        is not inside a work tree.
+    .DESCRIPTION
+        Runs git through System.Diagnostics.Process with UTF-8 decoding, so a
+        non-ASCII file name survives on Windows PowerShell 5.1 as well; a
+        mis-decoded name would not exist on disk and would silently drop out
+        of the inventory. -z output needs no unquoting.
+    #>
+    param([Parameter(Mandatory = $true)][string] $Directory)
+
+    $git = Get-Command -Name git -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $git) {
+        return $null
+    }
+
+    $run = {
+        param([string] $Arguments)
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $git.Source
+        $startInfo.Arguments = $Arguments
+        $startInfo.WorkingDirectory = $Directory
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)
+        $process = [System.Diagnostics.Process]::Start($startInfo)
+        try {
+            # Read stdout asynchronously while stderr is drained, so neither
+            # pipe can fill and block the other.
+            $stdout = $process.StandardOutput.ReadToEndAsync()
+            $null = $process.StandardError.ReadToEnd()
+            $process.WaitForExit()
+            return @{ ExitCode = $process.ExitCode; Output = $stdout.Result }
+        }
+        finally {
+            $process.Dispose()
+        }
+    }
+
+    $inside = & $run 'rev-parse --is-inside-work-tree'
+    if ($inside.ExitCode -ne 0 -or $inside.Output.Trim() -ne 'true') {
+        return $null
+    }
+    # Run from Directory, ls-files lists only files below it, relative to it.
+    $listed = & $run 'ls-files --cached --others --exclude-standard -z'
+    if ($listed.ExitCode -ne 0) {
+        throw "git ls-files failed in '$Directory' (exit $($listed.ExitCode)); the test inventory cannot be trusted."
+    }
+
+    $files = New-Object System.Collections.Generic.List[string]
+    foreach ($relative in $listed.Output.Split([char]0)) {
+        if ([string]::IsNullOrEmpty($relative)) {
+            continue
+        }
+        $full = [System.IO.Path]::GetFullPath((Join-Path $Directory $relative))
+        # --cached also lists a tracked file deleted from the work tree.
+        if ([System.IO.File]::Exists($full)) {
+            $files.Add($full)
+        }
+    }
+    return , $files.ToArray()
+}
+
+function Get-PesterScriptInventory {
+    <#
+    .SYNOPSIS
+        Returns the *.ps1 files under a tests directory that belong to the
+        repository, as @{ Source = 'git' | 'filesystem'; Files = full paths }.
+    .DESCRIPTION
+        Shared by run-script-tests.ps1 (the suite inventory) and
+        validate-shared-scripts.ps1 (does this repository run Pester suites?),
+        so the two can never disagree about what a suite is.
+
+        Inside a git work tree the list comes from git: tracked files plus
+        untracked files that are not ignored, so build output, restored
+        dependencies and anything else .gitignore names never count. Outside
+        git -- or without git on PATH -- the reserve rule is a walk of the
+        directory. Both skip the directories named in
+        $script:PesterInventoryExcludedDirectories, even where such a
+        directory is tracked, and both include hidden files, as Pester's own
+        discovery does.
+    #>
+    param([Parameter(Mandatory = $true)][string] $Path)
+
+    $root = [System.IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+    $source = 'git'
+    $candidates = Get-GitWorkTreeFileList -Directory $root
+    if ($null -eq $candidates) {
+        $source = 'filesystem'
+        $list = New-Object System.Collections.Generic.List[string]
+        $pending = New-Object System.Collections.Generic.Stack[string]
+        $pending.Push($root)
+        while ($pending.Count -gt 0) {
+            $directory = $pending.Pop()
+            # System.IO lists hidden and system files; Get-ChildItem without
+            # -Force does not.
+            foreach ($file in [System.IO.Directory]::GetFiles($directory)) {
+                $list.Add($file)
+            }
+            foreach ($child in [System.IO.Directory]::GetDirectories($directory)) {
+                $pending.Push($child)
+            }
+        }
+        $candidates = $list.ToArray()
+    }
+
+    $files = New-Object System.Collections.Generic.List[string]
+    foreach ($full in $candidates) {
+        # Checked explicitly: a '*.ps1' file-system filter also matches longer
+        # extensions such as .ps1xml on Windows.
+        if (-not $full.EndsWith('.ps1', [System.StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+        $relative = $full.Substring($root.Length).TrimStart('\', '/')
+        $segments = @($relative -split '[\\/]')
+        $excluded = $false
+        for ($index = 0; $index -lt $segments.Count - 1; $index++) {
+            foreach ($name in $script:PesterInventoryExcludedDirectories) {
+                if ($segments[$index] -ieq $name) {
+                    $excluded = $true
+                }
+            }
+        }
+        if (-not $excluded) {
+            $files.Add($full)
+        }
+    }
+
+    $sorted = $files.ToArray()
+    [System.Array]::Sort($sorted, [System.StringComparer]::OrdinalIgnoreCase)
+    return @{ Source = $source; Files = $sorted }
+}
+
 # Script mode: run the ensure, import the pinned module by full path, and
 # print what was loaded. Skipped when dot-sourced (InvocationName is '.').
 if ($MyInvocation.InvocationName -ne '.') {

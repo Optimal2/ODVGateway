@@ -7,31 +7,33 @@
     Check 15 compares this repository's copies of the shared scripts against
     the canonical copies in an OpenModulePlatform checkout. Measured
     2026-09-26: jobs running in git worktrees under another root found no
-    sibling checkout, local CI ran Check 15 without -Strict, the guard printed
-    NOT VERIFIED with exit 0, and shared-script drift was pushed.
+    sibling checkout, the guard printed NOT VERIFIED with exit 0, and
+    shared-script drift was pushed.
 
     The cases below pin the behaviour that closes that gap:
 
-    1. A platform root that cannot be resolved fails the validator under
-       -Strict (exit 1 with the exact Check 15 "canonical script not found"
-       error for that root, so an unrelated validator error cannot pass it).
+    1. A platform root that cannot be resolved fails the validator (exit 1
+       with the shared resolver's Check 15 error for that root, so an
+       unrelated validator error cannot pass it). A root NAMED by
+       OMP_PLATFORM_ROOT that is not a checkout fails whether or not
+       -Strict is passed.
     2. OMP_PLATFORM_ROOT is honoured and wins over OpenModulePlatformRoot, so
        the comparison actually runs.
     3. -PlatformRepositoryRoot wins over OMP_PLATFORM_ROOT.
     4. scripts/local-ci.ps1 runs the validator with -Strict unless
-       -AllowUnverifiedSharedScripts is passed, and forwards
-       -PlatformRepositoryRoot.
+       -AllowUnverifiedSharedScripts is passed, forwards -PlatformRepositoryRoot,
+       and maps -AllowUnverifiedSharedScripts to OMP_ALLOW_MISSING_PLATFORM=1.
     5. scripts/local-ci.ps1 runs this file through the canonical Pester step
        (scripts/omp/run-script-tests.ps1), so a regression in the -Strict
        wiring fails the local gate.
 
-    The platform checkout for cases 2 and 3 is resolved with the validator's
-    own Resolve-Check15PlatformRoot function, taken from its syntax tree
-    rather than copied (see Check15Strict.TestHelpers.ps1), so this file and
-    the validator look in the same places in the same order:
+    The platform checkout for cases 2 and 3 is resolved with the shared
+    resolver Resolve-PlatformCheckScript (validate-component-versions.helpers.ps1),
+    the same one the validator calls, so this file and the validator look in
+    the same places in the same order: -PlatformRepositoryRoot,
     OMP_PLATFORM_ROOT, OpenModulePlatformRoot, then the sibling directory
-    named OpenModulePlatform. local-ci.ps1 forwards its
-    -PlatformRepositoryRoot as OMP_PLATFORM_ROOT.
+    named OpenModulePlatform. local-ci.ps1 forwards its -PlatformRepositoryRoot
+    as OMP_PLATFORM_ROOT.
 
     Cases 2 and 3 need a real OpenModulePlatform checkout. It is read, never
     written. Without one those cases fail rather than skip, because a check
@@ -66,21 +68,21 @@ Describe 'Check 15 strict wiring' {
         $localCiAst = Get-LocalCiAst
     }
 
-    It 'validator resolves the platform root in one function' {
-        $check15ResolverFound | Should -BeTrue -Because 'Resolve-Check15PlatformRoot must exist in validate-component-versions.ps1'
+    It 'validator resolves the platform root through the shared resolver' {
+        $check15ResolverFound | Should -BeTrue -Because 'Resolve-PlatformCheckScript must exist in validate-component-versions.helpers.ps1'
     }
 
-    # Case 1: no resolvable root + -Strict => exit 1 with the exact Check 15
-    # error for that root. Matching only "Check 15" could pass on an unrelated
-    # validator error that happens to coincide with a NOT VERIFIED warning.
-    It 'no platform root + -Strict fails' {
+    # Case 1: a named root that is not a checkout => exit 1 with the shared
+    # resolver's Check 15 error for that root. Matching only "Check 15" could
+    # pass on an unrelated validator error that happens to coincide with a NOT
+    # VERIFIED warning.
+    It 'a named platform root that is not a checkout fails' {
         $case1 = Invoke-Validator -Environment @{ OMP_PLATFORM_ROOT = $missingRoot } -Arguments @{ Strict = $true }
-        $case1Script = Join-Path $missingRoot 'scripts\omp\validate-shared-scripts.ps1'
-        $case1Expected = [regex]::Escape("Check 15: canonical script not found at '$case1Script'; shared script drift could not be checked") +
-            '.*' + [regex]::Escape('Strict mode treats a guard that could not run as an error.')
-        $case1.ExitCode | Should -Be 1 -Because "the validator must fail when '$missingRoot' is not a platform checkout"
-        $case1.Output | Should -Match $case1Expected
-        $case1.Output | Should -Not -Match 'Check 15: NOT VERIFIED'
+        $case1.ExitCode | Should -Be 1 -Because "the validator must fail when OMP_PLATFORM_ROOT '$missingRoot' is not a platform checkout"
+        $case1.Output | Should -Match 'Check 15'
+        $case1.Output | Should -Match 'does not contain'
+        $case1.Output | Should -Match 'OMP_PLATFORM_ROOT'
+        $case1.Output | Should -Not -Match 'NOT VERIFIED'
     }
 
     # Case 2: OMP_PLATFORM_ROOT wins over a bogus OpenModulePlatformRoot.
@@ -97,7 +99,9 @@ Describe 'Check 15 strict wiring' {
         Test-ComparisonRan -Output $case3.Output | Should -BeTrue -Because "the canonical comparison must run (exit $($case3.ExitCode))"
     }
 
-    # Case 4: local-ci passes -Strict unless explicitly allowed, and forwards the root.
+    # Case 4: local-ci passes -Strict unless explicitly allowed, forwards the
+    # root, and maps -AllowUnverifiedSharedScripts to the shared resolver's
+    # OMP_ALLOW_MISSING_PLATFORM exception.
     It 'local-ci runs Check 15 strict by default' {
         $paramNames = @()
         if ($null -ne $localCiAst.ParamBlock) { $paramNames = @($localCiAst.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) }
@@ -107,6 +111,7 @@ Describe 'Check 15 strict wiring' {
         $validatorCalls.Count | Should -BeGreaterThan 0 -Because 'local-ci.ps1 must call the validator'
         $validatorCalls.Text | Should -Match '-Strict:\s*\(\s*-not\s+\$AllowUnverifiedSharedScripts\s*\)'
         $validatorCalls.Text | Should -Match 'PlatformRepositoryRoot'
+        $localCiAst.Extent.Text | Should -Match '\$env:OMP_ALLOW_MISSING_PLATFORM\s*=\s*if\s*\(\s*\$AllowUnverifiedSharedScripts\s*\)\s*\{\s*[''"]1[''"]\s*\}'
     }
 
     # Case 5: local-ci runs this suite through the canonical Pester step,

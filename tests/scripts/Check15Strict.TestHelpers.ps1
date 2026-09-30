@@ -7,43 +7,43 @@
     Pester 6 runs every container in its own session state where file-scope
     functions and variables are not visible.
 
-    The platform checkout is resolved with the validator's own
-    Resolve-Check15PlatformRoot function, taken from its syntax tree rather
-    than copied, so the suite and the validator look in the same places in the
-    same order: -PlatformRepositoryRoot, OMP_PLATFORM_ROOT,
-    OpenModulePlatformRoot, then the sibling directory named
-    OpenModulePlatform. The suite runs under scripts/omp/run-script-tests.ps1,
-    which takes no suite parameters, so local CI hands the platform root over
-    as OMP_PLATFORM_ROOT and the deliberate "no platform checkout" opt-in as
+    The platform checkout is resolved with the shared resolver
+    Resolve-PlatformCheckScript from validate-component-versions.helpers.ps1,
+    which the validator itself calls, so the suite and the validator look in the
+    same places in the same order: -PlatformRepositoryRoot, OMP_PLATFORM_ROOT,
+    OpenModulePlatformRoot, then the sibling directory named OpenModulePlatform.
+    The suite runs under scripts/omp/run-script-tests.ps1, which takes no suite
+    parameters, so local CI hands the platform root over as OMP_PLATFORM_ROOT
+    and the deliberate "no platform checkout" opt-in as
     ODVGATEWAY_CHECK15_ALLOW_MISSING_PLATFORM=1.
 #>
 
 $check15RepoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $check15ValidatorScript = Join-Path $check15RepoRoot 'scripts\omp\validate-component-versions.ps1'
 $check15LocalCiScript = Join-Path $check15RepoRoot 'scripts\local-ci.ps1'
+$check15HelpersScript = Join-Path $check15RepoRoot 'scripts\omp\validate-component-versions.helpers.ps1'
 
 # Reuse the validator's own platform-root resolution instead of a copy of it:
-# the function definition is taken from the validator's syntax tree and
-# defined here (in the scope that dot-sources this file), without running the
-# validator itself. $check15ResolverFound is $false when the validator no
-# longer resolves the platform root in that one function.
-$check15Tokens = $null
-$check15ParseErrors = $null
-$check15ValidatorAst = [System.Management.Automation.Language.Parser]::ParseFile($check15ValidatorScript, [ref]$check15Tokens, [ref]$check15ParseErrors)
-$check15ResolverAst = $check15ValidatorAst.Find({
-    param($node)
-    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Resolve-Check15PlatformRoot'
-}, $true)
-$check15ResolverFound = $null -ne $check15ResolverAst
-if ($check15ResolverFound) {
-    . ([scriptblock]::Create($check15ResolverAst.Extent.Text))
-}
+# the shared helpers file is dot-sourced here (it is side-effect free by
+# contract, see its header) and Resolve-PlatformCheckScript is called exactly as
+# the validator calls it. $check15ResolverFound is $false when the shared core
+# no longer provides the resolver.
+. $check15HelpersScript
+$check15ResolverFound = $null -ne (Get-Command Resolve-PlatformCheckScript -ErrorAction SilentlyContinue)
 
 function Get-Check15PlatformRoot {
-    if (-not (Get-Command Resolve-Check15PlatformRoot -ErrorAction SilentlyContinue)) {
+    if (-not $check15ResolverFound) {
         return ''
     }
-    return Resolve-Check15PlatformRoot -PlatformRepositoryRoot '' -RepositoryRoot $check15RepoRoot
+    $errors = [System.Collections.Generic.List[string]]::new()
+    $warnings = [System.Collections.Generic.List[string]]::new()
+    $resolved = Resolve-PlatformCheckScript -RepositoryRoot $check15RepoRoot `
+        -ScriptRelativePath 'scripts/omp/validate-shared-scripts.ps1' -CheckLabel 'Check 15' `
+        -Errors $errors -Warnings $warnings -PlatformRepositoryRoot ''
+    if ($null -eq $resolved) {
+        return ''
+    }
+    return $resolved.PlatformRoot
 }
 
 function Test-Check15HasPlatform {
@@ -59,7 +59,7 @@ function Test-Check15AllowMissingPlatform {
 function Invoke-Validator {
     param([hashtable]$Environment, [hashtable]$Arguments)
 
-    $names = @('OMP_PLATFORM_ROOT', 'OpenModulePlatformRoot')
+    $names = @('OMP_PLATFORM_ROOT', 'OpenModulePlatformRoot', 'OMP_ALLOW_MISSING_PLATFORM')
     $saved = @{}
     foreach ($name in $names) { $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
     try {

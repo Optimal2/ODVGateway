@@ -49,11 +49,13 @@
     when omitted the validator resolves the checkout itself (see above).
 
 .PARAMETER AllowUnverifiedSharedScripts
-    Deliberately runs Check 15 without -Strict, so a missing platform checkout
-    is a visible NOT VERIFIED warning instead of a failure. Use it only for a
-    run where no OpenModulePlatform checkout is available on purpose; never
-    to get past a push, because an unverified run is exactly how shared-script
-    drift reached main on 2026-09-26. Detected drift still fails either way.
+    Deliberately accepts an unresolvable OpenModulePlatform checkout as NOT
+    VERIFIED instead of a failure (it sets OMP_ALLOW_MISSING_PLATFORM=1 for the
+    validator and ODVGATEWAY_CHECK15_ALLOW_MISSING_PLATFORM=1 for the Pester
+    step). Use it only for a run where no OpenModulePlatform checkout is
+    available on purpose; never to get past a push, because an unverified run
+    is exactly how shared-script drift reached main on 2026-09-26. Detected
+    drift still fails either way.
 #>
 [CmdletBinding()]
 param(
@@ -262,16 +264,20 @@ Write-StepResult -Step 'smoke-test.ps1' -Passed $step3Pass -Message $step3Messag
 # build output, so a lockstep or manifest breach is reported in the same run
 # as a build or test failure instead of staying hidden behind it. The overall
 # verdict is still FAIL whenever any earlier step failed.
-# Check 15 runs strict unless -AllowUnverifiedSharedScripts is passed: a guard
-# that could not find the platform checkout must not read as a passing one.
+# Check 15 fails when the platform checkout cannot be found (the shared
+# resolver records a validation error), unless -AllowUnverifiedSharedScripts
+# was passed, which sets OMP_ALLOW_MISSING_PLATFORM=1 so the check is reported
+# as NOT VERIFIED instead. A guard that could not run must not read as passing.
 $step4Pass = $false
 $step4Message = ''
+$savedAllowMissingPlatform = $env:OMP_ALLOW_MISSING_PLATFORM
 try {
     $strictLabel = if ($AllowUnverifiedSharedScripts) { '' } else { ' -Strict' }
     $rootLabel = if ([string]::IsNullOrWhiteSpace($PlatformRepositoryRoot)) { '' } else { " -PlatformRepositoryRoot '$PlatformRepositoryRoot'" }
+    $env:OMP_ALLOW_MISSING_PLATFORM = if ($AllowUnverifiedSharedScripts) { '1' } else { $null }
     Write-Host ''
     if ($AllowUnverifiedSharedScripts) {
-        Write-Warning 'Check 15 runs WITHOUT -Strict (-AllowUnverifiedSharedScripts): a missing OpenModulePlatform checkout is only a warning in this run.'
+        Write-Warning 'Check 15 accepts a missing OpenModulePlatform checkout as NOT VERIFIED (-AllowUnverifiedSharedScripts).'
     }
     Write-Host "Running: $validatorScript -BaseCommit '$BaseCommit'$strictLabel$rootLabel"
     & "$validatorScript" -BaseCommit $BaseCommit -Strict:(-not $AllowUnverifiedSharedScripts) -PlatformRepositoryRoot $PlatformRepositoryRoot
@@ -286,6 +292,9 @@ try {
 catch {
     $step4Message = "validate-component-versions.ps1 failed: $_"
     $overallPass = $false
+}
+finally {
+    $env:OMP_ALLOW_MISSING_PLATFORM = $savedAllowMissingPlatform
 }
 Write-StepResult -Step 'validate-component-versions.ps1' -Passed $step4Pass -Message $step4Message
 

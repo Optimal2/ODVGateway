@@ -28,13 +28,17 @@ other. OMP artifact identity is determined by the component manifest version plu
 SHA-256 content hash, not by the application version.
 
 Check 15 (shared script drift) needs the OpenModulePlatform repository on disk.
-It is located in the same order as the canonical validate-shared-scripts.ps1:
-the -PlatformRepositoryRoot parameter, then the OMP_PLATFORM_ROOT environment
-variable, then the OpenModulePlatformRoot environment variable, then a sibling
-directory named 'OpenModulePlatform' next to this repository. A checkout that is
-not beside the platform - typically a git worktree under another root - must
-set one of them, or Check 15 reports "not verified" (a warning, or an error with
--Strict). scripts/local-ci.ps1 passes -Strict by default.
+It is located by the shared resolver Resolve-PlatformCheckScript (in
+validate-component-versions.helpers.ps1, next to this script) in the same order
+as the canonical validate-shared-scripts.ps1: the -PlatformRepositoryRoot
+parameter, then the OMP_PLATFORM_ROOT environment variable, then the
+OpenModulePlatformRoot environment variable, then a sibling directory named
+'OpenModulePlatform' next to this repository. A checkout that is not beside the
+platform - typically a git worktree under another root - must set one of them:
+an unresolvable checkout is a validation error, never a silent skip. The one
+exception is OMP_ALLOW_MISSING_PLATFORM=1, which reports Check 15 as NOT
+VERIFIED (for example CI that checks out one repository). scripts/local-ci.ps1
+passes -Strict by default.
 
 .PARAMETER PlatformRepositoryRoot
 Root of the OpenModulePlatform checkout used by Check 15. Overrides
@@ -48,9 +52,10 @@ param(
     [Parameter(Mandatory = $false)]
     [switch]$SelfTest,
 
-    # Treats "could not be checked" conditions in Check 15 as errors instead of
-    # warnings. A plain local run without the OpenModulePlatform sibling can
-    # omit it and still validate versions.
+    # Forwarded to the canonical validate-shared-scripts.ps1 guard. A missing
+    # OpenModulePlatform checkout is already a validation error via the shared
+    # resolver, independent of this switch; OMP_ALLOW_MISSING_PLATFORM=1 is the
+    # only way to accept it as NOT VERIFIED.
     [Parameter(Mandatory = $false)]
     [switch]$Strict,
 
@@ -1200,50 +1205,26 @@ if ($lockstepCheckCount -gt 0 -or $lockstepErrorCount -gt 0) {
 # in OpenModulePlatform. Keeping them identical was a manual act twice, and
 # nothing held them that way: a stale copy looks green locally and only surfaces
 # when a bump behaves differently here than in a neighbouring repository -
-# typically mid-incident. Same neighbour resolution and Strict semantics as
-# Check 14 in the sibling repositories; the guard is CALLED from the platform
-# repository rather than copied here, because a copied guard would be subject
-# to the drift it detects. The platform repository is found in the same order
-# as the canonical guard: -PlatformRepositoryRoot, $env:OMP_PLATFORM_ROOT,
-# $env:OpenModulePlatformRoot, else the sibling directory named
-# 'OpenModulePlatform' (see the script help). The resolved root is passed on
-# explicitly, so this script and the guard can never look in different places;
-# an unresolvable root is reported below as "not verified".
-# The resolution lives in one self-contained function (parameters and
-# environment only) so tests/scripts/Check15Strict.Tests.ps1 can reuse it
-# from this file's syntax tree instead of keeping its own copy.
-function Resolve-Check15PlatformRoot {
-    param(
-        [string]$PlatformRepositoryRoot,
-        [string]$RepositoryRoot
-    )
-
-    $root = $PlatformRepositoryRoot
-    if ([string]::IsNullOrWhiteSpace($root)) {
-        $root = $env:OMP_PLATFORM_ROOT
-    }
-    if ([string]::IsNullOrWhiteSpace($root)) {
-        $root = $env:OpenModulePlatformRoot
-    }
-    if ([string]::IsNullOrWhiteSpace($root)) {
-        $root = [System.IO.Path]::GetFullPath((Join-Path $RepositoryRoot '..\OpenModulePlatform'))
-    }
-    return $root
-}
-
-$check15OmpRoot = Resolve-Check15PlatformRoot -PlatformRepositoryRoot $PlatformRepositoryRoot -RepositoryRoot $repositoryRoot
-$check15Script = Join-Path $check15OmpRoot 'scripts\omp\validate-shared-scripts.ps1'
-if (Test-Path -LiteralPath $check15Script -PathType Leaf) {
-    & $check15Script -ConsumerRepositoryRoot $repositoryRoot -PlatformRepositoryRoot $check15OmpRoot -Strict:$Strict
+# typically mid-incident. The guard is CALLED from the platform repository rather
+# than copied here, because a copied guard would be subject to the drift it
+# detects. The platform repository is found by the shared resolver
+# Resolve-PlatformCheckScript (in validate-component-versions.helpers.ps1, which
+# this very check keeps byte-identical) in the same order as the canonical
+# guard: -PlatformRepositoryRoot, $env:OMP_PLATFORM_ROOT, $env:OpenModulePlatformRoot,
+# else the sibling directory named 'OpenModulePlatform'. The resolver makes a
+# checkout it cannot find a validation error - never a silent skip - and the one
+# way to accept a missing checkout is the explicit exception
+# OMP_ALLOW_MISSING_PLATFORM=1, which reports the check as NOT VERIFIED. The
+# resolved root is passed on explicitly, so this script and the guard can never
+# look in different places.
+$check15 = Resolve-PlatformCheckScript -RepositoryRoot $repositoryRoot `
+    -ScriptRelativePath 'scripts/omp/validate-shared-scripts.ps1' -CheckLabel 'Check 15' `
+    -Errors $errors -Warnings $warnings -PlatformRepositoryRoot $PlatformRepositoryRoot
+if ($null -ne $check15) {
+    & $check15.ScriptPath -ConsumerRepositoryRoot $repositoryRoot -PlatformRepositoryRoot $check15.PlatformRoot -Strict:$Strict
     if ($LASTEXITCODE -ne 0) {
         Add-ValidationError -Errors $errors -Message 'Check 15 (shared script drift) failed; see the Check 15 lines above.'
     }
-}
-elseif ($Strict) {
-    Add-ValidationError -Errors $errors -Message "Check 15: canonical script not found at '$check15Script'; shared script drift could not be checked (set OMP_PLATFORM_ROOT, or pass -PlatformRepositoryRoot, when this checkout is not beside the platform repository). Strict mode treats a guard that could not run as an error."
-}
-else {
-    Write-Warning "Check 15: NOT VERIFIED - canonical script not found at '$check15Script' (set OMP_PLATFORM_ROOT, or pass -PlatformRepositoryRoot, when this checkout is not beside the platform repository)."
 }
 
 if ($warnings.Count -gt 0) {

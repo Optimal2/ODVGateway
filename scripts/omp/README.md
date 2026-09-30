@@ -153,15 +153,18 @@ What the guard protects against:
 > neighbouring OpenModulePlatform checkout, by calling `validate-shared-scripts.ps1`
 > there. It is about script drift, not about shared project trees, which is why all
 > eight consumers have it while only the six Web.Shared consumers have Check 14. When
-> the neighbour cannot be resolved, Check 15 warns visibly (and fails under `-Strict`,
-> which local CI and the pre-push hook use); it never passes silently.
+> the neighbour cannot be resolved, Check 15 is a validation error via the shared
+> resolver `Resolve-PlatformCheckScript` (never a silent skip); the one exception is
+> `OMP_ALLOW_MISSING_PLATFORM=1`, which reports it as `NOT VERIFIED`.
 >
 > **Made strict in local CI 2026-09-26.** Until then `scripts/local-ci.ps1` called the
 > validator without `-Strict`, so a job in a git worktree with no sibling checkout got
 > `NOT VERIFIED` with exit 0 and pushed shared-script drift. Local CI now passes
 > `-Strict` unless `-AllowUnverifiedSharedScripts` is given, and the validator resolves
-> the platform checkout in the canonical guard's order: `-PlatformRepositoryRoot`,
-> `OMP_PLATFORM_ROOT`, `OpenModulePlatformRoot`, sibling `OpenModulePlatform`.
+> the platform checkout with `Resolve-PlatformCheckScript` in the canonical guard's
+> order: `-PlatformRepositoryRoot`, `OMP_PLATFORM_ROOT`, `OpenModulePlatformRoot`,
+> sibling `OpenModulePlatform`. `-AllowUnverifiedSharedScripts` maps to
+> `OMP_ALLOW_MISSING_PLATFORM=1`.
 
 If the guard fails:
 

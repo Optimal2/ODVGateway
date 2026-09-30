@@ -42,8 +42,14 @@
          refused up front with an instruction to start a new process; a
          loaded .NET assembly cannot be unloaded.
       3. The suite inventory is recursive, like Pester's own discovery: a
-         *.Tests.ps1 in a subdirectory runs and is counted.
-      4. Every *.ps1 under the tests path must be a suite (*.Tests.ps1) or a
+         *.Tests.ps1 in a subdirectory runs and is counted. It holds only
+         files that belong to the repository: inside a git work tree, what
+         git ls-files lists (tracked, plus untracked files that are not
+         ignored); outside one, a walk of the directory. Either way bin/,
+         obj/ and node_modules/ are skipped -- a .NET test project writes
+         generated scripts such as playwright.ps1 into bin/ -- and hidden
+         files are included. Pester is handed exactly the inventoried suites.
+      4. Every *.ps1 in the inventory must be a suite (*.Tests.ps1) or a
          helper (*.TestHelpers.ps1). Anything else -- typically a suite
          renamed away from the glob, such as Foo.Test.ps1 -- fails the run
          instead of silently no longer running.
@@ -54,10 +60,21 @@
          otherwise pass next to green suites.
       7. The overall result must be 'Passed' (covers discovery and container
          failures), at least one test must pass, and FailedCount must be 0.
+      8. Every container must PASS at least one test. A suite whose every
+         test is skipped fails the run however green the other suites are,
+         unless the suite file carries an explicit exception with a reason
+         on a line of its own:
+             # omp-pester: allow-all-skipped <reason>
+         which turns the failure into a printed warning.
 
 .EXAMPLE
     powershell.exe -NoProfile -File scripts/omp/run-script-tests.ps1
 #>
+# Invoke-Pester here is the pinned Pester 6.1.0 imported by full path below,
+# not the inbox Pester 3.4.0 the compatibility profile measures; -ExcludePath
+# exists in 6.1.0.
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseCompatibleCommands', '',
+    Justification = 'Invoke-Pester comes from the pinned Pester 6.1.0 module, not the inbox 3.4.0 profile.')]
 [CmdletBinding()]
 param(
     # Test-suite directory; defaults to the repository's tests folder. Exists
@@ -117,11 +134,17 @@ if ([string]::IsNullOrWhiteSpace($testsPath)) {
 }
 $testsPath = [System.IO.Path]::GetFullPath($testsPath)
 
-# Guards 3 and 4: the inventory. Recursive, like Pester's discovery. The
-# extension is re-checked because -Filter '*.ps1' also matches longer
-# extensions on Windows (for example .ps1xml).
-$scriptFiles = @(Get-ChildItem -LiteralPath $testsPath -Filter '*.ps1' -File -Recurse |
-    Where-Object { $_.Extension -ieq '.ps1' })
+# Guards 3 and 4: the inventory. Recursive, like Pester's discovery, and
+# limited to files that belong to the repository (Get-PesterScriptInventory in
+# pester-bootstrap.ps1): git-ignored files and bin/, obj/ and node_modules/ are
+# not counted, hidden files are.
+$inventory = Get-PesterScriptInventory -Path $testsPath
+$scriptFiles = @($inventory.Files | ForEach-Object { New-Object System.IO.FileInfo($_) })
+$inventorySource = 'git ls-files (tracked and untracked, not ignored)'
+if ($inventory.Source -ne 'git') {
+    $inventorySource = 'file system walk (no git work tree)'
+}
+Write-Host "Suite inventory: $($scriptFiles.Count) script(s) under $testsPath from $inventorySource; bin/, obj/ and node_modules/ are not counted."
 $suiteFiles = @($scriptFiles | Where-Object { $_.Name -like '*.Tests.ps1' })
 $strayFiles = @($scriptFiles | Where-Object { $_.Name -notlike '*.Tests.ps1' -and $_.Name -notlike '*.TestHelpers.ps1' })
 if ($strayFiles.Count -gt 0) {
@@ -137,7 +160,16 @@ if ($suiteFiles.Count -eq 0) {
     exit 1
 }
 
-$results = Invoke-Pester -Path $testsPath -PassThru
+# Exactly the inventoried suites run -- never a suite that only a directory
+# scan would find, such as a *.Tests.ps1 copied into build output. Pester is
+# given the directory (its own walk includes hidden files; a hidden file passed
+# by path is "not found", measured with 6.1.0) and every other *.Tests.ps1 under
+# it is excluded. ExcludePath is matched with -like, hence the escaping.
+$inventoriedSuitePaths = @($suiteFiles | ForEach-Object { $_.FullName })
+$excludedSuitePaths = @([System.IO.Directory]::GetFiles($testsPath, '*.ps1', [System.IO.SearchOption]::AllDirectories) |
+    Where-Object { $_.EndsWith('.Tests.ps1', [System.StringComparison]::OrdinalIgnoreCase) -and $inventoriedSuitePaths -notcontains $_ } |
+    ForEach-Object { [System.Management.Automation.WildcardPattern]::Escape($_) })
+$results = Invoke-Pester -Path $testsPath -ExcludePath $excludedSuitePaths -PassThru
 
 if ($results.Result -ne 'Passed') {
     Write-Host "GATE FAIL: overall Pester result is '$($results.Result)', not 'Passed' (a container failed before or during its run)." -ForegroundColor Red
@@ -179,6 +211,40 @@ if ($emptyContainers.Count -gt 0) {
     foreach ($container in $emptyContainers) {
         Write-Host "  - $($container.Item)" -ForegroundColor Red
     }
+    exit 1
+}
+
+# Guard 8: every container passed at least one test. A suite whose every test
+# was skipped proves nothing, and a passing test in ANOTHER suite used to carry
+# the run to green. A suite that legitimately skips everything in some
+# environment says so in its own file, with a reason, on a line of its own:
+#   # omp-pester: allow-all-skipped <reason>
+# and is then reported as a warning instead of failing the run.
+# The optional \r keeps the marker working in a CRLF checkout: in multiline
+# mode $ matches before \n only.
+$allowAllSkippedPattern = '(?m)^[ \t]*#[ \t]*omp-pester:[ \t]*allow-all-skipped[ \t]+(\S[^\r\n]*?)[ \t]*\r?$'
+$unprovenContainers = @()
+foreach ($container in @($results.Containers)) {
+    if ($container.PassedCount -gt 0) {
+        continue
+    }
+    $containerPath = [string]$container.Item
+    if ($container.Item -is [System.IO.FileSystemInfo]) {
+        $containerPath = $container.Item.FullName
+    }
+    $exception = [regex]::Match([System.IO.File]::ReadAllText($containerPath), $allowAllSkippedPattern)
+    if ($exception.Success) {
+        Write-Host "WARNING: $containerPath passed no test (skipped: $($container.SkippedCount)); allowed by its omp-pester: allow-all-skipped exception: $($exception.Groups[1].Value.Trim())" -ForegroundColor Yellow
+        continue
+    }
+    $unprovenContainers += $container
+}
+if ($unprovenContainers.Count -gt 0) {
+    Write-Host "GATE FAIL: $($unprovenContainers.Count) suite file(s) passed no test (every test skipped or not run):" -ForegroundColor Red
+    foreach ($container in $unprovenContainers) {
+        Write-Host "  - $($container.Item) (skipped: $($container.SkippedCount), not run: $($container.NotRunCount))" -ForegroundColor Red
+    }
+    Write-Host "Make the suite run a test here, or add '# omp-pester: allow-all-skipped <reason>' to the suite file when skipping everything is correct in some environment." -ForegroundColor Red
     exit 1
 }
 
