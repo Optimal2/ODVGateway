@@ -58,6 +58,103 @@ public sealed class GatewayHttpStatusTests
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
     }
 
+    [Theory]
+    [InlineData("dark", "dark", "dark")]
+    [InlineData("light", "light", "light")]
+    [InlineData("system", "light", "system")]
+    public async Task StatusPage_FollowsTheSharedThemePreferenceCookie(
+        string mode,
+        string expectedTheme,
+        string expectedMode)
+    {
+        // The OMP theme contract: OMP_THEME_PREFERENCE carries URI-encoded JSON
+        // {"version":1,"mode":...}; the server-rendered status page stamps
+        // data-theme/data-theme-mode on <html>. "system" falls back to the light
+        // palette server-side; CSS follows prefers-color-scheme.
+        using var factory = new GatewayFactory(distPath: null);
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/");
+        request.Headers.TryAddWithoutValidation("Cookie", ThemeCookie(mode));
+
+        using var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
+        var html = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains($"data-theme=\"{expectedTheme}\" data-theme-mode=\"{expectedMode}\"", html);
+    }
+
+    [Fact]
+    public async Task StatusPage_InvalidThemeCookie_FallsBackToSystem()
+    {
+        using var factory = new GatewayFactory(distPath: null);
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/");
+        request.Headers.TryAddWithoutValidation("Cookie", "OMP_THEME_PREFERENCE=gibberish");
+
+        using var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
+        var html = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("data-theme=\"light\" data-theme-mode=\"system\"", html);
+    }
+
+    [Fact]
+    public async Task StatusPage_UnknownCookieVersion_FallsBackToSystem()
+    {
+        using var factory = new GatewayFactory(distPath: null);
+        using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/");
+        request.Headers.TryAddWithoutValidation(
+            "Cookie",
+            "OMP_THEME_PREFERENCE=" + Uri.EscapeDataString("""{"version":2,"mode":"dark","revision":"r1"}"""));
+
+        using var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
+        var html = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Contains("data-theme=\"light\" data-theme-mode=\"system\"", html);
+    }
+
+    [Fact]
+    public async Task StatusPage_CarriesSystemMediaQueryAndLightPrintFallback()
+    {
+        // Without a cookie the page defaults to system mode: dark must come from
+        // prefers-color-scheme, and print must always use the light palette.
+        using var factory = new GatewayFactory(distPath: null);
+        using var client = factory.CreateClient();
+
+        using var response = await client.GetAsync("/", TestContext.Current.CancellationToken);
+        var html = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+        Assert.Contains("prefers-color-scheme: dark", html);
+        Assert.Contains("@media print", html);
+    }
+
+    [Fact]
+    public async Task StatusPage_CspStillAllowsInlinePageAssetsAndPrintBlobs()
+    {
+        // The status pages use an inline <style>, the renderer injects an inline
+        // bootstrap <script>, and PDF printing needs blob: in frame-src/connect-src.
+        // A CSP edit that drops any of these breaks the pages or printing silently.
+        using var factory = new GatewayFactory(distPath: null);
+        using var client = factory.CreateClient();
+
+        using var response = await client.GetAsync("/", TestContext.Current.CancellationToken);
+
+        Assert.True(response.Headers.TryGetValues("Content-Security-Policy", out var values));
+        var csp = Assert.Single(values);
+        Assert.Contains("script-src 'self' 'unsafe-inline'", csp);
+        Assert.Contains("style-src 'self' 'unsafe-inline'", csp);
+        Assert.Contains("frame-src 'self' blob:", csp);
+        Assert.Contains("connect-src 'self' blob:", csp);
+    }
+
+    private static string ThemeCookie(string mode)
+    {
+        return "OMP_THEME_PREFERENCE="
+            + Uri.EscapeDataString($$"""{"version":1,"mode":"{{mode}}","revision":"mabc123"}""");
+    }
+
     [Fact]
     public async Task Viewer_WithoutPreparedSession_Returns404()
     {

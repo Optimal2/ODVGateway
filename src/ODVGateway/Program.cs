@@ -479,7 +479,8 @@ static async Task<IResult> RenderViewerAsync(
         return GatewayHtml.StatusPage(
             "ODVGateway",
             "The gateway is running, but no WebClient sessiondata query parameter was supplied.",
-            StatusCodes.Status400BadRequest);
+            StatusCodes.Status400BadRequest,
+            OmpThemePreference.ReadMode(context.Request));
     }
 
     WebClientSessionData sessionData;
@@ -511,7 +512,8 @@ static async Task<IResult> RenderViewerAsync(
         return GatewayHtml.StatusPage(
             "Prepared ODVGateway session was not found",
             "The viewer was opened without a matching /prep call, or the in-memory gateway session has expired. Open the document from WebClient again.",
-            StatusCodes.Status404NotFound);
+            StatusCodes.Status404NotFound,
+            OmpThemePreference.ReadMode(context.Request));
     }
 
     if (options.Value.UseBundleUrlHandoff)

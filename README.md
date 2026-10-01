@@ -353,6 +353,42 @@ the intersection, so a stricter reverse-proxy or IIS copy silently wins
 — usually in the wrong direction. The published `web.config` ships
 without them, with comments explaining the constraint.
 
+### Shared light/dark theme
+
+The gateway's own status and error pages (the 400/404/503 HTML pages,
+not the viewer itself) follow the shared OMP theme contract: they read
+the `OMP_THEME_PREFERENCE` cookie (`{"version":1,"mode":...}`) and stamp
+`data-theme` / `data-theme-mode` on `<html>` while rendering. `system`
+follows `prefers-color-scheme`; a missing, malformed or unknown-version
+cookie falls back to `system`. No script is involved and the default CSP
+is unchanged — the pages keep using inline styles under the existing
+`style-src 'self' 'unsafe-inline'`, and PDF printing keeps its `blob:`
+support in `frame-src`/`connect-src`.
+
+The viewer itself (the OpenDocViewer build served from the configured
+`dist/` folder) reads and writes the same preference on its own, under
+the gateway's origin. The default CSP needs no change for that code: it
+only touches cookies/localStorage and, when enabled, `postMessage`,
+none of which CSP restricts.
+
+OpenDocViewer also ships an opt-in cross-origin theme bridge
+(`src/integrations/ompThemeBridge.js` in the OpenDocViewer repository)
+that syncs the preference with an embedding page on a **different**
+origin over `postMessage`. It is **off by default**. To enable it for a
+specific embedding origin, edit `odv.site.config.js` in the deployed
+OpenDocViewer `dist/` folder (the gateway serves it as a static file):
+
+```js
+theme: {
+  bridge: { allowedOrigins: ['https://portal.example'] }
+}
+```
+
+Only exact `https://`/`http://` origins are accepted, never wildcards;
+every message is checked for origin, source window, message shape and
+revision before it is applied. Leave the list empty (or the key absent)
+in deployments that do not embed the viewer cross-origin.
+
 ## Known limitations
 
 These are things ODVGateway intentionally does **not** do today. Each has
