@@ -47,6 +47,49 @@ public sealed class OmpThemePreferenceTests
         Assert.Equal("system", OmpThemePreference.ParseMode(cookie));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ParseMode_OversizedValue_FallsBackToSystem(bool encoded)
+    {
+        var json = "{\"version\":1,\"mode\":\"dark\",\"revision\":\"" + new string('a', 65_536) + "\"}";
+
+        Assert.Equal("system", OmpThemePreference.ParseMode(encoded ? Encode(json) : json));
+    }
+
+    [Theory]
+    [InlineData(4095, "dark")]
+    [InlineData(4096, "dark")]
+    [InlineData(4097, "system")]
+    public void ParseMode_CookieLengthLimit_IsInclusive(int length, string expected)
+    {
+        var cookie = Encode("""{"version":1,"mode":"dark"}""").PadRight(length);
+
+        Assert.Equal(expected, OmpThemePreference.ParseMode(cookie));
+    }
+
+    [Fact]
+    public void ParseMode_DeeplyNestedValue_FallsBackToSystem()
+    {
+        var json = "{\"version\":1,\"mode\":\"dark\",\"revision\":"
+            + new string('[', 128) + "0" + new string(']', 128) + "}";
+
+        Assert.Equal("system", OmpThemePreference.ParseMode(Encode(json)));
+    }
+
+    [Theory]
+    [InlineData("%7")]
+    [InlineData("%GG")]
+    [InlineData("%C0%AF")]
+    [InlineData("{\"version\":1,\"mode\":\"dark\"")]
+    [InlineData("{\"version\":1,\"mode\":\"\\uD800\"}")]
+    [InlineData("{\"version\":1,\"mode\":\"\\uDC00\"}")]
+    [InlineData("{\"version\":1,\"mode\":\"\\uZZZZ\"}")]
+    public void ParseMode_InvalidEncodingOrJson_FallsBackToSystem(string cookie)
+    {
+        Assert.Equal("system", OmpThemePreference.ParseMode(cookie));
+    }
+
     [Fact]
     public void ParseMode_UnknownVersion_IsIgnored()
     {

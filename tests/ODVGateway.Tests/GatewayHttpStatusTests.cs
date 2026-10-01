@@ -10,7 +10,7 @@ namespace ODVGateway.Tests;
 // reads the status line, not the payload, so /health must answer 503 when the
 // payload says "degraded", and the error pages must carry their real 4xx codes.
 // The factory boots the real app on the in-memory TestServer; the only
-// filesystem touch is a throwaway dist folder for the healthy probe.
+// filesystem touches are throwaway dist folders for the renderer probes.
 public sealed class GatewayHttpStatusTests
 {
     [Fact]
@@ -83,13 +83,16 @@ public sealed class GatewayHttpStatusTests
         Assert.Contains($"data-theme=\"{expectedTheme}\" data-theme-mode=\"{expectedMode}\"", html);
     }
 
-    [Fact]
-    public async Task StatusPage_InvalidThemeCookie_FallsBackToSystem()
+    [Theory]
+    [InlineData("gibberish")]
+    [InlineData("{\"version\":1,\"mode\":\"\\uD800\"}")]
+    [InlineData("{\"version\":1,\"mode\":\"\\uDC00\"}")]
+    public async Task StatusPage_InvalidThemeCookie_FallsBackToSystem(string cookie)
     {
         using var factory = new GatewayFactory(distPath: null);
         using var client = factory.CreateClient();
         using var request = new HttpRequestMessage(HttpMethod.Get, "/");
-        request.Headers.TryAddWithoutValidation("Cookie", "OMP_THEME_PREFERENCE=gibberish");
+        request.Headers.TryAddWithoutValidation("Cookie", "OMP_THEME_PREFERENCE=" + Uri.EscapeDataString(cookie));
 
         using var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
         var html = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
@@ -229,17 +232,23 @@ public sealed class GatewayHttpStatusTests
     }
 
     [Fact]
-    public async Task Viewer_WhenDistPathIsMissing_Returns503()
+    public async Task Viewer_WhenDistPathIsMissing_Returns503WithDarkTheme()
     {
         // OpenDocViewerIndexRenderer.RenderAsync: no dist path configured. The commit
         // that added the status codes listed this path, but nothing covered it — a
         // later edit could drop the code back to 200 and every test would stay green.
         using var factory = new GatewayFactory(distPath: null, allowFallbackWithoutSession: true);
         using var client = factory.CreateClient();
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/");
+        request.Headers.TryAddWithoutValidation("Cookie", ThemeCookie("dark"));
 
-        using var response = await client.GetAsync("/", TestContext.Current.CancellationToken);
+        using var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
+        var html = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal("text/html", response.Content.Headers.ContentType?.MediaType);
+        Assert.Contains("OpenDocViewer dist folder was not found", html);
+        Assert.Contains("data-theme=\"dark\" data-theme-mode=\"dark\"", html);
     }
 
     [Theory]
@@ -273,20 +282,55 @@ public sealed class GatewayHttpStatusTests
     }
 
     [Fact]
-    public async Task Viewer_WhenDistExistsButIndexIsMissing_Returns503()
+    public async Task Viewer_WhenDistExistsButIndexIsMissing_Returns503WithDarkTheme()
     {
-        // The second renderer path: the dist folder resolves, but index.html cannot
-        // be read (MissingIndexPage). A different failure with the same answer.
+        // The resolver rejects a folder without index.html, so this reaches the
+        // missing-dist page, not the renderer's index-read failure page.
         var distPath = NewTempDirectoryPath();
         try
         {
             Directory.CreateDirectory(distPath);
             using var factory = new GatewayFactory(distPath, allowFallbackWithoutSession: true);
             using var client = factory.CreateClient();
+            using var request = new HttpRequestMessage(HttpMethod.Get, "/");
+            request.Headers.TryAddWithoutValidation("Cookie", ThemeCookie("dark"));
 
-            using var response = await client.GetAsync("/", TestContext.Current.CancellationToken);
+            using var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
+            var html = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
 
             Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+            Assert.Equal("text/html", response.Content.Headers.ContentType?.MediaType);
+            Assert.Contains("OpenDocViewer dist folder was not found", html);
+            Assert.Contains("data-theme=\"dark\" data-theme-mode=\"dark\"", html);
+        }
+        finally
+        {
+            DeleteTempDirectory(distPath);
+        }
+    }
+
+    [Fact]
+    public async Task Viewer_WhenIndexCannotBeRead_Returns503WithDarkTheme()
+    {
+        var distPath = CreateDistDirectory();
+        try
+        {
+            using var factory = new GatewayFactory(distPath, allowFallbackWithoutSession: true);
+            using var client = factory.CreateClient();
+            // Keep the index present for the resolver but unreadable for the renderer.
+            // This exercises MissingIndexPage without a timing-dependent deletion race.
+            using var lockedIndex = new FileStream(
+                Path.Join(distPath, "index.html"), FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+            using var request = new HttpRequestMessage(HttpMethod.Get, "/");
+            request.Headers.TryAddWithoutValidation("Cookie", ThemeCookie("dark"));
+
+            using var response = await client.SendAsync(request, TestContext.Current.CancellationToken);
+            var html = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+            Assert.Equal("text/html", response.Content.Headers.ContentType?.MediaType);
+            Assert.Contains("OpenDocViewer index.html was not found", html);
+            Assert.Contains("data-theme=\"dark\" data-theme-mode=\"dark\"", html);
         }
         finally
         {

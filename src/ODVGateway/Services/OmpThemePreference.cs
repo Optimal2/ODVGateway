@@ -17,6 +17,9 @@ public static class OmpThemePreference
     public const string LightMode = "light";
     public const string DarkMode = "dark";
 
+    // Bound decoding/parsing work even when called outside the HTTP header limits.
+    private const int MaxCookieLength = 4096;
+
     public static string ReadMode(HttpRequest request)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -25,23 +28,14 @@ public static class OmpThemePreference
 
     public static string ParseMode(string? cookieValue)
     {
-        if (string.IsNullOrWhiteSpace(cookieValue))
-        {
-            return SystemMode;
-        }
-
-        string json;
-        try
-        {
-            json = Uri.UnescapeDataString(cookieValue);
-        }
-        catch (UriFormatException)
+        if (cookieValue is null || cookieValue.Length > MaxCookieLength || string.IsNullOrWhiteSpace(cookieValue))
         {
             return SystemMode;
         }
 
         try
         {
+            var json = Uri.UnescapeDataString(cookieValue);
             using var document = JsonDocument.Parse(json);
             var root = document.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
@@ -71,8 +65,9 @@ public static class OmpThemePreference
                 _ => SystemMode
             };
         }
-        catch (JsonException)
+        catch (Exception ex) when (ex is UriFormatException or ArgumentException or JsonException or InvalidOperationException)
         {
+            // Invalid escaped UTF-16 can fail in GetString after JSON parsing succeeds.
             return SystemMode;
         }
     }
