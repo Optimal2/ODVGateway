@@ -4,8 +4,9 @@ namespace ODVGateway.Tests;
 
 // The gateway's status/error pages follow the shared OMP theme contract: the
 // OMP_THEME_PREFERENCE cookie carries a URI-encoded JSON object
-// {"version":1,"mode":"system|light|dark","revision":"..."} and anything that
-// does not match that exact shape falls back to "system".
+// {"version":1,"mode":"system|light|dark","revision":"..."}. Only version 1
+// and a recognized mode are required; revision and extra properties are ignored.
+// Invalid or unsupported values fall back to "system".
 public sealed class OmpThemePreferenceTests
 {
     private static string Encode(string json) => Uri.EscapeDataString(json);

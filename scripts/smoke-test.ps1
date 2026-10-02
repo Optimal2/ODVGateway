@@ -33,7 +33,7 @@ param(
     [string[]]$LeakPatterns = @(
         '[a-zA-Z]:\\',                       # Windows local paths
         '\\\\[a-zA-Z0-9_-]+',                 # UNC paths
-        '\bat\s+[A-Za-z0-9_]+\(',             # Stack frames
+        '\bat\s+[A-Za-z0-9_.]+\(',            # Stack frames, including namespace-qualified methods
         '\b[A-Za-z0-9_.]*Exception\s*:',       # Exception details
         '\bConnectionString\s*=',             # Connection-string assignments
         '\bServer\s*=[^;]+;\s*Database\s*=',  # SQL connection strings

@@ -20,8 +20,19 @@ Describe 'Smoke response leak detection' {
             Should -BeNullOrEmpty
     }
 
+    It 'Requires stack-frame context: <Body>' -ForEach @(
+        @{ Body = 'ODVGateway.Services.Foo.Bar()' }
+        @{ Body = 'Look at ODVGateway.Services.Foo.Bar for details.' }
+        @{ Body = 'format ODVGateway.Services.Foo.Bar()' }
+    ) {
+        Test-ResponseLeaks -Body $Body -Context test | Should -BeNullOrEmpty
+    }
+
     It 'Detects an actual leak: <Body>' -ForEach @(
         @{ Body = 'at System.IO.File.ReadAllText(String path)' }
+        @{ Body = '   at ODVGateway.Services.Foo.Bar()' }
+        @{ Body = 'at Foo.Bar(String value)' }
+        @{ Body = 'at Bar()' }
         @{ Body = 'ConnectionString=secret' }
         @{ Body = 'InvalidOperationException: failure details' }
         @{ Body = 'C:\private\file.pdf' }
