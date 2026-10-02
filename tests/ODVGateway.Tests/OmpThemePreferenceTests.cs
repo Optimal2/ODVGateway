@@ -123,4 +123,12 @@ public sealed class OmpThemePreferenceTests
 
         Assert.Equal("light", OmpThemePreference.ParseMode(cookie));
     }
+
+    [Fact]
+    public void ParseMode_AdditionalProperties_StillAppliesTheMode()
+    {
+        var cookie = Encode("""{"version":1,"mode":"dark","revision":null,"futureProperty":true}""");
+
+        Assert.Equal("dark", OmpThemePreference.ParseMode(cookie));
+    }
 }

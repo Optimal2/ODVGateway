@@ -411,6 +411,14 @@ oversight:
   `application/vnd.opendocviewer.source-pack` (or per-file `/source`
   responses); very large raster runs must keep every individual file
   inside `maxSourcePackFrameBytes` / `maxSourceProxyBytes`.
+- **Unknown-length source proxy responses are buffered before delivery.**
+  Without an upstream `Content-Length`, `/source` validates the entire
+  response against `maxSourceProxyBytes` before sending a successful body.
+  Buffers above 64 KiB spill to the ASP.NET Core temporary directory
+  (`ASPNETCORE_TEMP`, or the process temp directory), which must be writable
+  and have room for concurrent responses. Temporary files are removed when
+  the request finishes. This delays the first response byte until validation
+  completes; exceeding the limit returns HTTP 502.
 
 ## Standalone IIS Deployment
 

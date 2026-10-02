@@ -28,6 +28,8 @@ param(
     [int]$Port = 5210,
     [string]$ProjectPath = 'src/ODVGateway',
     [int]$StartupTimeoutSeconds = 20,
+    # One overridable list: ordinary mentions of ConnectionString or System.*
+    # are valid text; only assignments or stack-frame context match those names.
     [string[]]$LeakPatterns = @(
         '[a-zA-Z]:\\',                       # Windows local paths
         '\\\\[a-zA-Z0-9_-]+',                 # UNC paths
@@ -353,7 +355,8 @@ try {
 
     $script:process = [System.Diagnostics.Process]::Start($startInfo)
     # Drain both pipes immediately, including while readiness/HTTP checks run.
-    # ReadToEndAsync works on Windows PowerShell 5.1 without runspace callbacks.
+    # ReadToEndAsync works on Windows PowerShell 5.1 without runspace callbacks;
+    # the later GetResult calls only join these already-running reads.
     $stdoutTask = $script:process.StandardOutput.ReadToEndAsync()
     $stderrTask = $script:process.StandardError.ReadToEndAsync()
 

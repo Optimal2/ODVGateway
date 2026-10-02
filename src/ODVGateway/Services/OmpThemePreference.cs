@@ -7,8 +7,9 @@ namespace ODVGateway.Services;
 // {"version":1,"mode":"system|light|dark","revision":"..."} written by the
 // hosting apps. The gateway only reads the mode for its server-rendered
 // status/error pages; the revision orders the cookie against the browser's
-// localStorage mirror and is not needed server-side. Anything that does not
-// match the exact contract shape falls back to "system".
+// localStorage mirror and is not needed server-side. Only version 1 and a
+// recognized mode are required; revision and additional properties are ignored.
+// Invalid or unsupported values fall back to "system".
 public static class OmpThemePreference
 {
     public const string CookieName = "OMP_THEME_PREFERENCE";

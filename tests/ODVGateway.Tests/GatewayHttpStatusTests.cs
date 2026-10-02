@@ -13,6 +13,53 @@ namespace ODVGateway.Tests;
 // filesystem touches are throwaway dist folders for the renderer probes.
 public sealed class GatewayHttpStatusTests
 {
+    [Theory]
+    [InlineData("/")]
+    [InlineData("/index.html")]
+    public async Task Viewer_WithPhysicalIndex_StillRequiresSession(string path)
+    {
+        var distPath = CreateDistDirectory();
+        try
+        {
+            using var factory = new GatewayFactory(distPath);
+            using var client = factory.CreateClient();
+            using var response = await client.GetAsync(path, TestContext.Current.CancellationToken);
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            Assert.Contains("no WebClient sessiondata", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            DeleteTempDirectory(distPath);
+        }
+    }
+
+    [Theory]
+    [InlineData("/")]
+    [InlineData("/index.html")]
+    public async Task Viewer_WithPhysicalIndex_InjectsPreparedBundle(string path)
+    {
+        var distPath = CreateDistDirectory();
+        try
+        {
+            using var factory = new GatewayFactory(distPath, useBundleUrlHandoff: false);
+            using var client = factory.CreateClient();
+            using var prep = new StringContent(
+                """{"userId":"u1","sessionId":"s1","portableDocuments":[{"documentId":"d1","fileData":[]}]}""",
+                Encoding.UTF8, "application/json");
+            using var prepared = await client.PostAsync("/prep", prep, TestContext.Current.CancellationToken);
+            Assert.Equal(HttpStatusCode.OK, prepared.StatusCode);
+            var sessionData = EncodeBase64Url("""{"userId":"u1","sessionId":"s1","caseIds":["d1"]}""");
+            using var response = await client.GetAsync(path + "?sessiondata=" + sessionData, TestContext.Current.CancellationToken);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+            Assert.Contains("odvgateway-bootstrap", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        }
+        finally
+        {
+            DeleteTempDirectory(distPath);
+        }
+    }
+
     [Fact]
     public async Task Health_DistUnavailable_Returns503WithDegradedPayload()
     {
@@ -404,6 +451,7 @@ public sealed class GatewayHttpStatusTests
         private readonly bool _requireExplicitDistPath;
         private readonly string? _contentRoot;
         private readonly string? _allowedInitiatorUrl;
+        private readonly bool _useBundleUrlHandoff;
 
         // allowFallbackWithoutSession lets a probe reach OpenDocViewerIndexRenderer
         // without a prepared session. Without it every request to "/" stops at the
@@ -414,13 +462,15 @@ public sealed class GatewayHttpStatusTests
             bool allowFallbackWithoutSession = false,
             bool requireExplicitDistPath = true,
             string? contentRoot = null,
-            string? allowedInitiatorUrl = null)
+            string? allowedInitiatorUrl = null,
+            bool useBundleUrlHandoff = true)
         {
             _distPath = distPath;
             _allowFallbackWithoutSession = allowFallbackWithoutSession;
             _requireExplicitDistPath = requireExplicitDistPath;
             _contentRoot = contentRoot;
             _allowedInitiatorUrl = allowedInitiatorUrl;
+            _useBundleUrlHandoff = useBundleUrlHandoff;
         }
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -442,7 +492,8 @@ public sealed class GatewayHttpStatusTests
                     ["ODVGateway:RequireExplicitOpenDocViewerDistPath"] = _requireExplicitDistPath ? "true" : "false",
                     ["ODVGateway:AllowOpenDocViewerFallbackWithoutSession"] =
                         _allowFallbackWithoutSession ? "true" : "false",
-                    ["ODVGateway:WebClientHandoff:AllowedInitiatorUrls:0"] = _allowedInitiatorUrl
+                    ["ODVGateway:WebClientHandoff:AllowedInitiatorUrls:0"] = _allowedInitiatorUrl,
+                    ["ODVGateway:UseBundleUrlHandoff"] = _useBundleUrlHandoff ? "true" : "false"
                 });
             });
         }

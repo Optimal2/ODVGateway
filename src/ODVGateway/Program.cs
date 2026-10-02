@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.ResponseCompression;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Options;
 using System.Buffers.Binary;
@@ -140,6 +141,8 @@ app.Use(async (context, next) =>
 
 if (!string.IsNullOrWhiteSpace(distPath))
 {
+    // Minimal-host routing selects mapped endpoints before this middleware;
+    // StaticFileMiddleware skips them, so /index.html still reaches RenderViewerAsync.
     app.UseStaticFiles(new StaticFileOptions
     {
         FileProvider = new PhysicalFileProvider(distPath),
@@ -1158,6 +1161,20 @@ static async Task<IResult> ProxyWebClientSourceAsync(
                 }, statusCode: StatusCodes.Status502BadGateway);
             }
 
+            // Without Content-Length, validate the whole payload before committing a
+            // successful response. Spill to a temporary file above 64 KiB to bound memory;
+            // disposal removes it on success, size rejection, timeout, or cancellation.
+            await using var bufferedContent = contentLength is null && !HttpMethods.IsHead(httpContext.Request.Method)
+                ? new FileBufferingWriteStream(memoryThreshold: 64 * 1024)
+                : null;
+            if (bufferedContent is not null)
+            {
+                await using var upstream = await response.Content.ReadAsStreamAsync(timeout.Token);
+                await CopyBoundedStreamAsync(upstream, bufferedContent, maxProxyBytes,
+                    GetSourcePackStreamBufferBytes(options), timeout.Token);
+                contentLength = bufferedContent.Length;
+            }
+
             var cacheControl = options.SourceCacheControl;
             if (!string.IsNullOrWhiteSpace(cacheControl))
             {
@@ -1186,6 +1203,12 @@ static async Task<IResult> ProxyWebClientSourceAsync(
                 return Results.Empty;
             }
 
+            if (bufferedContent is not null)
+            {
+                await bufferedContent.DrainBufferAsync(httpContext.Response.Body, timeout.Token);
+                return Results.Empty;
+            }
+
             await using var contentStream = await response.Content.ReadAsStreamAsync(timeout.Token);
             await CopyBoundedStreamAsync(
                 contentStream,
@@ -1194,6 +1217,14 @@ static async Task<IResult> ProxyWebClientSourceAsync(
                 GetSourcePackStreamBufferBytes(options),
                 timeout.Token);
 
+            return Results.Empty;
+        }
+        catch (Exception ex) when (httpContext.Response.HasStarted &&
+            ex is OperationCanceledException or HttpRequestException or IOException or SourcePackPayloadTooLargeException or InvalidOperationException)
+        {
+            // A started transfer cannot be retried or replaced with a JSON error.
+            LogWebClientSourceProxyFailed(logger, session, source, attempt, ex);
+            httpContext.Abort();
             return Results.Empty;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -1214,6 +1245,7 @@ static async Task<IResult> ProxyWebClientSourceAsync(
         }
         catch (SourcePackPayloadTooLargeException ex)
         {
+            httpContext.Response.ContentLength = null;
             logger.LogWarning(
                 ex,
                 "WebClient source proxy response exceeded configured limit. Index={FileIndex}, Attempt={Attempt}, MaxBytes={MaxBytes}, Source={SourceEndpoint}",
