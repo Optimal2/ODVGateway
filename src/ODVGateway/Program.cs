@@ -4,12 +4,14 @@ using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Options;
 using System.Buffers.Binary;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using System.Text.Json;
 using NLog.Web;
 using ODVGateway.Models;
 using ODVGateway.Options;
 using ODVGateway.Services;
+using ODVGateway.Services.Signatures;
 
 // Default CSP is restrictive but allows the inline bootstrap script injected by
 // OpenDocViewerIndexRenderer, the inline styles used by GatewayHtml.StatusPage,
@@ -68,6 +70,23 @@ builder.Services.AddSingleton<OpenDocViewerIndexRenderer>();
 builder.Services.AddSingleton<WebClientSourceProxyLimiter>();
 builder.Services.AddSingleton<WebClientFallbackUrlBuilder>();
 builder.Services.AddHttpClient("ODVGateway.RemoteInline");
+
+// Signature validation (GET /signatures/...). The anchor and CRL stores read their configured
+// directories once per process and cache the result, so they are singletons by design: the
+// validation service holds no per-session state.
+builder.Services.AddSingleton(provider => new TrustAnchorStore(
+    provider.GetRequiredService<IOptions<ODVGatewayOptions>>().Value.Signatures,
+    provider.GetRequiredService<ILoggerFactory>().CreateLogger(GatewayLogNames.SignatureValidation),
+    provider.GetRequiredService<IHostEnvironment>().ContentRootPath));
+builder.Services.AddSingleton(provider => new OfflineRevocationStore(
+    provider.GetRequiredService<IOptions<ODVGatewayOptions>>().Value.Signatures.CrlDirectory,
+    provider.GetRequiredService<ILoggerFactory>().CreateLogger(GatewayLogNames.SignatureValidation),
+    provider.GetRequiredService<IHostEnvironment>().ContentRootPath));
+builder.Services.AddSingleton(provider => new PdfSignatureValidationService(
+    provider.GetRequiredService<IOptions<ODVGatewayOptions>>().Value.Signatures,
+    provider.GetRequiredService<TrustAnchorStore>(),
+    provider.GetRequiredService<OfflineRevocationStore>(),
+    provider.GetRequiredService<ILoggerFactory>().CreateLogger(GatewayLogNames.SignatureValidation)));
 
 builder.Services.Configure<FormOptions>(options =>
 {
@@ -334,17 +353,11 @@ app.MapMethods("/source/{sessionKey}/{fileIndex:int}", ["GET", "HEAD"], async (
     CancellationToken cancellationToken) =>
 {
     var logger = loggerFactory.CreateLogger("ODVGateway.Source");
-    if (!sessions.TryGet(sessionKey, out var session))
+    if (!TryResolveSessionSource(sessions, sessionKey, fileIndex, out var session, out var source, out var resolutionError))
     {
-        return Results.NotFound(new { error = "Gateway session was not found or has expired." });
+        return resolutionError;
     }
 
-    if (fileIndex < 0 || fileIndex >= session.SourceFiles.Count)
-    {
-        return Results.NotFound(new { error = "Source file index is outside the prepared session." });
-    }
-
-    var source = session.SourceFiles[fileIndex];
     if (directSources.TryResolve(source, out var directSource))
     {
         var cacheControl = options.Value.SourceCacheControl;
@@ -398,8 +411,98 @@ app.MapMethods("/source/{sessionKey}/{fileIndex:int}", ["GET", "HEAD"], async (
     });
 });
 
-app.MapGet("/source-pack/{sessionKey}", async (
+app.MapGet("/signatures/{sessionKey}/{fileIndex:int}", async (
     HttpContext httpContext,
+    string sessionKey,
+    int fileIndex,
+    GatewaySessionStore sessions,
+    ContentTypeMapper contentTypes,
+    IOptions<ODVGatewayOptions> options,
+    DirectSourceFileResolver directSources,
+    IHttpClientFactory httpClientFactory,
+    WebClientFallbackUrlBuilder fallbackUrlBuilder,
+    PdfSignatureValidationService signatureValidator,
+    ILoggerFactory loggerFactory,
+    CancellationToken cancellationToken) =>
+{
+    var logger = loggerFactory.CreateLogger(GatewayLogNames.SignatureValidation);
+    var response = httpContext.Response;
+
+    // Verdicts are per-file and can change with the next incremental save or revocation update, and
+    // the request itself is an access to a document: nothing here may be cached downstream.
+    response.Headers.CacheControl = "no-store";
+
+    if (!options.Value.Signatures.Enabled)
+    {
+        return Results.NotFound(new { error = "Signature validation is not enabled on this gateway." });
+    }
+
+    if (!TryResolveSessionSource(sessions, sessionKey, fileIndex, out var session, out var source, out var resolutionError))
+    {
+        return resolutionError;
+    }
+
+    if (!IsPdfSource(source, contentTypes))
+    {
+        return Results.Json(new { error = "Signature validation is only available for PDF source files." }, statusCode: StatusCodes.Status415UnsupportedMediaType);
+    }
+
+    var signatureSource = await ReadSignatureSourceBytesAsync(
+        httpContext.Request,
+        session,
+        source,
+        contentTypes,
+        options.Value,
+        directSources,
+        httpClientFactory,
+        fallbackUrlBuilder,
+        logger,
+        cancellationToken);
+    if (signatureSource.Error is not null)
+    {
+        return signatureSource.Error;
+    }
+
+    try
+    {
+        var validation = signatureValidator.Validate(signatureSource.Bytes!, cancellationToken);
+        return Results.Json(validation, SignatureValidationJson.Options, statusCode: StatusCodes.Status200OK);
+    }
+    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+    {
+        // The client went away mid-validation: nothing to report, and nothing to log as a failure.
+        throw;
+    }
+    catch (PdfEncryptedException)
+    {
+        logger.LogWarning("Signature validation refused an encrypted PDF. Index={FileIndex}", fileIndex);
+        return Results.UnprocessableEntity(new
+        {
+            error = "The PDF is encrypted, so its signatures cannot be validated by the gateway."
+        });
+    }
+    catch (PdfSignatureFormatException)
+    {
+        logger.LogWarning("Signature validation could not parse the PDF. Index={FileIndex}", fileIndex);
+        return Results.UnprocessableEntity(new
+        {
+            error = "The PDF could not be parsed far enough to locate its signature dictionaries."
+        });
+    }
+    catch (Exception exception) when (exception is not OutOfMemoryException)
+    {
+        // Nothing about the document body or its signers reaches the log: only the failure type.
+        logger.LogWarning(exception,
+            "Signature validation failed unexpectedly. Index={FileIndex}, ExceptionType={ExceptionType}",
+            fileIndex,
+            exception.GetType().Name);
+        return Results.Problem(
+            detail: "Signature validation failed. Check the gateway log for the exception type.",
+            statusCode: StatusCodes.Status500InternalServerError);
+    }
+});
+
+app.MapGet("/source-pack/{sessionKey}", async (    HttpContext httpContext,
     string sessionKey,
     GatewaySessionStore sessions,
     ContentTypeMapper contentTypes,
@@ -1435,6 +1538,168 @@ static bool IsValidCorrelationId(string? value)
     return true;
 }
 
+/// <summary>
+/// The same session lookup and index bounds check that <c>/source</c> uses, so
+/// <c>/signatures</c> cannot drift from the file it is supposed to describe.
+/// </summary>
+static bool TryResolveSessionSource(
+    GatewaySessionStore sessions,
+    string sessionKey,
+    int fileIndex,
+    [NotNullWhen(true)] out GatewaySession? session,
+    [NotNullWhen(true)] out GatewaySourceFile? source,
+    [NotNullWhen(false)] out IResult? error)
+{
+    session = null;
+    source = null;
+    if (!sessions.TryGet(sessionKey, out var resolvedSession))
+    {
+        error = Results.NotFound(new { error = "Gateway session was not found or has expired." });
+        return false;
+    }
+
+    if (fileIndex < 0 || fileIndex >= resolvedSession.SourceFiles.Count)
+    {
+        error = Results.NotFound(new { error = "Source file index is outside the prepared session." });
+        return false;
+    }
+
+    session = resolvedSession;
+    source = resolvedSession.SourceFiles[fileIndex];
+    error = null!;
+    return true;
+}
+
+static bool IsPdfSource(GatewaySourceFile source, ContentTypeMapper contentTypes) =>
+    string.Equals(source.Extension, "pdf", StringComparison.OrdinalIgnoreCase)
+    || string.Equals(contentTypes.GetContentType(source.Extension), "application/pdf", StringComparison.OrdinalIgnoreCase);
+
+/// <summary>
+/// Largest PDF the signature endpoint accepts: the configured cap when it is set, otherwise the
+/// gateway's existing source transport limit. A configured value can never raise the transport
+/// limit, only lower it, so the endpoint cannot ask for bytes the source reader would refuse.
+/// </summary>
+static long GetSignatureMaxFileBytes(ODVGatewayOptions options)
+{
+    var transportLimit = GetMaxSourcePackFrameBytes(options);
+    var configured = options.Signatures.MaxFileBytes;
+    return configured > 0 ? Math.Min(configured, transportLimit) : transportLimit;
+}
+
+/// <summary>
+/// Reads the whole PDF into memory for validation, reusing the buffered gateway source reader: the
+/// direct file resolver, the WebClient fallback URL and the proxy fetch with its retries are the
+/// same code <c>/source-pack</c> uses, so a document is never read differently for one endpoint.
+/// </summary>
+static async Task<SignatureSourceResult> ReadSignatureSourceBytesAsync(
+    HttpRequest request,
+    GatewaySession session,
+    GatewaySourceFile source,
+    ContentTypeMapper contentTypes,
+    ODVGatewayOptions options,
+    DirectSourceFileResolver directSources,
+    IHttpClientFactory httpClientFactory,
+    WebClientFallbackUrlBuilder fallbackUrlBuilder,
+    ILogger logger,
+    CancellationToken cancellationToken)
+{
+    var maxBytes = GetSignatureMaxFileBytes(options);
+    try
+    {
+        var payload = await ReadGatewaySourceBytesAsync(
+            request,
+            session,
+            source,
+            contentTypes,
+            options,
+            directSources,
+            httpClientFactory,
+            fallbackUrlBuilder,
+            logger,
+            cancellationToken);
+        if (!payload.Ok)
+        {
+            return new SignatureSourceResult(null, BuildSignatureSourceError(payload.Error));
+        }
+
+        byte[] bytes;
+        if (payload.ContentStream is not null)
+        {
+            await using var stream = payload.ContentStream;
+            bytes = await ReadSourcePackBytesWithLimitAsync(
+                stream,
+                maxBytes,
+                payload.ContentLength > 0 ? payload.ContentLength : null,
+                GetSourcePackStreamBufferBytes(options),
+                cancellationToken);
+        }
+        else
+        {
+            bytes = payload.Bytes;
+        }
+
+        if (bytes.LongLength > maxBytes)
+        {
+            return new SignatureSourceResult(null, BuildSignatureTooLargeError(bytes.LongLength, maxBytes));
+        }
+
+        if (bytes.Length == 0)
+        {
+            return new SignatureSourceResult(null, BuildSignatureSourceError(
+                "The gateway read an empty source file."));
+        }
+
+        return new SignatureSourceResult(bytes, null);
+    }
+    catch (SourcePackPayloadTooLargeException exception)
+    {
+        logger.LogWarning("Signature validation source exceeded the size limit. Index={FileIndex}", source.Index);
+        return new SignatureSourceResult(null, Results.Json(
+            new { error = exception.Message },
+            statusCode: StatusCodes.Status413PayloadTooLarge));
+    }
+    catch (IOException exception)
+    {
+        logger.LogWarning(exception,
+            "Signature validation source could not be read. Index={FileIndex} Exception={ExceptionType}",
+            source.Index,
+            exception.GetType().Name);
+        return new SignatureSourceResult(null, BuildSignatureSourceError(
+            "The gateway could not read the source file."));
+    }
+    catch (HttpRequestException exception)
+    {
+        logger.LogWarning(exception,
+            "Signature validation source fetch failed. Index={FileIndex} Exception={ExceptionType}",
+            source.Index,
+            exception.GetType().Name);
+        return new SignatureSourceResult(null, BuildSignatureSourceError(
+            "The gateway could not read the source file."));
+    }
+    catch (UnauthorizedAccessException exception)
+    {
+        logger.LogWarning(exception,
+            "Signature validation source access denied. Index={FileIndex}", source.Index);
+        return new SignatureSourceResult(null, BuildSignatureSourceError(
+            "The gateway could not read the source file."));
+    }
+}
+
+static IResult BuildSignatureTooLargeError(long actualBytes, long maxBytes) =>
+    Results.Json(
+        new
+        {
+            error = string.Create(
+                System.Globalization.CultureInfo.InvariantCulture,
+                $"The PDF is larger than the signature validation limit. Actual bytes: {actualBytes}. Maximum bytes: {maxBytes}.")
+        },
+        statusCode: StatusCodes.Status413PayloadTooLarge);
+
+static IResult BuildSignatureSourceError(string? message) =>
+    Results.Json(
+        new { error = message ?? "The gateway could not read the source file." },
+        statusCode: StatusCodes.Status404NotFound);
+
 static void LogProductionCompatibilityWarnings(ILogger logger, ODVGatewayOptions options)
 {
     if (options.WebClientHandoff.AllowMissingInitiatorHeaders)
@@ -1456,6 +1721,10 @@ static void LogProductionCompatibilityWarnings(ILogger logger, ODVGatewayOptions
 internal static class GatewayLogNames
 {
     public const string ConfiguredWebClientSource = "configured-webclient-source";
+
+    /// <summary>Log category for signature validation. Never contains document content.
+    /// </summary>
+    public const string SignatureValidation = "ODVGateway.Signatures";
 }
 
 internal sealed class SourcePackPayloadTooLargeException : InvalidOperationException
@@ -1465,6 +1734,8 @@ internal sealed class SourcePackPayloadTooLargeException : InvalidOperationExcep
     {
     }
 }
+
+internal sealed record SignatureSourceResult(byte[]? Bytes, IResult? Error);
 
 internal sealed record SourcePackPayload(
     bool Ok,

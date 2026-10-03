@@ -42,6 +42,8 @@ public sealed class ODVGatewayOptions
 
     public WebClientHandoffOptions WebClientHandoff { get; set; } = new();
 
+    public SignatureValidationOptions Signatures { get; set; } = new();
+
     public Dictionary<string, MetadataAliasOption> MetadataAliases { get; set; } =
         new(StringComparer.OrdinalIgnoreCase);
 
