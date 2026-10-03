@@ -17,13 +17,13 @@ public sealed class SignatureValidationServiceTests : IDisposable
     private readonly SignatureFixtures _fixtures = new();
 
     [Fact]
-    public void ValidSignature_CoveredByLocalCrl_IsTrusted()
+    public async Task ValidSignature_CoveredByLocalCrl_IsTrusted()
     {
         _fixtures.WriteRootAnchor();
         _fixtures.WriteRootCrl([]);
         var path = _fixtures.CreateSignedPdf(new SignatureFixtures.SignedPdfRequest());
 
-        var signature = Validate(path, CreateOptions());
+        var signature = await ValidateAsync(path, CreateOptions());
 
         Assert.Equal(PdfSignatureIntegrity.Intact, signature.Integrity);
         Assert.Null(signature.IntegrityReason);
@@ -45,7 +45,7 @@ public sealed class SignatureValidationServiceTests : IDisposable
     }
 
     [Fact]
-    public void ExpiredCertificate_WithoutTimestamp_IsUnknownAndNeverValid()
+    public async Task ExpiredCertificate_WithoutTimestamp_IsUnknownAndNeverValid()
     {
         _fixtures.WriteRootAnchor();
         _fixtures.WriteRootCrl([]);
@@ -60,7 +60,7 @@ public sealed class SignatureValidationServiceTests : IDisposable
             SigningTime = NotLongAgo(days: 400)
         });
 
-        var signature = Validate(path, CreateOptions());
+        var signature = await ValidateAsync(path, CreateOptions());
 
         Assert.Equal(PdfSignatureIntegrity.Intact, signature.Integrity);
         Assert.Equal(PdfSignatureTrust.Unknown, signature.Trust);
@@ -68,7 +68,7 @@ public sealed class SignatureValidationServiceTests : IDisposable
     }
 
     [Fact]
-    public void ExpiredCertificate_WithVerifiableTimestamp_IsValid()
+    public async Task ExpiredCertificate_WithVerifiableTimestamp_IsValid()
     {
         // The whole point of a signature timestamp: the certificate expired later, but the signature
         // provably happened while it was live, so the verdict at that instant is valid.
@@ -79,6 +79,7 @@ public sealed class SignatureValidationServiceTests : IDisposable
             NotLongAgo(days: 800),
             NotLongAgo(days: 200));
         _fixtures.WriteRootCrl([], thisUpdate: signedAt.AddDays(-30), nextUpdate: signedAt.AddDays(30));
+        _fixtures.WriteRootCrl([], fileName: "current.crl");
         var path = _fixtures.CreateSignedPdf(new SignatureFixtures.SignedPdfRequest
         {
             Certificate = expired.Certificate,
@@ -90,7 +91,7 @@ public sealed class SignatureValidationServiceTests : IDisposable
             WithoutModificationDate = true
         });
 
-        var signature = Validate(path, CreateOptions());
+        var signature = await ValidateAsync(path, CreateOptions());
 
         Assert.Equal(PdfSignatureIntegrity.Intact, signature.Integrity);
         Assert.Equal(PdfSignatureTrust.Valid, signature.Trust);
@@ -100,7 +101,7 @@ public sealed class SignatureValidationServiceTests : IDisposable
     }
 
     [Fact]
-    public void Timestamp_OverAnotherSignature_IsNotBelieved()
+    public async Task Timestamp_OverAnotherSignature_IsNotBelieved()
     {
         // A well-formed token that does not cover this signature value must not move the validation
         // time: otherwise any captured token from elsewhere would revive an expired certificate.
@@ -120,14 +121,14 @@ public sealed class SignatureValidationServiceTests : IDisposable
             TimestampTime = signedAt
         });
 
-        var signature = Validate(path, CreateOptions(useLocalCrls: false));
+        var signature = await ValidateAsync(path, CreateOptions(useLocalCrls: false));
 
         Assert.Equal(PdfSignatureTrust.Unknown, signature.Trust);
         Assert.Equal("timestamp-not-verifiable", signature.TrustReason);
     }
 
     [Fact]
-    public void TimestampFromUnanchoredResponder_DoesNotReviveAnExpiredCertificate()
+    public async Task TimestampFromUnanchoredResponder_DoesNotReviveAnExpiredCertificate()
     {
         // The token is structurally perfect and covers this very signature, but the responder chains
         // to an authority the gateway has not configured. Believing it would let anyone with a
@@ -148,7 +149,7 @@ public sealed class SignatureValidationServiceTests : IDisposable
             TimestampTime = signedAt
         });
 
-        var signature = Validate(path, CreateOptions());
+        var signature = await ValidateAsync(path, CreateOptions());
 
         Assert.Equal(PdfSignatureIntegrity.Intact, signature.Integrity);
         Assert.Equal(PdfSignatureTrust.Unknown, signature.Trust);
@@ -156,13 +157,13 @@ public sealed class SignatureValidationServiceTests : IDisposable
     }
 
     [Fact]
-    public void RevokedCertificate_FromLocalCrl_IsInvalid()
+    public async Task RevokedCertificate_FromLocalCrl_IsInvalid()
     {
         _fixtures.WriteRootAnchor();
         _fixtures.WriteRootCrl([_fixtures.Leaf]);
         var path = _fixtures.CreateSignedPdf(new SignatureFixtures.SignedPdfRequest());
 
-        var signature = Validate(path, CreateOptions());
+        var signature = await ValidateAsync(path, CreateOptions());
 
         Assert.Equal(PdfSignatureIntegrity.Intact, signature.Integrity);
         Assert.Equal(PdfSignatureTrust.Invalid, signature.Trust);
@@ -170,7 +171,7 @@ public sealed class SignatureValidationServiceTests : IDisposable
     }
 
     [Fact]
-    public void StaleLocalCrl_IsNotTreatedAsProof()
+    public async Task StaleLocalCrl_IsNotTreatedAsProof()
     {
         // The certificate is revoked, but the only CRL that says so expired years ago. The gateway
         // must refuse to call the signature clean, and must not report it as revoked either.
@@ -178,20 +179,20 @@ public sealed class SignatureValidationServiceTests : IDisposable
         _fixtures.WriteRootCrl([_fixtures.Leaf], thisUpdate: NotLongAgo(days: 500), nextUpdate: NotLongAgo(days: 400));
         var path = _fixtures.CreateSignedPdf(new SignatureFixtures.SignedPdfRequest());
 
-        var signature = Validate(path, CreateOptions(revocationMode: SignatureRevocationMode.Offline));
+        var signature = await ValidateAsync(path, CreateOptions(revocationMode: SignatureRevocationMode.Offline));
 
         Assert.NotEqual(PdfSignatureTrust.Valid, signature.Trust);
         Assert.Equal("revocation-unavailable", signature.TrustReason);
     }
 
     [Fact]
-    public void UnknownIssuer_WithoutAnchor_IsUnknown()
+    public async Task UnknownIssuer_WithoutAnchor_IsUnknown()
     {
         // No anchor written at all: the chain cannot end in a configured trust anchor.
         _fixtures.WriteRootCrl([]);
         var path = _fixtures.CreateSignedPdf(new SignatureFixtures.SignedPdfRequest());
 
-        var signature = Validate(path, CreateOptions());
+        var signature = await ValidateAsync(path, CreateOptions());
 
         Assert.Equal(PdfSignatureIntegrity.Intact, signature.Integrity);
         Assert.Equal(PdfSignatureTrust.Unknown, signature.Trust);
@@ -199,7 +200,7 @@ public sealed class SignatureValidationServiceTests : IDisposable
     }
 
     [Fact]
-    public void EditedDocument_IsReportedAsDigestMismatch()
+    public async Task EditedDocument_IsReportedAsDigestMismatch()
     {
         _fixtures.WriteRootAnchor();
         _fixtures.WriteRootCrl([]);
@@ -208,7 +209,7 @@ public sealed class SignatureValidationServiceTests : IDisposable
             Damage = SignatureFixtures.PdfDamage.ChangeSignedByte
         });
 
-        var signature = Validate(path, CreateOptions());
+        var signature = await ValidateAsync(path, CreateOptions());
 
         Assert.Equal(PdfSignatureIntegrity.DigestMismatch, signature.Integrity);
         Assert.Equal("digest-mismatch", signature.IntegrityReason);
@@ -217,7 +218,7 @@ public sealed class SignatureValidationServiceTests : IDisposable
     }
 
     [Fact]
-    public void F1_AppendedBytes_WithoutLaterIntactSignature_AreNotTrusted()
+    public async Task F1_AppendedBytes_WithoutLaterIntactSignature_AreNotTrusted()
     {
         // An approval signature only covers the bytes it signed; a later increment is normal. The
         // report has to say that the signed part is intact while the file is no longer fully covered.
@@ -228,7 +229,7 @@ public sealed class SignatureValidationServiceTests : IDisposable
             AppendBytesAfterSigning = 64
         });
 
-        var signature = Validate(path, CreateOptions());
+        var signature = await ValidateAsync(path, CreateOptions());
 
         Assert.Equal(PdfSignatureIntegrity.ModifiedAfterSigning, signature.Integrity);
         Assert.Equal("bytes-appended-after-signed-range", signature.IntegrityReason);
@@ -237,7 +238,7 @@ public sealed class SignatureValidationServiceTests : IDisposable
     }
 
     [Fact]
-    public void AppendedBytes_AfterCertificationSignature_AreAFailure()
+    public async Task AppendedBytes_AfterCertificationSignature_AreAFailure()
     {
         // A /Perms DocMDP certification promises the document will not change. It did, so the
         // signature no longer describes this file and the trust verdict must not be "valid".
@@ -249,7 +250,7 @@ public sealed class SignatureValidationServiceTests : IDisposable
             AppendBytesAfterSigning = 64
         });
 
-        var signature = Validate(path, CreateOptions());
+        var signature = await ValidateAsync(path, CreateOptions());
 
         Assert.Equal(PdfSignatureIntegrity.ModifiedAfterSigning, signature.Integrity);
         Assert.Equal(PdfSignatureTrust.Invalid, signature.Trust);
@@ -257,7 +258,7 @@ public sealed class SignatureValidationServiceTests : IDisposable
     }
 
     [Fact]
-    public void Certification_WithoutChanges_IsReportedAsCertification()
+    public async Task Certification_WithoutChanges_IsReportedAsCertification()
     {
         _fixtures.WriteRootAnchor();
         _fixtures.WriteRootCrl([]);
@@ -266,7 +267,7 @@ public sealed class SignatureValidationServiceTests : IDisposable
             Certification = true
         });
 
-        var signature = Validate(path, CreateOptions());
+        var signature = await ValidateAsync(path, CreateOptions());
 
         Assert.Equal(PdfSignatureKind.Certification, signature.Kind);
         Assert.Equal(PdfSignatureIntegrity.Intact, signature.Integrity);
@@ -274,14 +275,14 @@ public sealed class SignatureValidationServiceTests : IDisposable
     }
 
     [Fact]
-    public void RevocationUnreachable_InOnlineMode_IsNeverValid()
+    public async Task RevocationUnreachable_InOnlineMode_IsNeverValid()
     {
         // No local CRL directory, and the test certificate publishes no revocation addresses: an
         // Online lookup cannot be completed, so the answer must be unknown rather than a silent pass.
         _fixtures.WriteRootAnchor();
         var path = _fixtures.CreateSignedPdf(new SignatureFixtures.SignedPdfRequest());
 
-        var signature = Validate(path, CreateOptions(useLocalCrls: false));
+        var signature = await ValidateAsync(path, CreateOptions(useLocalCrls: false));
 
         Assert.NotEqual(PdfSignatureTrust.Valid, signature.Trust);
         Assert.Equal(PdfSignatureTrust.Unknown, signature.Trust);
@@ -291,13 +292,13 @@ public sealed class SignatureValidationServiceTests : IDisposable
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void RevocationSkipped_InNoCheckMode_StillSaysItWasNotChecked(bool localCrl)
+    public async Task RevocationSkipped_InNoCheckMode_StillSaysItWasNotChecked(bool localCrl)
     {
         _fixtures.WriteRootAnchor();
         _fixtures.WriteRootCrl([]);
         var path = _fixtures.CreateSignedPdf(new SignatureFixtures.SignedPdfRequest());
 
-        var signature = Validate(path, CreateOptions(
+        var signature = await ValidateAsync(path, CreateOptions(
             useLocalCrls: localCrl,
             revocationMode: SignatureRevocationMode.NoCheck));
 
@@ -308,7 +309,7 @@ public sealed class SignatureValidationServiceTests : IDisposable
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void F1_UnsignedNoteInsideGap_IsRejected(bool edited)
+    public async Task F1_UnsignedNoteInsideGap_IsRejected(bool edited)
     {
         _fixtures.WriteRootAnchor();
         _fixtures.WriteRootCrl([]);
@@ -316,14 +317,14 @@ public sealed class SignatureValidationServiceTests : IDisposable
         {
             OversizedGap = true, ChangeUnsignedNote = edited
         });
-        var signature = Validate(path, CreateOptions());
+        var signature = await ValidateAsync(path, CreateOptions());
         Assert.Equal(PdfSignatureIntegrity.Unreadable, signature.Integrity);
         Assert.NotEqual(PdfSignatureTrust.Valid, signature.Trust);
         Assert.NotEqual(true, signature.CoversWholeFile);
     }
 
     [Fact]
-    public void F7_RevokedTimestampResponder_CannotReviveExpiredSigner()
+    public async Task F7_RevokedTimestampResponder_CannotReviveExpiredSigner()
     {
         _fixtures.WriteRootAnchor();
         var signedAt = NotLongAgo(400);
@@ -334,7 +335,7 @@ public sealed class SignatureValidationServiceTests : IDisposable
             Certificate = expired.Certificate, CertificateKey = expired.Key,
             TimestampMode = SignatureFixtures.TimestampTokenMode.Valid, TimestampTime = signedAt
         });
-        var signature = Validate(path, CreateOptions());
+        var signature = await ValidateAsync(path, CreateOptions());
         Assert.Equal(PdfSignatureTrust.Unknown, signature.Trust);
         Assert.True(signature.ValidationTime > signedAt.AddDays(1));
     }
@@ -342,7 +343,7 @@ public sealed class SignatureValidationServiceTests : IDisposable
     [Theory]
     [InlineData(SignatureRevocationMode.Offline)]
     [InlineData(SignatureRevocationMode.NoCheck)]
-    public void F7_UncheckedTimestampResponder_DoesNotMoveValidationTime(SignatureRevocationMode mode)
+    public async Task F7_UncheckedTimestampResponder_DoesNotMoveValidationTime(SignatureRevocationMode mode)
     {
         _fixtures.WriteRootAnchor();
         var signedAt = NotLongAgo(400);
@@ -352,30 +353,30 @@ public sealed class SignatureValidationServiceTests : IDisposable
             Certificate = expired.Certificate, CertificateKey = expired.Key,
             TimestampMode = SignatureFixtures.TimestampTokenMode.Valid, TimestampTime = signedAt
         });
-        var signature = Validate(path, CreateOptions(useLocalCrls: false, revocationMode: mode));
+        var signature = await ValidateAsync(path, CreateOptions(useLocalCrls: false, revocationMode: mode));
         Assert.Equal(PdfSignatureTrust.Unknown, signature.Trust);
         Assert.Equal("timestamp-responder-not-trusted", signature.TrustReason);
         Assert.True(signature.ValidationTime > signedAt.AddDays(1));
     }
 
     [Fact]
-    public void F4_CancelledValidation_StopsBeforeParsing()
+    public async Task F4_CancelledValidation_StopsBeforeParsing()
     {
         var bytes = File.ReadAllBytes(_fixtures.CreateUnsignedPdf());
-        Assert.ThrowsAny<OperationCanceledException>(() =>
-            CreateService(CreateOptions()).Validate(bytes, new CancellationToken(true)));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            CreateService(CreateOptions()).ValidateAsync(bytes, new CancellationToken(true)));
     }
 
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void F1_OnlyIntactLaterSignature_CoversEarlierRevision(bool damage)
+    public async Task F1_OnlyIntactLaterSignature_CoversEarlierRevision(bool damage)
     {
         _fixtures.WriteRootAnchor();
         _fixtures.WriteRootCrl([]);
         var original = File.ReadAllBytes(_fixtures.CreateSignedPdf(new SignatureFixtures.SignedPdfRequest()));
         var bytes = _fixtures.AppendApprovalSignature(original, damage);
-        var response = CreateService(CreateOptions()).Validate(bytes, TestContext.Current.CancellationToken);
+        var response = await CreateService(CreateOptions()).ValidateAsync(bytes, TestContext.Current.CancellationToken);
         Assert.Equal(2, response.Signatures.Count);
         Assert.Equal(damage ? PdfSignatureIntegrity.ModifiedAfterSigning : PdfSignatureIntegrity.Intact,
             response.Signatures[0].Integrity);
@@ -409,27 +410,27 @@ public sealed class SignatureValidationServiceTests : IDisposable
     }
 
     [Fact]
-    public void UnsignedDocument_ReportsNoSignatures()
+    public async Task UnsignedDocument_ReportsNoSignatures()
     {
         var path = _fixtures.CreateUnsignedPdf();
-        var response = CreateService(CreateOptions())
-            .Validate(File.ReadAllBytes(path), TestContext.Current.CancellationToken);
+        var response = await CreateService(CreateOptions())
+            .ValidateAsync(File.ReadAllBytes(path), TestContext.Current.CancellationToken);
 
         Assert.Empty(response.Signatures);
         Assert.True(response.ValidatedAt <= DateTimeOffset.UtcNow);
     }
 
     [Fact]
-    public void DocumentWithoutPdfHeader_IsRejectedAsUnreadable()
+    public async Task DocumentWithoutPdfHeader_IsRejectedAsUnreadable()
     {
         var path = _fixtures.CreateNonPdf(fileName: "not-a-pdf.pdf", bytes: 4096);
 
-        Assert.Throws<PdfSignatureFormatException>(() =>
-            CreateService(CreateOptions()).Validate(File.ReadAllBytes(path), TestContext.Current.CancellationToken));
+        await Assert.ThrowsAsync<PdfSignatureFormatException>(() =>
+            CreateService(CreateOptions()).ValidateAsync(File.ReadAllBytes(path), TestContext.Current.CancellationToken));
     }
 
     [Fact]
-    public void PdfModificationDate_IsTheSigningTimeWhenNothingIsClaimed()
+    public async Task PdfModificationDate_IsTheSigningTimeWhenNothingIsClaimed()
     {
         // No CMS signingTime attribute and no timestamp: the signature dictionary's /M is all the
         // document offers, and the source field has to say that rather than leave it unexplained.
@@ -440,14 +441,14 @@ public sealed class SignatureValidationServiceTests : IDisposable
             SigningTimeAttribute = false
         });
 
-        var signature = Validate(path, CreateOptions());
+        var signature = await ValidateAsync(path, CreateOptions());
 
         Assert.Equal(PdfSigningTimeSource.PdfModificationDate, signature.SigningTimeSource);
         Assert.Equal(new DateTimeOffset(2025, 1, 1, 12, 0, 0, TimeSpan.Zero), signature.SigningTime);
     }
 
     [Fact]
-    public void NoSigningTimeEvidence_IsReportedAsNone()
+    public async Task NoSigningTimeEvidence_IsReportedAsNone()
     {
         _fixtures.WriteRootAnchor();
         _fixtures.WriteRootCrl([]);
@@ -457,15 +458,15 @@ public sealed class SignatureValidationServiceTests : IDisposable
             WithoutModificationDate = true
         });
 
-        var signature = Validate(path, CreateOptions());
+        var signature = await ValidateAsync(path, CreateOptions());
 
         Assert.Equal(PdfSigningTimeSource.None, signature.SigningTimeSource);
         Assert.Null(signature.SigningTime);
     }
 
-    private PdfSignatureValidation Validate(string path, SignatureValidationOptions options)
+    private async Task<PdfSignatureValidation> ValidateAsync(string path, SignatureValidationOptions options)
     {
-        var response = CreateService(options).Validate(File.ReadAllBytes(path), TestContext.Current.CancellationToken);
+        var response = await CreateService(options).ValidateAsync(File.ReadAllBytes(path), TestContext.Current.CancellationToken);
         return Assert.Single(response.Signatures);
     }
 

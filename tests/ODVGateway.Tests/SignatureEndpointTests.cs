@@ -6,6 +6,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using ODVGateway.Models;
 using ODVGateway.Services;
+using ODVGateway.Services.Signatures;
 using ODVGateway.Tests.Signatures;
 
 namespace ODVGateway.Tests;
@@ -19,6 +20,27 @@ namespace ODVGateway.Tests;
 public sealed class SignatureEndpointTests : IDisposable
 {
     private readonly SignatureFixtures _fixtures = new();
+
+    [Fact]
+    public async Task N3_Saturation_Returns503AndReleasesPermitAfterError()
+    {
+        using var factory = new SignatureFactory(_fixtures);
+        using var client = factory.CreateClient();
+        var sessionKey = PrepareSession(factory, _fixtures.CreateNonPdf("broken.pdf", 4096));
+        var limiter = factory.Services.GetRequiredService<SignatureValidationLimiter>();
+        using (var held = limiter.TryAcquire())
+        {
+            Assert.True(held.IsAcquired);
+            using var response = await client.GetAsync($"/signatures/{sessionKey}/0", TestContext.Current.CancellationToken);
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+            Assert.Equal(TimeSpan.FromSeconds(1), response.Headers.RetryAfter?.Delta);
+            Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+        }
+        using var failed = await client.GetAsync($"/signatures/{sessionKey}/0", TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, failed.StatusCode);
+        using var available = limiter.TryAcquire();
+        Assert.True(available.IsAcquired);
+    }
 
     [Fact]
     public async Task Disabled_ReturnsNotFoundWithClearReason()
@@ -226,6 +248,7 @@ public sealed class SignatureEndpointTests : IDisposable
                     ["ODVGateway:TrustClientFilePath"] = "true",
                     ["ODVGateway:TrustedSourceRoots:0"] = _fixtures.FileDirectory,
                     ["ODVGateway:signatures:enabled"] = _enabled ? "true" : "false",
+                    ["ODVGateway:signatures:maxConcurrentValidations"] = "1",
                     ["ODVGateway:signatures:useWindowsTrustedRoots"] = "false",
                     ["ODVGateway:signatures:extraAnchorsDirectory"] = _fixtures.AnchorDirectory,
                     ["ODVGateway:signatures:crlDirectory"] = _fixtures.CrlDirectory,

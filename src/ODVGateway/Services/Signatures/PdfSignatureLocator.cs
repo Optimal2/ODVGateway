@@ -13,7 +13,8 @@ namespace ODVGateway.Services.Signatures;
 public sealed class PdfSignatureLocator
 {
     private const int MaxDepth = 32;
-    private const int MaxVisits = 10000;
+    // Compressed graphs get bounded headroom while ordinary large page trees scale with bytes.
+    private int MaxVisits => Math.Clamp(fileBytes.Length / 8, 10000, 8_000_000);
     private CancellationToken cancellationToken;
     private byte[] fileBytes = [];
     private int visits;

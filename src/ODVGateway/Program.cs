@@ -68,6 +68,7 @@ builder.Services.AddSingleton<OpenDocViewerDistResolver>();
 builder.Services.AddSingleton<OpenDocViewerBundleFactory>();
 builder.Services.AddSingleton<OpenDocViewerIndexRenderer>();
 builder.Services.AddSingleton<WebClientSourceProxyLimiter>();
+builder.Services.AddSingleton<SignatureValidationLimiter>();
 builder.Services.AddSingleton<WebClientFallbackUrlBuilder>();
 builder.Services.AddHttpClient("ODVGateway.RemoteInline");
 
@@ -422,6 +423,7 @@ app.MapGet("/signatures/{sessionKey}/{fileIndex:int}", async (
     IHttpClientFactory httpClientFactory,
     WebClientFallbackUrlBuilder fallbackUrlBuilder,
     PdfSignatureValidationService signatureValidator,
+    SignatureValidationLimiter signatureLimiter,
     ILoggerFactory loggerFactory,
     CancellationToken cancellationToken) =>
 {
@@ -447,6 +449,14 @@ app.MapGet("/signatures/{sessionKey}/{fileIndex:int}", async (
         return Results.Json(new { error = "Signature validation is only available for PDF source files." }, statusCode: StatusCodes.Status415UnsupportedMediaType);
     }
 
+    using var signatureLease = signatureLimiter.TryAcquire();
+    if (!signatureLease.IsAcquired)
+    {
+        response.Headers.RetryAfter = "1";
+        return Results.Json(new { error = "Signature validation is busy. Retry later." },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+
     var signatureSource = await ReadSignatureSourceBytesAsync(
         httpContext.Request,
         session,
@@ -465,7 +475,7 @@ app.MapGet("/signatures/{sessionKey}/{fileIndex:int}", async (
 
     try
     {
-        var validation = signatureValidator.Validate(signatureSource.Bytes!, cancellationToken, httpContext.Request.Host.Host);
+        var validation = await signatureValidator.ValidateAsync(signatureSource.Bytes!, cancellationToken, httpContext.Request.Host.Host);
         return Results.Json(validation, SignatureValidationJson.Options, statusCode: StatusCodes.Status200OK);
     }
     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

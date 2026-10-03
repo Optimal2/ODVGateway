@@ -17,6 +17,7 @@ public sealed class OfflineRevocationStore
     private readonly string? directory;
     private readonly ILogger logger;
     private List<ParsedCrl>? cache;
+    private readonly object cacheLock = new();
 
     public OfflineRevocationStore(string? directory, ILogger logger, string contentRootPath)
     {
@@ -42,8 +43,10 @@ public sealed class OfflineRevocationStore
             return new CrlVerdict(CrlStatus.NoCrl, null, default, null, null);
         }
 
+        CrlVerdict? stale = null;
         foreach (var crl in candidates)
         {
+            if (!crl.Scope.Covers(certificate)) continue;
             string? signatureReason = null;
             var verified = issuer is not null && crl.TryVerify(issuer, out signatureReason);
             if (!verified)
@@ -55,7 +58,8 @@ public sealed class OfflineRevocationStore
 
             if (!crl.IsFresh(at))
             {
-                return new CrlVerdict(CrlStatus.StaleCrl, null, crl.ThisUpdate, crl.NextUpdate, null);
+                stale ??= new CrlVerdict(CrlStatus.StaleCrl, null, crl.ThisUpdate, crl.NextUpdate, null);
+                continue;
             }
 
             if (crl.Entries.TryGetValue(GetSerial(certificate), out var revocationDate))
@@ -66,13 +70,13 @@ public sealed class OfflineRevocationStore
             return new CrlVerdict(CrlStatus.NotListed, null, crl.ThisUpdate, crl.NextUpdate, null);
         }
 
-        return new CrlVerdict(CrlStatus.BadSignature, null, default, null, "no CRL of this issuer verified against its issuer certificate");
+        return stale ?? new CrlVerdict(CrlStatus.BadSignature, null, default, null, "no applicable CRL verified against its issuer certificate");
     }
 
     internal static CrlVerdict CheckDer(byte[] der, X509Certificate2 certificate, X509Certificate2 issuer, DateTimeOffset at)
     {
         var crl = Parse(der);
-        if (crl is null || !crl.IssuerName.AsSpan().SequenceEqual(certificate.IssuerName.RawData) ||
+        if (crl is null || !crl.Scope.Covers(certificate) || !crl.IssuerName.AsSpan().SequenceEqual(certificate.IssuerName.RawData) ||
             !crl.TryVerify(issuer, out _))
             return new(CrlStatus.BadSignature, null, default, null, null);
         if (!crl.IsFresh(at)) return new(CrlStatus.StaleCrl, null, crl.ThisUpdate, crl.NextUpdate, null);
@@ -103,6 +107,12 @@ public sealed class OfflineRevocationStore
     }
 
     private IReadOnlyList<ParsedCrl> Load()
+    {
+        // Publish a complete snapshot to concurrent validation requests.
+        lock (cacheLock) return LoadCore();
+    }
+
+    private IReadOnlyList<ParsedCrl> LoadCore()
     {
         if (cache is not null)
         {
@@ -261,20 +271,21 @@ public sealed class OfflineRevocationStore
                     var entry = revokedCertificates.ReadSequence();
                     var serial = entry.ReadInteger();
                     entries[serial] = ReadTime(entry);
-                    if (entry.HasData && !SupportedExtensions(entry.ReadSequence(), isEntry: true)) return null;
+                    if (entry.HasData && !SupportedExtensions(entry.ReadSequence(), isEntry: true, out _)) return null;
                     entry.ThrowIfNotEmpty();
                 }
             }
 
+            var scope = new CrlScope(false, false, []);
             if (tbsReader.HasData)
             {
                 var extensions = tbsReader.ReadSequence(new Asn1Tag(TagClass.ContextSpecific, 0, true));
-                if (!SupportedExtensions(extensions.ReadSequence(), isEntry: false)) return null;
+                if (!SupportedExtensions(extensions.ReadSequence(), isEntry: false, out scope)) return null;
                 extensions.ThrowIfNotEmpty();
             }
             tbsReader.ThrowIfNotEmpty();
 
-            return new ParsedCrl(issuerName, thisUpdate, nextUpdate, entries, signatureAlgorithm, signatureValue, tbs);
+            return new ParsedCrl(issuerName, thisUpdate, nextUpdate, entries, signatureAlgorithm, signatureValue, tbs, scope);
         }
         catch (Exception exception) when (exception is AsnContentException or ArgumentException or InvalidOperationException)
         {
@@ -282,21 +293,84 @@ public sealed class OfflineRevocationStore
         }
     }
 
-    private static bool SupportedExtensions(AsnReader extensions, bool isEntry)
+    private static bool SupportedExtensions(AsnReader extensions, bool isEntry, out CrlScope scope)
     {
+        scope = new(false, false, []);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
         while (extensions.HasData)
         {
             var extension = extensions.ReadSequence();
             var oid = extension.ReadObjectIdentifier();
+            if (!seen.Add(oid)) return false;
             var critical = extension.PeekTag() == Asn1Tag.Boolean && extension.ReadBoolean();
-            _ = extension.ReadOctetString();
+            var value = extension.ReadOctetString();
             extension.ThrowIfNotEmpty();
-            // Delta/partitioned/indirect CRLs cannot establish complete issuer coverage. Unknown
-            // critical extensions likewise cannot be ignored, including certificateIssuer entries.
-            if (critical || (!isEntry && oid is "2.5.29.27" or "2.5.29.28") ||
+            if (!isEntry && oid == "2.5.29.28")
+            {
+                if (!TryReadScope(value, out scope)) return false;
+                continue;
+            }
+            // Delta CRLs cannot establish coverage alone. Unknown critical extensions and
+            // certificateIssuer entries cannot be ignored, regardless of the critical flag.
+            if (critical || (!isEntry && oid == "2.5.29.27") ||
                 (isEntry && oid == "2.5.29.29")) return false;
         }
         return true;
+    }
+
+    private static bool TryReadScope(byte[] value, out CrlScope scope)
+    {
+        scope = new(false, false, []);
+        var encoded = new AsnReader(value, AsnEncodingRules.DER);
+        var fields = encoded.ReadSequence();
+        encoded.ThrowIfNotEmpty();
+        var names = new List<Uri>();
+        var users = false;
+        var cas = false;
+        var previous = -1;
+        while (fields.HasData)
+        {
+            var tag = fields.PeekTag();
+            if (tag.TagClass != TagClass.ContextSpecific || tag.TagValue <= previous) return false;
+            previous = tag.TagValue;
+            switch (tag.TagValue)
+            {
+                case 0:
+                    var point = fields.ReadSequence(tag);
+                    var fullName = point.ReadSequence(new Asn1Tag(TagClass.ContextSpecific, 0, true));
+                    point.ThrowIfNotEmpty();
+                    while (fullName.HasData)
+                    {
+                        // Relative names and non-URI names need a separate name matcher.
+                        var name = fullName.ReadCharacterString(UniversalTagNumber.IA5String,
+                            new Asn1Tag(TagClass.ContextSpecific, 6));
+                        if (!Uri.TryCreate(name, UriKind.Absolute, out var uri)) return false;
+                        names.Add(uri);
+                    }
+                    if (names.Count == 0) return false;
+                    break;
+                case 1: users = fields.ReadBoolean(tag); break;
+                case 2: cas = fields.ReadBoolean(tag); break;
+                case 4: // Indirect entries cannot be interpreted as direct issuer coverage.
+                case 5: // Attribute certificates are not X.509 public-key certificates.
+                    if (fields.ReadBoolean(tag)) return false;
+                    break;
+                default: return false; // Includes partial reason coverage (onlySomeReasons).
+            }
+        }
+        if (users && cas) return false;
+        scope = new(users, cas, names);
+        return true;
+    }
+
+    internal sealed record CrlScope(bool UsersOnly, bool CasOnly, IReadOnlyList<Uri> Names)
+    {
+        public bool Covers(X509Certificate2 certificate)
+        {
+            var ca = certificate.Extensions.OfType<X509BasicConstraintsExtension>().Any(e => e.CertificateAuthority);
+            if ((UsersOnly && ca) || (CasOnly && !ca)) return false;
+            return Names.Count == 0 || RevocationHttpClient.DistributionPoints(certificate).Any(Names.Contains);
+        }
     }
 
     private static bool IsTimeTag(Asn1Tag tag) =>
@@ -349,7 +423,8 @@ public sealed class OfflineRevocationStore
         Dictionary<BigInteger, DateTimeOffset> Entries,
         string SignatureAlgorithm,
         byte[] SignatureValue,
-        byte[] SignedRegion)
+        byte[] SignedRegion,
+        CrlScope Scope)
     {
         public bool IsFresh(DateTimeOffset at) =>
             ThisUpdate <= at.UtcDateTime && NextUpdate is not null && NextUpdate.Value >= at.UtcDateTime;

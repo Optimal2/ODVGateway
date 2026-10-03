@@ -134,13 +134,13 @@ internal sealed class RevocationHttpClient : IDisposable
         catch (Exception ex) when (ex is HttpRequestException or IOException or SocketException) { return null; }
     }
 
-    internal OfflineRevocationStore.CrlVerdict Check(X509Certificate2 certificate, X509Certificate2 issuer,
+    internal async Task<OfflineRevocationStore.CrlVerdict> CheckAsync(X509Certificate2 certificate, X509Certificate2 issuer,
         DateTimeOffset at, CancellationToken token)
     {
         foreach (var uri in DistributionPoints(certificate))
         {
             token.ThrowIfCancellationRequested();
-            var data = FetchAsync(uri, token).GetAwaiter().GetResult();
+            var data = await FetchAsync(uri, token);
             if (data is null) continue;
             var verdict = OfflineRevocationStore.CheckDer(data, certificate, issuer, at);
             if (verdict.Status is OfflineRevocationStore.CrlStatus.NotListed or OfflineRevocationStore.CrlStatus.Revoked)

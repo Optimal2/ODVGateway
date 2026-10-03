@@ -11,6 +11,21 @@ namespace ODVGateway.Tests;
 
 public sealed class SignatureSecurityTests
 {
+    [Fact]
+    public void N4_LargePageTree_WithinSizeLimit_IsAccepted()
+    {
+        const int pages = 20000;
+        var objects = new List<string>
+        {
+            "<< /Type /Catalog /Pages 2 0 R >>",
+            $"<< /Type /Pages /Count {pages} /Kids [{string.Join(' ', Enumerable.Range(3, pages).Select(i => $"{i} 0 R"))}] >>"
+        };
+        objects.AddRange(Enumerable.Repeat("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>", pages));
+        var bytes = WriteGraph(objects);
+        Assert.True(bytes.Length < 64 * 1024 * 1024);
+        Assert.Empty(new PdfSignatureLocator().Locate(bytes, TestContext.Current.CancellationToken));
+    }
+
     [Theory]
     [InlineData(false, true, 0)]
     [InlineData(true, false, 0)]
@@ -155,7 +170,7 @@ public sealed class SignatureSecurityTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void F5_OnlineCrl_IsVerifiedUsingBoundedInMemoryResponder(bool revoked)
+    public async Task F5_OnlineCrl_IsVerifiedUsingBoundedInMemoryResponder(bool revoked)
     {
         using var fixtures = new SignatureFixtures();
         fixtures.WriteRootAnchor();
@@ -174,7 +189,7 @@ public sealed class SignatureSecurityTests
         var evaluator = new SignatureTrustEvaluator(options,
             new TrustAnchorStore(options, NullLogger.Instance, fixtures.TempRoot),
             new OfflineRevocationStore(null, NullLogger.Instance, fixtures.TempRoot), NullLogger.Instance);
-        var verdict = evaluator.Evaluate(integrity.Cms!, DateTimeOffset.UtcNow, TestContext.Current.CancellationToken, transport);
+        var verdict = await evaluator.EvaluateAsync(integrity.Cms!, DateTimeOffset.UtcNow, TestContext.Current.CancellationToken, transport);
         Assert.Equal(revoked ? PdfSignatureTrust.Invalid : PdfSignatureTrust.Valid, verdict.Trust);
         Assert.Equal(1, handler.Calls);
     }
@@ -219,6 +234,11 @@ public sealed class SignatureSecurityTests
             objects.Add(i == 16 && !cycle ? "<< /Type /Pages /Kids [] /Count 0 >>" :
                 $"<< /Type /Pages /Kids [{next} 0 R {next} 0 R] /Count 0 >>");
         }
+        return WriteGraph(objects);
+    }
+
+    private static byte[] WriteGraph(List<string> objects)
+    {
         using var stream = new MemoryStream();
         stream.Write("%PDF-1.7\n"u8);
         var offsets = new List<long>();

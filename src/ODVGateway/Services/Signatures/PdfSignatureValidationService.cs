@@ -20,6 +20,7 @@ public sealed class PdfSignatureValidationService
     private readonly PdfSignatureLocator locator = new();
     private readonly PdfSignatureIntegrityVerifier verifier = new();
     private readonly SignatureTrustEvaluator trustEvaluator;
+    private readonly HttpMessageHandler? testHandler;
 
     public PdfSignatureValidationService(
         SignatureValidationOptions options,
@@ -32,14 +33,16 @@ public sealed class PdfSignatureValidationService
         trustEvaluator = new SignatureTrustEvaluator(options, anchors, revocation, logger);
     }
 
-    public PdfSignatureValidationResponse Validate(byte[] fileBytes) => Validate(fileBytes, CancellationToken.None);
+    internal PdfSignatureValidationService(SignatureValidationOptions options, TrustAnchorStore anchors,
+        OfflineRevocationStore revocation, ILogger logger, HttpMessageHandler testHandler)
+        : this(options, anchors, revocation, logger) => this.testHandler = testHandler;
 
     /// <summary>
     /// Validates every signature dictionary of the document. Throws <see cref="PdfEncryptedException"/>
     /// when the document is encrypted and <see cref="PdfSignatureFormatException"/> when its object
     /// structure cannot be read; the endpoint reports both as 422.
     /// </summary>
-    public PdfSignatureValidationResponse Validate(byte[] fileBytes, CancellationToken cancellationToken,
+    public async Task<PdfSignatureValidationResponse> ValidateAsync(byte[] fileBytes, CancellationToken cancellationToken = default,
         string? gatewayHost = null)
     {
         var validatedAt = DateTimeOffset.UtcNow;
@@ -74,10 +77,10 @@ public sealed class PdfSignatureValidationService
         }
 
         var results = new List<PdfSignatureValidation>(signatures.Count);
-        using var transport = new RevocationHttpClient(options, gatewayHost: gatewayHost);
+        using var transport = new RevocationHttpClient(options, testHandler, gatewayHost: gatewayHost);
         foreach (var signature in signatures)
         {
-            results.Add(ValidateOne(fileBytes, signature, validatedAt, token, transport));
+            results.Add(await ValidateOneAsync(fileBytes, signature, validatedAt, token, transport));
         }
 
         long coveredRevisionPrefix = -1;
@@ -110,7 +113,7 @@ public sealed class PdfSignatureValidationService
         return new PdfSignatureValidationResponse(results, validatedAt);
     }
 
-    private PdfSignatureValidation ValidateOne(
+    private async Task<PdfSignatureValidation> ValidateOneAsync(
         byte[] fileBytes,
         PdfSignatureLocator.SignatureDictionary signature,
         DateTimeOffset validatedAt,
@@ -165,7 +168,7 @@ public sealed class PdfSignatureValidationService
                     trust, trustReason, validatedAt, validatedAt, claimed.Source, claimed.Value);
             }
 
-            var outcome = EvaluateTrust(signature, cms, integrity, integrityReason, coversWholeFile, validatedAt,
+            var outcome = await EvaluateTrustAsync(signature, cms, integrity, integrityReason, coversWholeFile, validatedAt,
                 cancellationToken, transport);
             if (integrity == PdfSignatureIntegrity.ModifiedAfterSigning)
             {
@@ -188,7 +191,7 @@ public sealed class PdfSignatureValidationService
             integrityReason ?? SignatureValidationReasons.ValidationError, validatedAt, validatedAt, null, null);
     }
 
-    private PdfSignatureValidation EvaluateTrust(
+    private async Task<PdfSignatureValidation> EvaluateTrustAsync(
         PdfSignatureLocator.SignatureDictionary signature,
         SignedCms cms,
         PdfSignatureIntegrity integrity,
@@ -199,7 +202,7 @@ public sealed class PdfSignatureValidationService
     {
         try
         {
-            var trust = trustEvaluator.Evaluate(cms, validatedAt, cancellationToken, transport);
+            var trust = await trustEvaluator.EvaluateAsync(cms, validatedAt, cancellationToken, transport);
             var signingTime = ReadSigningTime(signature, cms, trust);
             return Project(signature, ReadSignerCertificate(cms),
                 integrity, integrityReason, coversWholeFile, trust.Trust, trust.Reason, validatedAt,

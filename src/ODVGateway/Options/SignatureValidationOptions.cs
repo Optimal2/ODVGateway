@@ -54,6 +54,9 @@ public sealed class SignatureValidationOptions
     /// </summary>
     public long MaxFileBytes { get; set; }
 
+    /// <summary>Concurrent signature requests, including buffering. Clamped to 1–16; no queue.</summary>
+    public int MaxConcurrentValidations { get; set; } = 2;
+
     /// <summary>Maps the configured mode to its legacy enum representation; not used for native chain policy.</summary>
     public X509RevocationMode GetRevocationMode() => RevocationMode switch
     {

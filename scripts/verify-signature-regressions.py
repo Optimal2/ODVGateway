@@ -1,4 +1,4 @@
-"""Temporarily break F1-F7 guards in an isolated worktree and prove the xUnit tests fail.
+"""Temporarily break F1-F7 and N1-N4 guards and prove the xUnit tests fail.
 
 No network is used by these tests. Source bytes are restored even on failure. Never run alongside
 another build/edit in the same worktree. Results are written only to gitignored TestResults.
@@ -12,6 +12,23 @@ ROOT = Path(__file__).resolve().parent.parent
 SOURCE = Path('src/ODVGateway/Services/Signatures')
 TESTS = 'tests/ODVGateway.Tests/ODVGateway.Tests.csproj'
 MUTATIONS = [
+    ('N1', 'OfflineRevocationStore.cs',
+     'stale ??= new CrlVerdict(CrlStatus.StaleCrl, null, crl.ThisUpdate, crl.NextUpdate, null);',
+     'return new CrlVerdict(CrlStatus.StaleCrl, null, crl.ThisUpdate, crl.NextUpdate, null);',
+     'ExpiredCertificate_WithVerifiableTimestamp_IsValid'),
+    ('N2', 'OfflineRevocationStore.cs',
+     'if (!TryReadScope(value, out scope)) return false;', 'return false;', 'N2_FullScopeIdp_IsAcceptedOnline'),
+    ('N2-scope', 'OfflineRevocationStore.cs',
+     'if ((UsersOnly && ca) || (CasOnly && !ca)) return false;', '// Mutation: ignore certificate-type restrictions.',
+     'N2_ScopeMustCoverCertificate'),
+    ('N3-async', 'RevocationHttpClient.cs',
+     'await FetchAsync(uri, token)', 'FetchAsync(uri, token).GetAwaiter().GetResult()',
+     'N3_Validation_YieldsDuringNetworkWait_AndHonorsCancellation'),
+    ('N3-limit', '../../Program.cs',
+     'if (!signatureLease.IsAcquired)', 'if (false)', 'N3_Saturation_Returns503AndReleasesPermitAfterError'),
+    ('N4', 'PdfSignatureLocator.cs',
+     'Math.Clamp(fileBytes.Length / 8, 10000, 8_000_000)', '10000',
+     'N4_LargePageTree_WithinSizeLimit_IsAccepted'),
     ('F1', 'PdfSignatureIntegrityVerifier.cs',
      'byteRange[2] != signature.ContentsEnd', 'false', 'F1_UnsignedNoteInsideGap'),
     ('F2', 'SignatureTrustEvaluator.cs',

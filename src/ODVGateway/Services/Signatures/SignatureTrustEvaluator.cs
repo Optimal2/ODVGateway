@@ -13,30 +13,30 @@ public sealed class SignatureTrustEvaluator(
     public sealed record Outcome(PdfSignatureTrust Trust, string? Reason, DateTimeOffset ValidationTime,
         bool TimestampVerified, DateTimeOffset? TimestampGenerationTime);
 
-    public Outcome Evaluate(SignedCms cms, DateTimeOffset now, CancellationToken cancellationToken)
+    public async Task<Outcome> EvaluateAsync(SignedCms cms, DateTimeOffset now, CancellationToken cancellationToken)
     {
         using var transport = new RevocationHttpClient(options);
-        return Evaluate(cms, now, cancellationToken, transport);
+        return await EvaluateAsync(cms, now, cancellationToken, transport);
     }
 
-    internal Outcome Evaluate(SignedCms cms, DateTimeOffset now, CancellationToken token, RevocationHttpClient transport)
+    internal async Task<Outcome> EvaluateAsync(SignedCms cms, DateTimeOffset now, CancellationToken token, RevocationHttpClient transport)
     {
         token.ThrowIfCancellationRequested();
         if (cms.SignerInfos.Count != 1 || cms.SignerInfos[0].Certificate is not { } signer)
             return new(PdfSignatureTrust.Unknown, SignatureValidationReasons.SignerCertificateMissing, now, false, null);
         var signerInfo = cms.SignerInfos[0];
-        var timestamp = ReadTimestamp(cms, signerInfo, now, token, transport, out var timestampFailure);
+        var (timestamp, timestampFailure) = await ReadTimestampAsync(cms, signerInfo, now, token, transport);
         var at = timestamp ?? now;
         if (IsWeakSignature(signerInfo, signer, out var weakReason))
             return new(PdfSignatureTrust.Invalid, weakReason, at, timestamp.HasValue, timestamp);
-        var verdict = EvaluateCertificate(signer, cms.Certificates, at, token, transport);
+        var verdict = await EvaluateCertificateAsync(signer, cms.Certificates, at, token, transport);
         if (verdict.Reason == SignatureValidationReasons.CertificateNotValidAtValidationTime && timestampFailure is not null)
             verdict = (verdict.Trust, timestampFailure);
         token.ThrowIfCancellationRequested();
         return new(verdict.Trust, verdict.Reason, at, timestamp.HasValue, timestamp);
     }
 
-    private (PdfSignatureTrust Trust, string? Reason) EvaluateCertificate(X509Certificate2 signer,
+    private async Task<(PdfSignatureTrust Trust, string? Reason)> EvaluateCertificateAsync(X509Certificate2 signer,
         X509Certificate2Collection certificates, DateTimeOffset at, CancellationToken token, RevocationHttpClient transport)
     {
         token.ThrowIfCancellationRequested();
@@ -83,7 +83,7 @@ public sealed class SignatureTrustEvaluator(
             var verdict = revocation.Check(certificate, issuer, at);
             if (verdict.Status is not (OfflineRevocationStore.CrlStatus.NotListed or OfflineRevocationStore.CrlStatus.Revoked)
                 && options.RevocationMode == SignatureRevocationMode.Online)
-                verdict = transport.Check(certificate, issuer, at, token);
+                verdict = await transport.CheckAsync(certificate, issuer, at, token);
             if (verdict.Status == OfflineRevocationStore.CrlStatus.Revoked && verdict.RevocationDate <= at)
                 return (PdfSignatureTrust.Invalid, SignatureValidationReasons.Revoked);
             covered &= verdict.Status is OfflineRevocationStore.CrlStatus.NotListed or OfflineRevocationStore.CrlStatus.Revoked;
@@ -112,39 +112,36 @@ public sealed class SignatureTrustEvaluator(
         return (PdfSignatureTrust.Valid, null);
     }
 
-    private DateTimeOffset? ReadTimestamp(SignedCms cms, SignerInfo signer, DateTimeOffset now,
-        CancellationToken token, RevocationHttpClient transport, out string? failure)
+    private async Task<(DateTimeOffset? Timestamp, string? Failure)> ReadTimestampAsync(SignedCms cms, SignerInfo signer, DateTimeOffset now,
+        CancellationToken token, RevocationHttpClient transport)
     {
-        failure = null;
         var attribute = PdfSignatureIntegrityVerifier.FindAttribute(signer.UnsignedAttributes,
             PdfSignatureIntegrityVerifier.SignatureTimeStampOid);
-        if (attribute is null || attribute.Values.Count == 0) return null;
+        if (attribute is null || attribute.Values.Count == 0) return (null, null);
         token.ThrowIfCancellationRequested();
         if (!Rfc3161TimestampToken.TryDecode(attribute.Values[0].RawData, out var timestamp, out var consumed) ||
             timestamp is null || consumed != attribute.Values[0].RawData.Length ||
             !timestamp.VerifySignatureForSignerInfo(signer, out var responder, null) || responder is null ||
             timestamp.TokenInfo.Timestamp > now)
         {
-            failure = SignatureValidationReasons.TimestampNotVerifiable;
-            return null;
+            return (null, SignatureValidationReasons.TimestampNotVerifiable);
         }
         var timestampCms = timestamp.AsSignedCms();
         if (IsWeakSignature(timestampCms.SignerInfos[0], responder, out _))
         {
-            failure = SignatureValidationReasons.TimestampNotVerifiable;
-            return null;
+            return (null, SignatureValidationReasons.TimestampNotVerifiable);
         }
         var certificates = new X509Certificate2Collection();
         certificates.AddRange(cms.Certificates);
         certificates.AddRange(timestampCms.Certificates);
-        var verdict = EvaluateCertificate(responder, certificates, timestamp.TokenInfo.Timestamp, token, transport);
+        var verdict = await EvaluateCertificateAsync(responder, certificates, timestamp.TokenInfo.Timestamp, token, transport);
         if (verdict.Trust != PdfSignatureTrust.Valid)
         {
-            failure = verdict.Reason == SignatureValidationReasons.ChainNotAnchored
+            var failure = verdict.Reason == SignatureValidationReasons.ChainNotAnchored
                 ? SignatureValidationReasons.TimestampResponderNotAnchored : SignatureValidationReasons.TimestampResponderNotTrusted;
-            return null;
+            return (null, failure);
         }
-        return timestamp.TokenInfo.Timestamp;
+        return (timestamp.TokenInfo.Timestamp, null);
     }
 
     /// <summary>

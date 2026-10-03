@@ -82,6 +82,7 @@ name they were found under.
 | resolved source is not a PDF (by extension) | `415` |
 | PDF cannot be opened/parsed at all, or is encrypted | `422` |
 | file larger than `Signatures:MaxFileBytes` | `413` |
+| all signature validation slots occupied | `503` with `Retry-After: 1` |
 | PDF parses but has no signature fields | `200` with `signatures: []` |
 
 Limits:
@@ -97,11 +98,17 @@ Limits:
   since no complete signature inventory exists yet. After location, unfinished signatures report
   `unknown` / `validation-timeout`. Client cancellation before location propagates to the endpoint.
   Online attempts share the file budget and each has a 1–30 second timeout (configured below).
-- **Traversal**: at most 10,000 object/edge operations and depth 32 per file. Page, field and
+- **Traversal**: the object/edge budget is `clamp(fileBytes / 8, 10,000, 8,000,000)` operations,
+  with depth 32 per file. This allows large ordinary page trees within the size cap while retaining
+  a hard ceiling for compressed or adversarial graphs. Page, field and
   indirect-reference traversal uses visited sets and cached object identities. Limit violations
   produce 422. Physical signature dictionaries larger than 1 MiB are unreadable.
-- **Concurrency**: nothing special. Requests that buffer a large PDF are bounded by the size limit,
-  and `/signatures` is off unless an operator turns it on.
+- **Concurrency**: `Signatures:MaxConcurrentValidations` defaults to 2 and is clamped to 1–16.
+  A process-wide limiter covers both source buffering and validation, with no waiting queue.
+  Saturated requests receive 503 and `Retry-After: 1`; slots are released on success, error and
+  cancellation. Revocation I/O is awaited throughout the validation path, including timestamp
+  responder checks. The gateway has no existing per-session/client rate-limit policy; this limit
+  bounds concurrent work across all sessions. It is per process, not shared across replicas.
 - `Cache-Control: no-store` always, including on error responses, because a verdict is a statement
   about "now".
 
@@ -236,8 +243,14 @@ Revocation must cover every non-anchor chain element:
 
 1. **Offline CRL files** (`Signatures:CrlDirectory`, optional). DER/PEM CRLs must have a
    verified issuer signature and `thisUpdate <= validationTime <= nextUpdate`. A missing
-   `nextUpdate`, unsupported algorithm/critical extension, delta CRL or scoped/indirect CRL
-   cannot establish coverage. Supported CRL signatures are RSA PKCS#1 and ECDSA with SHA-256/384/512.
+   `nextUpdate`, unsupported algorithm/critical extension, delta CRL or indirect CRL
+   cannot establish coverage. Candidates are tried newest first, skipping verified CRLs whose
+   windows do not cover the validation time so an archived CRL can cover a verified timestamp.
+   Issuing distribution points (critical or non-critical) are accepted when they cover the
+   certificate: full scope, matching user/CA type, and, when named, a URI matching a certificate
+   distribution point. Partial reason coverage, attribute-certificate scope, relative/non-URI
+   names and malformed IDPs remain unsupported and cannot produce `valid`. Non-critical scope
+   restrictions are never ignored. Supported CRL signatures are RSA PKCS#1 and ECDSA with SHA-256/384/512.
    A listed serial with `revocationDate <= validationTime` means `invalid` / `revoked`.
 2. **Online** (default): if local CRLs cannot answer, fetch a complete CRL from the certificate's
    distribution points through the gateway's bounded transport and apply the same verifier.
@@ -302,7 +315,8 @@ helpers; no proxy logic is duplicated.
     "revocationMode": "Online",
     "revocationTimeoutSeconds": 15,
     "revocationHostAllowList": [],
-    "maxFileBytes": 0
+    "maxFileBytes": 0,
+    "maxConcurrentValidations": 2
   }
 }
 ```
@@ -318,6 +332,6 @@ a public repository.
 Security regression coverage lives in `SignatureSecurityTests` and `SignatureValidationServiceTests`.
 Network tests use an in-memory HTTP responder and generated CRLs; address classification and mixed
 DNS results are tested separately, with no outbound network. `scripts/verify-signature-regressions.py`
-temporarily breaks each F1–F7 guard, expects its selected xUnit test to fail, restores the source in
+temporarily breaks each F1–F7 and N1–N4 guard, expects its selected xUnit test to fail, restores the source in
 a `finally` block, and runs the complete signature tests against the restored source. Run it only
 in an isolated worktree without concurrent builds. Its logs stay under gitignored `TestResults/`.
