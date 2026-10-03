@@ -465,7 +465,7 @@ app.MapGet("/signatures/{sessionKey}/{fileIndex:int}", async (
 
     try
     {
-        var validation = signatureValidator.Validate(signatureSource.Bytes!, cancellationToken);
+        var validation = signatureValidator.Validate(signatureSource.Bytes!, cancellationToken, httpContext.Request.Host.Host);
         return Results.Json(validation, SignatureValidationJson.Options, statusCode: StatusCodes.Status200OK);
     }
     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

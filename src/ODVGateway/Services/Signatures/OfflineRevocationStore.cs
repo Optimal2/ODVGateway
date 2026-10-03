@@ -69,6 +69,18 @@ public sealed class OfflineRevocationStore
         return new CrlVerdict(CrlStatus.BadSignature, null, default, null, "no CRL of this issuer verified against its issuer certificate");
     }
 
+    internal static CrlVerdict CheckDer(byte[] der, X509Certificate2 certificate, X509Certificate2 issuer, DateTimeOffset at)
+    {
+        var crl = Parse(der);
+        if (crl is null || !crl.IssuerName.AsSpan().SequenceEqual(certificate.IssuerName.RawData) ||
+            !crl.TryVerify(issuer, out _))
+            return new(CrlStatus.BadSignature, null, default, null, null);
+        if (!crl.IsFresh(at)) return new(CrlStatus.StaleCrl, null, crl.ThisUpdate, crl.NextUpdate, null);
+        return crl.Entries.TryGetValue(GetSerial(certificate), out var revoked)
+            ? new(CrlStatus.Revoked, revoked, crl.ThisUpdate, crl.NextUpdate, null)
+            : new(CrlStatus.NotListed, null, crl.ThisUpdate, crl.NextUpdate, null);
+    }
+
     public sealed record CrlVerdict(CrlStatus Status, DateTimeOffset? RevocationDate, DateTimeOffset ThisUpdate,
         DateTimeOffset? NextUpdate, string? Reason);
 
@@ -214,10 +226,15 @@ public sealed class OfflineRevocationStore
     {
         try
         {
-            var outer = new AsnReader(der, AsnEncodingRules.DER).ReadSequence();
+            var encoded = new AsnReader(der, AsnEncodingRules.DER);
+            var outer = encoded.ReadSequence();
+            encoded.ThrowIfNotEmpty();
             var tbs = outer.ReadEncodedValue().ToArray();
-            var signatureAlgorithm = outer.ReadSequence().ReadObjectIdentifier();
-            var signatureValue = outer.ReadBitString(out _).ToArray();
+            var algorithmEncoding = outer.ReadEncodedValue();
+            var signatureAlgorithm = new AsnReader(algorithmEncoding, AsnEncodingRules.DER).ReadSequence().ReadObjectIdentifier();
+            var signatureValue = outer.ReadBitString(out var unusedBits).ToArray();
+            if (unusedBits != 0) return null;
+            outer.ThrowIfNotEmpty();
 
             var tbsReader = new AsnReader(tbs, AsnEncodingRules.DER).ReadSequence();
             if (tbsReader.PeekTag() == Asn1Tag.Integer)
@@ -226,7 +243,7 @@ public sealed class OfflineRevocationStore
             }
 
             // The TBSCertList repeats the signature algorithm inside the signed region.
-            _ = tbsReader.ReadSequence().ReadObjectIdentifier();
+            if (!tbsReader.ReadEncodedValue().Span.SequenceEqual(algorithmEncoding.Span)) return null;
             var issuerName = tbsReader.ReadEncodedValue().ToArray();
             var thisUpdate = ReadTime(tbsReader);
             DateTimeOffset? nextUpdate = null;
@@ -244,9 +261,18 @@ public sealed class OfflineRevocationStore
                     var entry = revokedCertificates.ReadSequence();
                     var serial = entry.ReadInteger();
                     entries[serial] = ReadTime(entry);
-                    // Skip per-entry extension EAs if the reader is positioned on them.
+                    if (entry.HasData && !SupportedExtensions(entry.ReadSequence(), isEntry: true)) return null;
+                    entry.ThrowIfNotEmpty();
                 }
             }
+
+            if (tbsReader.HasData)
+            {
+                var extensions = tbsReader.ReadSequence(new Asn1Tag(TagClass.ContextSpecific, 0, true));
+                if (!SupportedExtensions(extensions.ReadSequence(), isEntry: false)) return null;
+                extensions.ThrowIfNotEmpty();
+            }
+            tbsReader.ThrowIfNotEmpty();
 
             return new ParsedCrl(issuerName, thisUpdate, nextUpdate, entries, signatureAlgorithm, signatureValue, tbs);
         }
@@ -254,6 +280,23 @@ public sealed class OfflineRevocationStore
         {
             return null;
         }
+    }
+
+    private static bool SupportedExtensions(AsnReader extensions, bool isEntry)
+    {
+        while (extensions.HasData)
+        {
+            var extension = extensions.ReadSequence();
+            var oid = extension.ReadObjectIdentifier();
+            var critical = extension.PeekTag() == Asn1Tag.Boolean && extension.ReadBoolean();
+            _ = extension.ReadOctetString();
+            extension.ThrowIfNotEmpty();
+            // Delta/partitioned/indirect CRLs cannot establish complete issuer coverage. Unknown
+            // critical extensions likewise cannot be ignored, including certificateIssuer entries.
+            if (critical || (!isEntry && oid is "2.5.29.27" or "2.5.29.28") ||
+                (isEntry && oid == "2.5.29.29")) return false;
+        }
+        return true;
     }
 
     private static bool IsTimeTag(Asn1Tag tag) =>
@@ -309,7 +352,7 @@ public sealed class OfflineRevocationStore
         byte[] SignedRegion)
     {
         public bool IsFresh(DateTimeOffset at) =>
-            ThisUpdate <= at.UtcDateTime && (NextUpdate is null || NextUpdate.Value >= at.UtcDateTime);
+            ThisUpdate <= at.UtcDateTime && NextUpdate is not null && NextUpdate.Value >= at.UtcDateTime;
 
         /// <summary>
         /// Verifies the CRL signature with the issuer's public key. RSA and ECDSA issuers are
@@ -320,13 +363,12 @@ public sealed class OfflineRevocationStore
             reason = null;
             var hash = SignatureAlgorithm switch
             {
-                "1.2.840.113549.1.1.11" or "1.2.840.113549.1.1.10" or "1.2.840.113549.1.1.14" => HashAlgorithmName.SHA256,
+                "1.2.840.113549.1.1.11" => HashAlgorithmName.SHA256,
                 "1.2.840.113549.1.1.12" => HashAlgorithmName.SHA384,
                 "1.2.840.113549.1.1.13" => HashAlgorithmName.SHA512,
-                "1.2.840.101.3.4.3.2" => HashAlgorithmName.SHA256,
-                "1.2.840.101.3.4.3.3" => HashAlgorithmName.SHA384,
-                "1.2.840.101.3.4.3.4" => HashAlgorithmName.SHA512,
-                "1.2.840.113549.1.1.5" => HashAlgorithmName.SHA1,
+                "1.2.840.10045.4.3.2" => HashAlgorithmName.SHA256,
+                "1.2.840.10045.4.3.3" => HashAlgorithmName.SHA384,
+                "1.2.840.10045.4.3.4" => HashAlgorithmName.SHA512,
                 _ => default
             };
 
@@ -336,13 +378,11 @@ public sealed class OfflineRevocationStore
                 return false;
             }
 
-            var rsa = issuer.GetRSAPublicKey();
+            using var rsa = issuer.GetRSAPublicKey();
             if (rsa is not null)
             {
-                var padding = SignatureAlgorithm == "1.2.840.113549.1.1.10"
-                    ? RSASignaturePadding.Pss
-                    : RSASignaturePadding.Pkcs1;
-                if (rsa.VerifyData(SignedRegion, SignatureValue, hash, padding))
+                if (SignatureAlgorithm.StartsWith("1.2.840.113549.1.1.", StringComparison.Ordinal) &&
+                    rsa.KeySize >= 2048 && rsa.VerifyData(SignedRegion, SignatureValue, hash, RSASignaturePadding.Pkcs1))
                 {
                     return true;
                 }
@@ -351,10 +391,11 @@ public sealed class OfflineRevocationStore
                 return false;
             }
 
-            var ecdsa = issuer.GetECDsaPublicKey();
+            using var ecdsa = issuer.GetECDsaPublicKey();
             if (ecdsa is not null)
             {
-                if (ecdsa.VerifyData(SignedRegion, SignatureValue, hash))
+                if (SignatureAlgorithm.StartsWith("1.2.840.10045.4.3.", StringComparison.Ordinal) &&
+                    ecdsa.VerifyData(SignedRegion, SignatureValue, hash, DSASignatureFormat.Rfc3279DerSequence))
                 {
                     return true;
                 }

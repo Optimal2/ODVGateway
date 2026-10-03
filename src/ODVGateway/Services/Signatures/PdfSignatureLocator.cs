@@ -13,6 +13,18 @@ namespace ODVGateway.Services.Signatures;
 public sealed class PdfSignatureLocator
 {
     private const int MaxDepth = 32;
+    private const int MaxVisits = 10000;
+    private CancellationToken cancellationToken;
+    private byte[] fileBytes = [];
+    private int visits;
+    private readonly Dictionary<string, IToken?> objects = new(StringComparer.Ordinal);
+
+    private void CheckBudget()
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (++visits > MaxVisits)
+            throw new PdfSignatureFormatException("The PDF object traversal limit was exceeded.");
+    }
 
     /// <summary>
     /// One signature dictionary as stored in the document, before any cryptographic work.
@@ -27,15 +39,23 @@ public sealed class PdfSignatureLocator
         string? Transform,
         long[] ByteRange,
         byte[] Contents,
-        bool IsCertification);
+        bool IsCertification,
+        long ContentsStart = -1,
+        long ContentsEnd = -1);
 
     /// <summary>
     /// Collects every signature dictionary reachable from the document, de-duplicated by object
     /// reference so a field listed both in the AcroForm and in a page annotation is reported once.
     /// </summary>
-    public IReadOnlyList<SignatureDictionary> Locate(byte[] fileBytes)
+    public IReadOnlyList<SignatureDictionary> Locate(byte[] fileBytes, CancellationToken cancellationToken = default) =>
+        new PdfSignatureLocator { fileBytes = fileBytes, cancellationToken = cancellationToken }.LocateCore();
+
+    private IReadOnlyList<SignatureDictionary> LocateCore()
     {
-        using var document = OpenDocument(fileBytes);
+        CheckBudget();
+        using var stream = new CancellablePdfStream(fileBytes, cancellationToken);
+        using var document = OpenDocument(stream);
+        CheckBudget();
         var catalog = document.Structure.Catalog.CatalogDictionary;
         var certificationReferences = ReadCertificationReferences(document, catalog);
 
@@ -70,13 +90,16 @@ public sealed class PdfSignatureLocator
     /// Opens the document with lenient parsing (real-world signed PDFs frequently carry slightly
     /// off-by-one xref entries) but refuses encrypted documents: the gateway has no password.
     /// </summary>
-    public static PdfDocument OpenDocument(byte[] fileBytes)
+    public static PdfDocument OpenDocument(byte[] fileBytes) => OpenDocument(new MemoryStream(fileBytes, false));
+
+    private static PdfDocument OpenDocument(Stream stream)
     {
-        var document = PdfDocument.Open(fileBytes, new ParsingOptions
+        var document = PdfDocument.Open(stream, new ParsingOptions
         {
             UseLenientParsing = true,
             SkipMissingFonts = true,
-            ClipPaths = false
+            ClipPaths = false,
+            MaxStackDepth = MaxDepth
         });
         if (document.IsEncrypted)
         {
@@ -87,7 +110,7 @@ public sealed class PdfSignatureLocator
         return document;
     }
 
-    private static HashSet<string> ReadCertificationReferences(PdfDocument document, DictionaryToken catalog)
+    private HashSet<string> ReadCertificationReferences(PdfDocument document, DictionaryToken catalog)
     {
         var references = new HashSet<string>(StringComparer.Ordinal);
         if (!catalog.TryGet(NameToken.Create("Perms"), out var permsToken))
@@ -114,17 +137,29 @@ public sealed class PdfSignatureLocator
         return references;
     }
 
-    private static IEnumerable<DictionaryToken> EnumerateFieldDictionaries(PdfDocument document, DictionaryToken acroForm)
+    private IEnumerable<DictionaryToken> EnumerateFieldDictionaries(PdfDocument document, DictionaryToken acroForm)
     {
         if (!acroForm.TryGet(NameToken.Create("Fields"), out var fieldsToken))
         {
-            return Array.Empty<DictionaryToken>();
+            yield break;
         }
-
-        return EnumerateDictionaries(document, fieldsToken);
+        var visited = new HashSet<DictionaryToken>(ReferenceEqualityComparer.Instance);
+        var queue = new Queue<(DictionaryToken Field, int Depth)>();
+        foreach (var field in EnumerateDictionaries(document, fieldsToken))
+            if (visited.Add(field)) queue.Enqueue((field, 0));
+        while (queue.Count > 0)
+        {
+            CheckBudget();
+            var (field, depth) = queue.Dequeue();
+            if (depth > MaxDepth) throw new PdfSignatureFormatException("The PDF field tree is too deep.");
+            yield return field;
+            if (!field.TryGet(NameToken.Create("Kids"), out var kids)) continue;
+            foreach (var child in EnumerateDictionaries(document, kids))
+                if (visited.Add(child)) queue.Enqueue((child, depth + 1));
+        }
     }
 
-    private static IEnumerable<DictionaryToken> EnumeratePageDictionaries(PdfDocument document, DictionaryToken catalog)
+    private IEnumerable<DictionaryToken> EnumeratePageDictionaries(PdfDocument document, DictionaryToken catalog)
     {
         var pagesRoot = catalog.TryGet(NameToken.Create("Pages"), out var pagesToken)
             ? Resolve<DictionaryToken>(document, pagesToken)
@@ -136,11 +171,14 @@ public sealed class PdfSignatureLocator
 
         var result = new List<DictionaryToken>();
         var queue = new Queue<(DictionaryToken Node, int Depth)>();
+        var visited = new HashSet<DictionaryToken>(ReferenceEqualityComparer.Instance) { pagesRoot };
         queue.Enqueue((pagesRoot, 0));
         while (queue.Count > 0)
         {
+            CheckBudget();
             var (node, depth) = queue.Dequeue();
-            if (depth > MaxDepth || !node.TryGet(NameToken.Create("Kids"), out var kidsToken))
+            if (depth > MaxDepth) throw new PdfSignatureFormatException("The PDF page tree is too deep.");
+            if (!node.TryGet(NameToken.Create("Kids"), out var kidsToken))
             {
                 if (string.Equals(TypeName(node, "Type"), "Page", StringComparison.Ordinal))
                 {
@@ -152,6 +190,7 @@ public sealed class PdfSignatureLocator
 
             foreach (var kid in EnumerateDictionaries(document, kidsToken))
             {
+                if (!visited.Add(kid)) continue;
                 if (string.Equals(TypeName(kid, "Type"), "Page", StringComparison.Ordinal))
                 {
                     result.Add(kid);
@@ -166,7 +205,7 @@ public sealed class PdfSignatureLocator
         return result;
     }
 
-    private static IEnumerable<DictionaryToken> EnumerateDictionaries(PdfDocument document, IToken? token)
+    private IEnumerable<DictionaryToken> EnumerateDictionaries(PdfDocument document, IToken? token)
     {
         var array = Resolve<ArrayToken>(document, token);
         if (array is null)
@@ -176,6 +215,7 @@ public sealed class PdfSignatureLocator
 
         foreach (var entry in array.Data)
         {
+            CheckBudget();
             var dictionary = Resolve<DictionaryToken>(document, entry);
             if (dictionary is not null)
             {
@@ -184,7 +224,7 @@ public sealed class PdfSignatureLocator
         }
     }
 
-    private static void TryAddSignature(
+    private void TryAddSignature(
         PdfDocument document,
         DictionaryToken field,
         List<SignatureDictionary> found,
@@ -199,6 +239,7 @@ public sealed class PdfSignatureLocator
             return;
         }
 
+        CheckBudget();
         var signature = Resolve<DictionaryToken>(document, valueToken);
         if (signature is null)
         {
@@ -222,6 +263,10 @@ public sealed class PdfSignatureLocator
             return;
         }
 
+        var physicalObject = valueToken is IndirectReferenceToken physicalReference
+            ? document.Structure.GetObject(physicalReference.Data) : null;
+        var byteRange = ReadByteRange(document, signature);
+        var span = SignatureContentsSpan.Find(fileBytes, physicalObject, byteRange, cancellationToken);
         found.Add(new SignatureDictionary(
             resolvedName,
             ReadInheritedName(document, field, "SubFilter") ?? ReadName(signature, "SubFilter"),
@@ -230,16 +275,17 @@ public sealed class PdfSignatureLocator
             ReadText(document, signature, "Location"),
             ReadText(document, signature, "M"),
             ReadName(signature, "Transform"),
-            ReadByteRange(document, signature),
+            byteRange,
             ReadContents(document, signature),
-            valueToken is IndirectReferenceToken indirect && certificationReferences.Contains(ReferenceKey(indirect))));
+            valueToken is IndirectReferenceToken indirect && certificationReferences.Contains(ReferenceKey(indirect)),
+            span.Start, span.End));
     }
 
-    private static string ReferenceKey(IndirectReferenceToken token) =>
+    private string ReferenceKey(IndirectReferenceToken token) =>
         token.Data.ObjectNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)
         + ":" + token.Data.Generation.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-    private static long[] ReadByteRange(PdfDocument document, DictionaryToken signature)
+    private long[] ReadByteRange(PdfDocument document, DictionaryToken signature)
     {
         if (!signature.TryGet(NameToken.Create("ByteRange"), out var token))
         {
@@ -247,7 +293,7 @@ public sealed class PdfSignatureLocator
         }
 
         var array = Resolve<ArrayToken>(document, token);
-        if (array is null)
+        if (array is null || array.Data.Count != 4)
         {
             return Array.Empty<long>();
         }
@@ -255,8 +301,10 @@ public sealed class PdfSignatureLocator
         var values = new List<long>(array.Data.Count);
         foreach (var entry in array.Data)
         {
+            CheckBudget();
             var numeric = Resolve<NumericToken>(document, entry);
-            if (numeric is null)
+            if (numeric is null || numeric.Data != Math.Truncate(numeric.Data) ||
+                numeric.Data < 0 || numeric.Data > fileBytes.LongLength)
             {
                 return Array.Empty<long>();
             }
@@ -267,7 +315,7 @@ public sealed class PdfSignatureLocator
         return values.ToArray();
     }
 
-    private static byte[] ReadContents(PdfDocument document, DictionaryToken signature)
+    private byte[] ReadContents(PdfDocument document, DictionaryToken signature)
     {
         if (!signature.TryGet(NameToken.Create("Contents"), out var token))
         {
@@ -285,7 +333,7 @@ public sealed class PdfSignatureLocator
         }
     }
 
-    private static string? ReadInheritedName(PdfDocument document, DictionaryToken field, string name)
+    private string? ReadInheritedName(PdfDocument document, DictionaryToken field, string name)
     {
         var current = field;
         for (var depth = 0; current is not null && depth < MaxDepth; depth++)
@@ -307,7 +355,7 @@ public sealed class PdfSignatureLocator
         return null;
     }
 
-    private static string? ReadFullyQualifiedName(PdfDocument document, DictionaryToken field)
+    private string? ReadFullyQualifiedName(PdfDocument document, DictionaryToken field)
     {
         var parts = new List<string>();
         var current = field;
@@ -330,14 +378,14 @@ public sealed class PdfSignatureLocator
         return parts.Count == 0 ? null : string.Join(".", parts);
     }
 
-    private static string? ReadName(DictionaryToken dictionary, string name) =>
+    private string? ReadName(DictionaryToken dictionary, string name) =>
         dictionary.TryGet(NameToken.Create(name), out var token) && token is NameToken nameToken
             ? nameToken.Data
             : null;
 
-    private static string? TypeName(DictionaryToken dictionary, string name) => ReadName(dictionary, name);
+    private string? TypeName(DictionaryToken dictionary, string name) => ReadName(dictionary, name);
 
-    private static string? ReadText(PdfDocument document, DictionaryToken dictionary, string name)
+    private string? ReadText(PdfDocument document, DictionaryToken dictionary, string name)
     {
         if (!dictionary.TryGet(NameToken.Create(name), out var token))
         {
@@ -357,7 +405,7 @@ public sealed class PdfSignatureLocator
     /// PdfPig hands out <see cref="ObjectToken"/> wrappers for objects stored in object streams and
     /// <see cref="IndirectReferenceToken"/> for classical references; both have to be peeled off.
     /// </summary>
-    private static bool TryGetDictionary(
+    private bool TryGetDictionary(
         PdfDocument document,
         DictionaryToken dictionary,
         string name,
@@ -379,11 +427,13 @@ public sealed class PdfSignatureLocator
         return true;
     }
 
-    private static T? Resolve<T>(PdfDocument document, IToken? token) where T : class, IToken
+    private T? Resolve<T>(PdfDocument document, IToken? token) where T : class, IToken
     {
         var current = token;
+        var references = new HashSet<string>(StringComparer.Ordinal);
         for (var depth = 0; depth < MaxDepth; depth++)
         {
+            CheckBudget();
             switch (current)
             {
                 case null:
@@ -394,7 +444,13 @@ public sealed class PdfSignatureLocator
                     current = objectToken.Data;
                     continue;
                 case IndirectReferenceToken referenceToken:
-                    current = document.Structure.GetObject(referenceToken.Data);
+                    if (!references.Add(ReferenceKey(referenceToken))) return null;
+                    var key = ReferenceKey(referenceToken);
+                    if (!objects.TryGetValue(key, out current))
+                    {
+                        current = document.Structure.GetObject(referenceToken.Data);
+                        objects.Add(key, current);
+                    }
                     continue;
                 default:
                     return null;

@@ -39,7 +39,8 @@ public sealed class PdfSignatureValidationService
     /// when the document is encrypted and <see cref="PdfSignatureFormatException"/> when its object
     /// structure cannot be read; the endpoint reports both as 422.
     /// </summary>
-    public PdfSignatureValidationResponse Validate(byte[] fileBytes, CancellationToken cancellationToken)
+    public PdfSignatureValidationResponse Validate(byte[] fileBytes, CancellationToken cancellationToken,
+        string? gatewayHost = null)
     {
         var validatedAt = DateTimeOffset.UtcNow;
         if (!HasPdfHeader(fileBytes))
@@ -53,7 +54,7 @@ public sealed class PdfSignatureValidationService
         IReadOnlyList<PdfSignatureLocator.SignatureDictionary> signatures;
         try
         {
-            signatures = locator.Locate(fileBytes);
+            signatures = locator.Locate(fileBytes, token);
         }
         catch (PdfEncryptedException)
         {
@@ -73,9 +74,33 @@ public sealed class PdfSignatureValidationService
         }
 
         var results = new List<PdfSignatureValidation>(signatures.Count);
+        using var transport = new RevocationHttpClient(options, gatewayHost: gatewayHost);
         foreach (var signature in signatures)
         {
-            results.Add(ValidateOne(fileBytes, signature, validatedAt, token));
+            results.Add(ValidateOne(fileBytes, signature, validatedAt, token, transport));
+        }
+
+        long coveredRevisionPrefix = -1;
+        for (var i = 0; i < results.Count; i++)
+        {
+            if (results[i].Integrity == PdfSignatureIntegrity.Intact && results[i].CoversWholeFile == true &&
+                signatures[i].ByteRange[0] == 0)
+                coveredRevisionPrefix = Math.Max(coveredRevisionPrefix, signatures[i].ByteRange[1]);
+        }
+        for (var i = 0; i < results.Count; i++)
+        {
+            var result = results[i];
+            if (result.Kind != PdfSignatureKind.Approval || result.Integrity != PdfSignatureIntegrity.Intact ||
+                result.CoversWholeFile != false) continue;
+            var earlierEnd = signatures[i].ByteRange[2] + signatures[i].ByteRange[3];
+            if (coveredRevisionPrefix < earlierEnd)
+                results[i] = result with
+                {
+                    Integrity = PdfSignatureIntegrity.ModifiedAfterSigning,
+                    IntegrityReason = SignatureValidationReasons.BytesAppendedAfterSignedRange,
+                    Trust = PdfSignatureTrust.Unknown,
+                    TrustReason = SignatureValidationReasons.BytesAppendedAfterSignedRange
+                };
         }
 
         logger.LogInformation(
@@ -89,7 +114,7 @@ public sealed class PdfSignatureValidationService
         byte[] fileBytes,
         PdfSignatureLocator.SignatureDictionary signature,
         DateTimeOffset validatedAt,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, RevocationHttpClient transport)
     {
         PdfSignatureIntegrity integrity;
         string? integrityReason;
@@ -98,7 +123,7 @@ public sealed class PdfSignatureValidationService
 
         try
         {
-            var outcome = verifier.Verify(fileBytes, signature);
+            var outcome = verifier.Verify(fileBytes, signature, cancellationToken);
             integrity = outcome.Integrity;
             integrityReason = outcome.Reason;
             coversWholeFile = outcome.CoversWholeFile;
@@ -141,7 +166,7 @@ public sealed class PdfSignatureValidationService
             }
 
             var outcome = EvaluateTrust(signature, cms, integrity, integrityReason, coversWholeFile, validatedAt,
-                cancellationToken);
+                cancellationToken, transport);
             if (integrity == PdfSignatureIntegrity.ModifiedAfterSigning)
             {
                 // A certification signature promises the document will not change afterwards. It did
@@ -170,11 +195,11 @@ public sealed class PdfSignatureValidationService
         string? integrityReason,
         bool? coversWholeFile,
         DateTimeOffset validatedAt,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, RevocationHttpClient transport)
     {
         try
         {
-            var trust = trustEvaluator.Evaluate(cms, validatedAt, cancellationToken);
+            var trust = trustEvaluator.Evaluate(cms, validatedAt, cancellationToken, transport);
             var signingTime = ReadSigningTime(signature, cms, trust);
             return Project(signature, ReadSignerCertificate(cms),
                 integrity, integrityReason, coversWholeFile, trust.Trust, trust.Reason, validatedAt,

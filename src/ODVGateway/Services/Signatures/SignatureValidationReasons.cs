@@ -29,6 +29,7 @@ public static class SignatureValidationReasons
     public const string ModifiedAfterCertification = "modified-after-certification";
     public const string TimestampNotVerifiable = "timestamp-not-verifiable";
     public const string TimestampResponderNotAnchored = "timestamp-responder-not-anchored";
+    public const string TimestampResponderNotTrusted = "timestamp-responder-not-trusted";
     public const string KeyUsageNotSigning = "key-usage-not-signing";
     public const string ValidationError = "validation-error";
     public const string ValidationTimeout = "validation-timeout";

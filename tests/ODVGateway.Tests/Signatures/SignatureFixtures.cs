@@ -136,6 +136,13 @@ public sealed class SignatureFixtures : IDisposable
         var file = BuildSkeleton(request.Certification, !request.WithoutModificationDate, out var contentsStart,
             out var contentsEnd, out var byteRangePosition);
 
+        if (request.OversizedGap)
+        {
+            var note = Encoding.ASCII.GetBytes(" /Note (" + new string('A', 64) + ")");
+            file = [.. file.AsSpan(0, contentsEnd), .. note, .. file.AsSpan(contentsEnd)];
+            contentsEnd += note.Length;
+        }
+
         // The byte range is patched before hashing: it is part of the signed bytes.
         var ranges = new long[] { 0, contentsStart, contentsEnd, file.LongLength - contentsEnd };
         PatchByteRange(file, byteRangePosition, ranges);
@@ -190,6 +197,11 @@ public sealed class SignatureFixtures : IDisposable
 
         WriteContents(file, contentsStart, cms.Encode());
 
+        if (request.OversizedGap && request.ChangeUnsignedNote)
+        {
+            file[contentsEnd - 2] = (byte)'B';
+        }
+
         if (request.Damage == PdfDamage.ChangeSignedByte)
         {
             // Edit the document after signing, inside the first covered range: the CMS blob still
@@ -217,6 +229,43 @@ public sealed class SignatureFixtures : IDisposable
         return path;
     }
 
+    /// <summary>Adds a second signed revision, optionally editing a covered field name afterwards.</summary>
+    public byte[] AppendApprovalSignature(byte[] original, bool damage)
+    {
+        var originalText = Encoding.ASCII.GetString(original);
+        var previousXref = long.Parse(originalText.Split("startxref\n")[^1].Split('\n')[0],
+            System.Globalization.CultureInfo.InvariantCulture);
+        var placeholder = string.Join(" ", Enumerable.Repeat(new string('0', ByteRangeDigits), 4));
+        using var stream = new MemoryStream();
+        stream.Write(original);
+        var catalog = stream.Position;
+        stream.Write("1 0 obj\n<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [4 0 R 6 0 R] >> >>\nendobj\n"u8);
+        var field = stream.Position;
+        stream.Write("6 0 obj\n<< /FT /Sig /T (Signature2) /V 7 0 R >>\nendobj\n"u8);
+        var signatureOffset = stream.Position;
+        stream.Write(Encoding.ASCII.GetBytes("7 0 obj\n<< /Type /Sig /SubFilter /adbe.pkcs7.detached " +
+            $"/ByteRange [{placeholder}] /Contents <{new string('0', ContentsHexChars)}> >>\nendobj\n"));
+        var xref = stream.Position;
+        stream.Write(Encoding.ASCII.GetBytes($"xref\n1 1\n{catalog:D10} 00000 n \n6 2\n{field:D10} 00000 n \n" +
+            $"{signatureOffset:D10} 00000 n \ntrailer\n<< /Size 8 /Root 1 0 R /Prev {previousXref} >>\nstartxref\n{xref}\n%%EOF\n"));
+        var bytes = stream.ToArray();
+        var text = Encoding.ASCII.GetString(bytes);
+        var rangePosition = text.IndexOf("/ByteRange [", (int)signatureOffset, StringComparison.Ordinal) + 12;
+        var start = text.IndexOf("/Contents <", (int)signatureOffset, StringComparison.Ordinal) + 10;
+        var end = start + ContentsHexChars + 2;
+        PatchByteRange(bytes, rangePosition, [0, start, end, bytes.Length - end]);
+        var content = bytes.AsSpan(0, start).ToArray().Concat(bytes.AsSpan(end).ToArray()).ToArray();
+        var cms = new SignedCms(new ContentInfo(content), detached: true);
+        var signer = new CmsSigner(SubjectIdentifierType.IssuerAndSerialNumber, Leaf, _leafKey)
+        { IncludeOption = X509IncludeOption.EndCertOnly, DigestAlgorithm = new Oid(Sha256Oid) };
+        signer.Certificates.Add(Root);
+        signer.SignedAttributes.Add(new Pkcs9SigningTime(Now.UtcDateTime));
+        cms.ComputeSignature(signer);
+        WriteContents(bytes, start, cms.Encode());
+        if (damage) bytes[text.IndexOf("Signature2", (int)field, StringComparison.Ordinal)] = (byte)'X';
+        return bytes;
+    }
+
     /// <summary>A PDF that parses but carries no signature dictionary.</summary>
     public string CreateUnsignedPdf(string fileName = "unsigned.pdf")
     {
@@ -240,11 +289,12 @@ public sealed class SignatureFixtures : IDisposable
     }
 
     /// <summary>Issues an extra leaf (its own key) so a test can use a different validity window.</summary>
-    public IssuedCertificate CreateCertificate(string subject, DateTimeOffset notBefore, DateTimeOffset notAfter)
+    public IssuedCertificate CreateCertificate(string subject, DateTimeOffset notBefore, DateTimeOffset notAfter,
+        string? crlUri = null)
     {
         var key = RSA.Create(2048);
         _extraKeys.Add(key);
-        return new IssuedCertificate(IssueLeaf(subject, notBefore, notAfter, key), key);
+        return new IssuedCertificate(IssueLeaf(subject, notBefore, notAfter, key, crlUri), key);
     }
 
     private void AttachTimestamp(SignedCms cms, byte[] signatureValue, DateTimeOffset generationTime) =>
@@ -389,7 +439,8 @@ public sealed class SignatureFixtures : IDisposable
     private X509Certificate2 IssueLeaf(string subject, DateTimeOffset notBefore, DateTimeOffset notAfter) =>
         IssueLeaf(subject, notBefore, notAfter, _leafKey);
 
-    private X509Certificate2 IssueLeaf(string subject, DateTimeOffset notBefore, DateTimeOffset notAfter, RSA key)
+    private X509Certificate2 IssueLeaf(string subject, DateTimeOffset notBefore, DateTimeOffset notAfter, RSA key,
+        string? crlUri = null)
     {
         var request = new CertificateRequest(subject, key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
@@ -398,6 +449,15 @@ public sealed class SignatureFixtures : IDisposable
         request.CertificateExtensions.Add(
             new X509EnhancedKeyUsageExtension([new Oid(DocumentSigningOid)], critical: false));
         request.CertificateExtensions.Add(new X509SubjectKeyIdentifierExtension(request.PublicKey, false));
+        if (crlUri is not null)
+        {
+            var point = new AsnWriter(AsnEncodingRules.DER);
+            var tagged = new Asn1Tag(TagClass.ContextSpecific, 0, true);
+            point.PushSequence(); point.PushSequence(); point.PushSequence(tagged); point.PushSequence(tagged);
+            point.WriteCharacterString(UniversalTagNumber.IA5String, crlUri, new Asn1Tag(TagClass.ContextSpecific, 6));
+            point.PopSequence(tagged); point.PopSequence(tagged); point.PopSequence(); point.PopSequence();
+            request.CertificateExtensions.Add(new X509Extension("2.5.29.31", point.Encode(), false));
+        }
         using var issued = request.Create(
             Root.SubjectName,
             X509SignatureGenerator.CreateForRSA(_rootKey, RSASignaturePadding.Pkcs1),
@@ -499,6 +559,10 @@ public sealed class SignatureFixtures : IDisposable
         public int AppendBytesAfterSigning { get; init; }
 
         public PdfDamage Damage { get; init; }
+
+        public bool OversizedGap { get; init; }
+
+        public bool ChangeUnsignedNote { get; init; }
 
         public string? FileName { get; init; }
     }

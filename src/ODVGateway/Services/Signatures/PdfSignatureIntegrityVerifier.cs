@@ -43,8 +43,10 @@ public sealed class PdfSignatureIntegrityVerifier
     /// Verifies <paramref name="signature"/> against <paramref name="fileBytes"/>. Never throws for
     /// a malformed signature: every problem is reported as a verdict.
     /// </summary>
-    public IntegrityOutcome Verify(byte[] fileBytes, PdfSignatureLocator.SignatureDictionary signature)
+    public IntegrityOutcome Verify(byte[] fileBytes, PdfSignatureLocator.SignatureDictionary signature,
+        CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (signature.SubFilter is null ||
             !SupportedSubFilters.Any(known => string.Equals(known, signature.SubFilter, StringComparison.OrdinalIgnoreCase)))
         {
@@ -56,9 +58,9 @@ public sealed class PdfSignatureIntegrityVerifier
             return Failure(PdfSignatureIntegrity.Unreadable, SignatureValidationReasons.ByteRangeMissing);
         }
 
-        if (signature.ByteRange.Length % 2 != 0)
+        if (signature.ByteRange.Length != 4)
         {
-            return Failure(PdfSignatureIntegrity.Unsupported, SignatureValidationReasons.ByteRangeMalformed);
+            return Failure(PdfSignatureIntegrity.Unreadable, SignatureValidationReasons.ByteRangeMalformed);
         }
 
         if (signature.Contents.Length == 0)
@@ -66,9 +68,9 @@ public sealed class PdfSignatureIntegrityVerifier
             return Failure(PdfSignatureIntegrity.Unreadable, SignatureValidationReasons.ContentsMissing);
         }
 
-        if (!TryValidateRanges(signature.ByteRange, fileBytes.LongLength, out var coversWholeFile, out var tail))
+        if (!TryValidateRanges(signature, fileBytes.LongLength, out var coversWholeFile, out var tail))
         {
-            return Failure(PdfSignatureIntegrity.Unsupported, SignatureValidationReasons.ByteRangeMalformed, coversWholeFile, tail);
+            return Failure(PdfSignatureIntegrity.Unreadable, SignatureValidationReasons.ByteRangeMalformed, coversWholeFile, tail);
         }
 
         var cmsBytes = TrimDerPadding(signature.Contents);
@@ -77,7 +79,7 @@ public sealed class PdfSignatureIntegrityVerifier
             return Failure(PdfSignatureIntegrity.Unreadable, SignatureValidationReasons.ContentsMissing, coversWholeFile, tail);
         }
 
-        var covered = ReadCoveredBytes(fileBytes, signature.ByteRange);
+        var covered = ReadCoveredBytes(fileBytes, signature.ByteRange, cancellationToken);
         SignedCms cms;
         try
         {
@@ -85,6 +87,7 @@ public sealed class PdfSignatureIntegrityVerifier
             // carries no content, and SignedCms.ContentInfo is read-only after construction.
             cms = new SignedCms(new ContentInfo(covered), true);
             cms.Decode(cmsBytes);
+            cancellationToken.ThrowIfCancellationRequested();
         }
         catch (Exception exception) when (IsReadFailure(exception))
         {
@@ -99,7 +102,7 @@ public sealed class PdfSignatureIntegrityVerifier
         // The byte-range digest is compared here instead of through CheckHash(): the framework
         // raises the same (localizable) exception text for a digest mismatch and for a signature
         // that does not verify, and those two verdicts mean different things to the reader.
-        var digestResult = CompareMessageDigest(cms, covered);
+        var digestResult = CompareMessageDigest(cms, covered, cancellationToken);
         if (digestResult != DigestResult.Matches)
         {
             // The CMS blob is still returned for a mismatch: an edited document should not lose the
@@ -118,6 +121,7 @@ public sealed class PdfSignatureIntegrityVerifier
         try
         {
             cms.CheckSignature(verifySignatureOnly: true);
+            cancellationToken.ThrowIfCancellationRequested();
         }
         catch (Exception exception) when (IsReadFailure(exception))
         {
@@ -137,20 +141,26 @@ public sealed class PdfSignatureIntegrityVerifier
     }
 
     /// <summary>
-    /// Byte ranges must come in pairs, stay inside the file, be in increasing order, and not cover
-    /// the whole file (the /Contents placeholder always sits outside them).
+    /// Exactly two ranges cover the prefix and suffix around this dictionary's physical Contents
+    /// hex string. Arithmetic is bounded before addition so malicious lengths cannot overflow.
     /// </summary>
-    private static bool TryValidateRanges(long[] byteRange, long fileLength, out bool coversWholeFile, out long uncoveredTail)
+    private static bool TryValidateRanges(PdfSignatureLocator.SignatureDictionary signature, long fileLength,
+        out bool coversWholeFile, out long uncoveredTail)
     {
+        var byteRange = signature.ByteRange;
         coversWholeFile = false;
         uncoveredTail = 0;
+        if (byteRange.Length != 4 || byteRange[0] != 0 || signature.ContentsStart < 0 ||
+            signature.ContentsEnd <= signature.ContentsStart || byteRange[1] != signature.ContentsStart ||
+            byteRange[2] != signature.ContentsEnd)
+            return false;
         long coveredTotal = 0;
 
         for (var i = 0; i + 1 < byteRange.Length; i += 2)
         {
             var offset = byteRange[i];
             var length = byteRange[i + 1];
-            if (offset < 0 || length < 0 || offset + length > fileLength)
+            if (offset < 0 || length < 0 || offset > fileLength || length > fileLength - offset)
             {
                 return false;
             }
@@ -176,7 +186,7 @@ public sealed class PdfSignatureIntegrityVerifier
     /// <summary>
     /// Concatenates the covered ranges in order, exactly as the signer hashed them.
     /// </summary>
-    private static byte[] ReadCoveredBytes(byte[] fileBytes, long[] byteRange)
+    private static byte[] ReadCoveredBytes(byte[] fileBytes, long[] byteRange, CancellationToken cancellationToken)
     {
         long total = 0;
         for (var i = 0; i + 1 < byteRange.Length; i += 2)
@@ -189,7 +199,13 @@ public sealed class PdfSignatureIntegrityVerifier
         for (var i = 0; i + 1 < byteRange.Length; i += 2)
         {
             var length = (int)byteRange[i + 1];
-            Buffer.BlockCopy(fileBytes, (int)byteRange[i], covered, target, length);
+            for (var copied = 0; copied < length;)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var count = Math.Min(65536, length - copied);
+                Buffer.BlockCopy(fileBytes, (int)byteRange[i] + copied, covered, target + copied, count);
+                copied += count;
+            }
             target += length;
         }
 
@@ -232,10 +248,10 @@ public sealed class PdfSignatureIntegrityVerifier
         AlgorithmUnsupported
     }
 
-    private static DigestResult CompareMessageDigest(SignedCms cms, byte[] covered)
+    private static DigestResult CompareMessageDigest(SignedCms cms, byte[] covered, CancellationToken cancellationToken)
     {
         var signer = cms.SignerInfos[0];
-        if (!TryHash(signer.DigestAlgorithm.Value, covered, out var computed))
+        if (!TryHash(signer.DigestAlgorithm.Value, covered, out var computed, cancellationToken))
         {
             return DigestResult.AlgorithmUnsupported;
         }
@@ -258,29 +274,27 @@ public sealed class PdfSignatureIntegrityVerifier
     /// Hashes with the algorithm named by the CMS. MD5 and SHA-1 are still computed: their weakness
     /// is a trust decision, not a reading problem. Unknown or unavailable OIDs report false.
     /// </summary>
-    internal static bool TryHash(string? digestOid, byte[] data, out byte[] hash)
+    internal static bool TryHash(string? digestOid, byte[] data, out byte[] hash, CancellationToken cancellationToken = default)
     {
-        switch (digestOid)
+        var algorithm = digestOid switch
         {
-            case "1.2.840.113549.1.1.2":
-                hash = MD5.HashData(data);
-                return true;
-            case "1.3.14.3.2.26":
-                hash = SHA1.HashData(data);
-                return true;
-            case "2.16.840.1.101.3.4.2.1":
-                hash = SHA256.HashData(data);
-                return true;
-            case "2.16.840.1.101.3.4.2.2":
-                hash = SHA384.HashData(data);
-                return true;
-            case "2.16.840.1.101.3.4.2.3":
-                hash = SHA512.HashData(data);
-                return true;
-            default:
-                hash = Array.Empty<byte>();
-                return false;
+            "1.2.840.113549.1.1.2" => HashAlgorithmName.MD5,
+            "1.3.14.3.2.26" => HashAlgorithmName.SHA1,
+            "2.16.840.1.101.3.4.2.1" => HashAlgorithmName.SHA256,
+            "2.16.840.1.101.3.4.2.2" => HashAlgorithmName.SHA384,
+            "2.16.840.1.101.3.4.2.3" => HashAlgorithmName.SHA512,
+            _ => default
+        };
+        hash = [];
+        if (algorithm == default) return false;
+        using var hasher = IncrementalHash.CreateHash(algorithm);
+        for (var offset = 0; offset < data.Length; offset += 65536)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            hasher.AppendData(data, offset, Math.Min(65536, data.Length - offset));
         }
+        hash = hasher.GetHashAndReset();
+        return true;
     }
 
     /// <summary>

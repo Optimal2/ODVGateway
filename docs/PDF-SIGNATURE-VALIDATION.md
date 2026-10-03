@@ -90,11 +90,16 @@ Limits:
   transport limit (`maxSourcePackFrameBytes`, 64 MiB); a positive value caps the endpoint separately
   but never above that transport limit. The gateway buffers the file to validate it, so the limit is
   enforced before parsing, both for the direct file and for a proxied fallback body.
-- **Time**: one fixed, non-configurable budget per file, `SignatureValidationLimits.FileBudgetSeconds`
-  = 60 seconds, enforced with a linked `CancellationTokenSource`. A signature that is not finished
-  inside the budget is reported as `trust: "unknown"` with `trustReason: "validation-timeout"`;
-  the response itself still succeeds. Revocation latency itself is bounded by
-  `Signatures:RevocationTimeoutSeconds`.
+- **Time**: a linked cancellation token enforces the 60-second file budget cooperatively in
+  object traversal, parser stream reads/seeks, signature byte copying, incremental hashing and
+  revocation transport. Checks also surround library cryptographic calls; a single synchronous
+  library call cannot be forcibly interrupted. Expiry while locating signatures produces 422,
+  since no complete signature inventory exists yet. After location, unfinished signatures report
+  `unknown` / `validation-timeout`. Client cancellation before location propagates to the endpoint.
+  Online attempts share the file budget and each has a 1–30 second timeout (configured below).
+- **Traversal**: at most 10,000 object/edge operations and depth 32 per file. Page, field and
+  indirect-reference traversal uses visited sets and cached object identities. Limit violations
+  produce 422. Physical signature dictionaries larger than 1 MiB are unreadable.
 - **Concurrency**: nothing special. Requests that buffer a large PDF are bounded by the size limit,
   and `/signatures` is off unless an operator turns it on.
 - `Cache-Control: no-store` always, including on error responses, because a verdict is a statement
@@ -120,11 +125,16 @@ Encrypted PDFs are not validated (422): the gateway has no document password and
 
 ## Byte range and digest check
 
-A signature dictionary carries `/ByteRange [offset1 length1 offset2 length2 ...]` and `/Contents`
+A signature dictionary carries `/ByteRange [offset1 length1 offset2 length2]` and `/Contents`
 (the hex placeholder that holds the CMS blob). Validation:
 
-1. The ranges must be sorted, inside the file, and must not overlap the `/Contents` value.
-   Anything else: `integrity: "unsupported"`, reason `byte-range-malformed`.
+1. Require exactly four non-negative integers, `offset1 == 0`, ordered non-overlapping ranges
+   inside the file, and overflow-safe arithmetic. The sole excluded span must be exactly this
+   xref-resolved signature object's direct `/Contents` hex string, including `<` and `>`.
+   A bounded lexical pass establishes its physical position; duplicate dictionary keys, indirect
+   values, compressed/inline signature dictionaries, non-integer ranges or any ambiguous position
+   fail closed as `unreadable` / `byte-range-malformed`. In particular, a larger gap hiding an
+   unsigned dictionary entry is never `intact`.
 2. The covered bytes (range 1 followed by range 2, ...) are hashed with the message-digest algorithm
    from the CMS `SignerInfo`, and compared with the `messageDigest` signed attribute
    (`1.2.840.113549.1.9.4`, whose raw value is an `OCTET STRING` that has to be unwrapped before the
@@ -141,13 +151,13 @@ A signature dictionary carries `/ByteRange [offset1 length1 offset2 length2 ...]
    blob and then calling `CheckHash()`/`SignerInfo.CheckSignature(...)` reports
    *"The hash value is not correct"* for a perfectly intact signature, because the detached blob
    carries no content to hash.
-4. `coversWholeFile` is true when the ranges start at 0 and end at the last byte of the file, so
-   only the `/Contents` placeholder sits outside them.
-5. Trailing bytes outside the ranges mean an incremental update after this signature. That is
-   normal when another approval signature was appended, so for `kind: "approval"` it stays
-   `intact` with `coversWholeFile: false`. For a certification signature it means the document was
-   changed after certification (or the /M/DocMDP promise was broken):
-   `integrity: "modified-after-signing"`, reason `bytes-appended-after-signed-range`.
+4. `coversWholeFile` is true only after the strict gap check and when `offset2 + length2`
+   equals the file length.
+5. An approval signature with an uncovered tail stays `intact` only if a later, itself intact
+   signature covers the complete earlier revision in its prefix and covers the current file.
+   Otherwise it is `modified-after-signing` with `trust: unknown` and
+   `bytes-appended-after-signed-range`. The later signature's mere presence is insufficient.
+   Certification signatures with any appended bytes remain `modified-after-signing` / `invalid`.
 
 `digest-mismatch` and `signature-invalid` always mean `trust: "invalid"`: a signature that does not
 verify cannot be trusted at any time. `unsupported`/`unreadable` mean `trust: "unknown"`.
@@ -161,8 +171,9 @@ Two times are reported per signature, and they come from different places.
 - A signature timestamp token (CMS unsigned attribute `1.2.840.113549.1.9.16.2.14`,
   `id-aa-signatureTimeStampToken`) that decodes with `Rfc3161TimestampToken.TryDecode`, whose
   message imprint matches the signature value, whose own signature verifies over the signer
-  (`VerifySignatureForSignerInfo`), and whose responder chains to a configured anchor moves
-  `validationTime` to the token's `genTime`. A broken, foreign, or unanchored token never does.
+  (`VerifySignatureForSignerInfo`), and whose responder passes the same chain, certificate-time and revocation gates as the signer moves
+  `validationTime` to the token's `genTime`. A broken, foreign, unanchored, revoked or revocation-unchecked token never does. An anchored
+  responder without usable revocation evidence reports `timestamp-responder-not-trusted`.
 - Otherwise `validationTime` = the gateway's current UTC time.
 
 `signingTime` is the signer's claimed signing instant, in order of preference:
@@ -203,6 +214,12 @@ Chain building uses `System.Security.Cryptography.X509Chain` with `TrustMode = C
   certificates in the field use many different EKU sets; the reason is reported when the chain
   engine says the usage does not match.
 
+A successful `X509Chain.Build` result, an exact certificate match between the final chain element
+and a configured anchor, and no status flags are all mandatory. A caught build exception with
+empty status is not success. Every certificate must be valid at `validationTime`.
+Unknown or combined unexpected status flags fail closed. The native chain always uses `NoCheck`
+and disables certificate downloads: all network revocation is owned by the bounded transport.
+
 A chain that does **not** end in one of the configured anchors is never `valid`:
 
 | Chain outcome | `trust` | `trustReason` |
@@ -210,40 +227,48 @@ A chain that does **not** end in one of the configured anchors is never `valid`:
 | built, anchored, no status flags | `valid` (see revocation gate) | `null` or revocation note |
 | `UntrustedRoot` / `PartialChain` (no configured anchor, or issuer not in the document) | `unknown` | `chain-not-anchored` |
 | `NotTimeValid` | `unknown` | `certificate-not-valid-at-validation-time` |
-| `Revoked` / `CrlNotForTimeOfUse` (with revocationDate <= validationTime) | `invalid` | `revoked` |
+| Verified CRL entry (with revocationDate <= validationTime) | `invalid` | `revoked` |
 | `InvalidBasicConstraints`, `WeakSignatureAlgorithm` (SHA-1/MD5 hash or < 2048-bit RSA key) | `invalid` | `chain-policy-violation` / `weak-signature` |
-| `RevocationStatusUnknown`, `OfflineRevocation`, `CrlNotYetValid` | `unknown` | `revocation-unavailable` |
+| Missing, stale or not-yet-valid CRL / unresolved revocation | `unknown` | `revocation-unavailable` |
 | anything unexpected | `unknown` | `validation-error` |
 
-Revocation is decided by exactly one source, in this order:
+Revocation must cover every non-anchor chain element:
 
-1. **Offline CRL files** (`Signatures:CrlDirectory`, optional). The gateway parses the DER/PEM CRLs
-   itself (`System.Formats.Asn1`), verifies each CRL with its issuer's public key, requires
-   `thisUpdate <= validationTime <= nextUpdate`, and looks up each chain element's serial. If every
-   non-anchor element is covered by a usable CRL, revocation is considered **checked** and the OS
-   revocation engine is skipped (`RevocationMode.NoCheck` for the chain build). A listed serial with
-   `revocationDate <= validationTime` means `invalid` + `revoked`. This is the path for a gateway
-   that has no outbound HTTP at all, and it is what the unit tests use.
-2. **OS chain engine** with `Signatures:RevocationMode` = `Online` (default), `Offline`, or
-   `NoCheck`, and `X509ChainPolicy.UrlRetrievalTimeout` = `Signatures:RevocationTimeoutSeconds`.
+1. **Offline CRL files** (`Signatures:CrlDirectory`, optional). DER/PEM CRLs must have a
+   verified issuer signature and `thisUpdate <= validationTime <= nextUpdate`. A missing
+   `nextUpdate`, unsupported algorithm/critical extension, delta CRL or scoped/indirect CRL
+   cannot establish coverage. Supported CRL signatures are RSA PKCS#1 and ECDSA with SHA-256/384/512.
+   A listed serial with `revocationDate <= validationTime` means `invalid` / `revoked`.
+2. **Online** (default): if local CRLs cannot answer, fetch a complete CRL from the certificate's
+   distribution points through the gateway's bounded transport and apply the same verifier.
+   OCSP-only certificates and unsupported distribution points produce `unknown` /
+   `revocation-unavailable`; the native OS online engine is never a fallback.
+3. **Offline**: use configured CRL files only. The OS revocation cache is not used. Missing
+   evidence yields `unknown` / `revocation-unavailable`.
+4. **NoCheck**: always `unknown` / `revocation-not-checked`, even if local CRLs are configured.
+   This mode cannot authenticate a timestamp or produce `valid`.
 
-`Online` mode therefore **needs outbound HTTP from the server to the issuers' OCSP/CRL endpoints**
-(the URLs come from the certificates, not from configuration). Where that is blocked, the gateway
-reports `revocation-unavailable` and never `valid`. Operators who cannot reach those endpoints
-should either publish CRL files into `Signatures:CrlDirectory` or set
-`Signatures:RevocationMode: "Offline"`.
+Online transport accepts only HTTP/HTTPS, without credentials, proxies, cookies or redirects.
+Every resolved address must be public: loopback, private, link-local, unique-local, multicast,
+transition and reserved ranges are blocked, as are the gateway's local interface addresses and
+own host name and the request's gateway host. DNS is resolved inside the connection callback, and the socket connects to the
+validated IP directly, avoiding a second resolution and DNS rebinding. HTTPS still validates the
+original host's certificate; its chain policy also disables AIA and native revocation downloads.
+Mixed public/private DNS answers are rejected.
 
-`Signatures:RevocationMode: "NoCheck"` deliberately skips revocation. Because "not checked" is an
-operator decision rather than a failure, the verdict may still be `valid`, and the reason is then
-`revocation-not-checked`. Every other configuration keeps the rule: `valid` requires that revocation
-was actually checked.
+`Signatures:RevocationHostAllowList` optionally limits requests to exact DNS host names
+(case-insensitive; no wildcards), in addition to the mandatory address checks. Empty means any
+public host. Limits: eight fetch attempts per file (shared across signers and timestamp responders),
+1 MiB per response including chunked bodies, no decompression, and
+`Signatures:RevocationTimeoutSeconds` clamped to 1–30 seconds per attempt, including DNS and body
+reads. Repeated URLs share the file-local result cache. Failures produce `unknown`, never `valid`.
 
 ## Failure isolation and logging
 
-Each signature is validated in its own `try/catch` and its own timeout scope. One unreadable
-signature dictionary, one malformed CMS blob, or one hanging OCSP endpoint can only ever change the
-verdict of that signature; the response always contains the other signatures and always succeeds
-with `200` once the file could be read.
+Each signature is validated in its own `try/catch`; all signatures share the file time and
+fetch budgets. A malformed CMS blob produces a verdict for that signature instead of aborting the
+response. Exhausting the shared budgets can also leave subsequent signatures unknown. The response
+contains the complete located inventory and succeeds with `200` once location has finished.
 
 Logs carry: session key (never a document name), file index, signature count, sub-filter name, the
 verdict codes (`integrity`, `trust`, reason), byte counts, elapsed milliseconds, and exception type
@@ -276,6 +301,7 @@ helpers; no proxy logic is duplicated.
     "crlDirectory": "",
     "revocationMode": "Online",
     "revocationTimeoutSeconds": 15,
+    "revocationHostAllowList": [],
     "maxFileBytes": 0
   }
 }
@@ -288,3 +314,10 @@ Tests build a throwaway CA hierarchy in code (`CertificateRequest`, `X509Signatu
 and write DER CRL files into a temp directory. No network access, no fixtures in the repository:
 every byte is generated per test run, so nothing that looks like a customer document can leak into
 a public repository.
+
+Security regression coverage lives in `SignatureSecurityTests` and `SignatureValidationServiceTests`.
+Network tests use an in-memory HTTP responder and generated CRLs; address classification and mixed
+DNS results are tested separately, with no outbound network. `scripts/verify-signature-regressions.py`
+temporarily breaks each F1–F7 guard, expects its selected xUnit test to fail, restores the source in
+a `finally` block, and runs the complete signature tests against the restored source. Run it only
+in an isolated worktree without concurrent builds. Its logs stay under gitignored `TestResults/`.

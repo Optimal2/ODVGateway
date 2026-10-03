@@ -343,8 +343,9 @@ leaves the gateway. It is disabled by default and answered with `404` until
 | `signatures.useWindowsTrustedRoots` | `true` | Seed the trust store with the Windows root stores. |
 | `signatures.extraAnchorsDirectory` | `""` | Optional PEM/CER trust anchors; resolved against the content root. |
 | `signatures.crlDirectory` | `""` | Optional offline CRL files (`.crl`/`.der`/`.pem`); enables revocation checks without outbound HTTP. |
-| `signatures.revocationMode` | `Online` | `Online`, `Offline`, or `NoCheck`. `Online` needs outbound HTTP to the issuers' OCSP/CRL endpoints; a failed lookup is reported as `unknown`, never `valid`. |
-| `signatures.revocationTimeoutSeconds` | `15` | Bounds each OCSP/CRL attempt. |
+| `signatures.revocationMode` | `Online` | `Online` fetches CRLs through a bounded public-address HTTP transport. `Offline` uses configured CRLs only. `NoCheck` always reports `unknown`; OCSP-only evidence is unavailable. |
+| `signatures.revocationHostAllowList` | `[]` | Optional exact DNS hosts, in addition to mandatory public-address checks. |
+| `signatures.revocationTimeoutSeconds` | `15` | Bounds each CRL attempt, clamped to 1–30 seconds. |
 | `signatures.maxFileBytes` | `0` | Largest validated PDF. `0` follows the source transport limit (64 MiB); a positive value never raises it. |
 
 The full contract, the trust/expiry/timestamp rules, and the PDF reading

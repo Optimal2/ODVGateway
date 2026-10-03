@@ -5,7 +5,7 @@ namespace ODVGateway.Options;
 /// <summary>
 /// Server-side PDF signature validation (GET /signatures/{sessionKey}/{fileIndex}).
 /// Off by default: the endpoint answers 404 until <see cref="Enabled"/> is set, because validation
-/// needs a trust anchor surface and, in Online revocation mode, outbound HTTP to issuer OCSP/CRL
+/// needs a trust anchor surface and, in Online revocation mode, bounded outbound HTTP to issuer CRL
 /// endpoints. See docs/PDF-SIGNATURE-VALIDATION.md.
 /// </summary>
 public sealed class SignatureValidationOptions
@@ -39,10 +39,13 @@ public sealed class SignatureValidationOptions
     public SignatureRevocationMode RevocationMode { get; set; } = SignatureRevocationMode.Online;
 
     /// <summary>
-    /// How long one revocation lookup may take, in seconds. Mapped to
-    /// X509ChainPolicy.UrlRetrievalTimeout, so it bounds each OCSP/CRL attempt in Online mode.
+    /// How long one Online CRL fetch may take, in seconds (clamped to 1–30), including DNS,
+    /// connection and body reading. Also bounded by the remaining file budget.
     /// </summary>
     public int RevocationTimeoutSeconds { get; set; } = 15;
+
+    /// <summary>Optional exact DNS host allow-list, applied in addition to public-address checks.</summary>
+    public string[] RevocationHostAllowList { get; set; } = [];
 
     /// <summary>
     /// Largest PDF that is validated. Zero (the default) follows the gateway's existing source
@@ -51,7 +54,7 @@ public sealed class SignatureValidationOptions
     /// </summary>
     public long MaxFileBytes { get; set; }
 
-    /// <summary>Maps the configured mode onto the chain policy value.</summary>
+    /// <summary>Maps the configured mode to its legacy enum representation; not used for native chain policy.</summary>
     public X509RevocationMode GetRevocationMode() => RevocationMode switch
     {
         SignatureRevocationMode.Offline => X509RevocationMode.Offline,
@@ -62,17 +65,17 @@ public sealed class SignatureValidationOptions
 
 /// <summary>
 /// Revocation handling for signature chain building. Online and Offline never produce a verdict of
-/// "valid" for a signature whose revocation could not be established; "NoCheck" lets the verdict be
-/// "valid" but always says so with the trust reason "revocation-not-checked".
+/// "valid" for a signature whose revocation could not be established. "NoCheck" always reports
+/// "unknown" with the trust reason "revocation-not-checked".
 /// </summary>
 public enum SignatureRevocationMode
 {
-    /// <summary>Ask the issuer's OCSP/CRL endpoints over HTTP. Needs outbound HTTP; a failure to reach them is reported as unknown.</summary>
+    /// <summary>Fetch issuer CRLs through the bounded public-address HTTP transport. Unresolved evidence is unknown.</summary>
     Online = 0,
 
-    /// <summary>Use cached or configured offline CRLs only; never reach out. Nothing proven is reported as unknown.</summary>
+    /// <summary>Use configured offline CRLs only; never reach out. Nothing proven is reported as unknown.</summary>
     Offline = 1,
 
-    /// <summary>Skip revocation. Reported as valid with trustReason "revocation-not-checked", never as a clean signature.</summary>
+    /// <summary>Skip revocation. Reported as unknown with trustReason "revocation-not-checked", never as a clean signature.</summary>
     NoCheck = 2
 }
