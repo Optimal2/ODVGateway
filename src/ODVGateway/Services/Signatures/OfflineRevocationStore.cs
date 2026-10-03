@@ -310,9 +310,11 @@ public sealed class OfflineRevocationStore
                 if (!TryReadScope(value, out scope)) return false;
                 continue;
             }
-            // Delta CRLs cannot establish coverage alone. Unknown critical extensions and
-            // certificateIssuer entries cannot be ignored, regardless of the critical flag.
-            if (critical || (!isEntry && oid == "2.5.29.27") ||
+            // Delta CRLs and base CRLs advertising freshestCRL cannot establish coverage alone.
+            // Delta CRLs are unsupported, so even non-critical freshestCRL must fail closed.
+            // Unknown critical extensions and certificateIssuer entries cannot be ignored,
+            // regardless of the critical flag.
+            if (critical || (!isEntry && oid is "2.5.29.27" or "2.5.29.46") ||
                 (isEntry && oid == "2.5.29.29")) return false;
         }
         return true;

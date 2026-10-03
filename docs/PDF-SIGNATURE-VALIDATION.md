@@ -252,6 +252,10 @@ Revocation must cover every non-anchor chain element:
    names and malformed IDPs remain unsupported and cannot produce `valid`. Non-critical scope
    restrictions are never ignored. Supported CRL signatures are RSA PKCS#1 and ECDSA with SHA-256/384/512.
    A listed serial with `revocationDate <= validationTime` means `invalid` / `revoked`.
+   Delta CRLs are not supported. A base CRL carrying `freshestCRL` (OID `2.5.29.46`),
+   even when non-critical, is also rejected: an unlisted certificate might be revoked in
+   a delta CRL. Without other usable evidence, the result is `unknown` with
+   `trustReason: "revocation-unavailable"`, never `valid`. This applies to local and downloaded CRLs.
 2. **Online** (default): if local CRLs cannot answer, fetch a complete CRL from the certificate's
    distribution points through the gateway's bounded transport and apply the same verifier.
    OCSP-only certificates and unsupported distribution points produce `unknown` /

@@ -125,6 +125,49 @@ public sealed class SignatureFollowupTests
         }
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task N2_BaseCrlWithFreshestCrl_CannotProveNotRevoked(bool freshestCrl, bool online)
+    {
+        using var f = new SignatureFixtures();
+        f.WriteRootAnchor();
+        var leaf = f.CreateCertificate("CN=Delta CRL coverage", DateTimeOffset.UtcNow.AddDays(-1),
+            DateTimeOffset.UtcNow.AddDays(1), "https://example.test/root.crl");
+        var points = new AsnWriter(AsnEncodingRules.DER);
+        points.PushSequence();
+        points.WriteEncodedValue(Idp(name: "https://example.test/delta.crl"));
+        points.PopSequence();
+        // Both signed base CRLs have an empty revokedCertificates list. freshestCRL is non-critical.
+        var crl = freshestCrl
+            ? Crl(f.Root, points.Encode(), false, "2.5.29.46")
+            : Crl(f.Root, Idp(), false);
+        if (!online) File.WriteAllBytes(Path.Combine(f.CrlDirectory, "root.crl"), crl);
+        var options = new SignatureValidationOptions
+        {
+            UseWindowsTrustedRoots = false,
+            ExtraAnchorsDirectory = f.AnchorDirectory,
+            CrlDirectory = online ? null : f.CrlDirectory,
+            RevocationMode = online ? SignatureRevocationMode.Online : SignatureRevocationMode.Offline
+        };
+        using var handler = new SignatureSecurityTests.Responder(_ =>
+            new(HttpStatusCode.OK) { Content = new ByteArrayContent(crl) });
+        var service = new PdfSignatureValidationService(options,
+            new TrustAnchorStore(options, NullLogger.Instance, f.TempRoot),
+            new OfflineRevocationStore(options.CrlDirectory, NullLogger.Instance, f.TempRoot),
+            NullLogger.Instance, handler);
+        var bytes = File.ReadAllBytes(f.CreateSignedPdf(new SignatureFixtures.SignedPdfRequest
+        { Certificate = leaf.Certificate, CertificateKey = leaf.Key }));
+
+        var response = await service.ValidateAsync(bytes, TestContext.Current.CancellationToken);
+
+        var signature = Assert.Single(response.Signatures);
+        Assert.Equal(freshestCrl ? PdfSignatureTrust.Unknown : PdfSignatureTrust.Valid, signature.Trust);
+        Assert.Equal(freshestCrl ? SignatureValidationReasons.RevocationUnavailable : null, signature.TrustReason);
+    }
+
     private sealed class GatedResponder(byte[] crl) : HttpMessageHandler
     {
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
