@@ -123,7 +123,10 @@ Limits:
 - **Process isolation**: with the default `Signatures:IsolateProcess: true`, the PDF open,
   signature extraction and validation of each file run in a separate worker process (see "Process
   isolation" below), bounded by `Signatures:WorkerTimeoutSeconds` (default 30, clamped to 1–120)
-  and `Signatures:WorkerMaxMemoryBytes` (default 512 MiB, clamped to 32 MiB–8 GiB). A worker that
+  and `Signatures:WorkerMaxMemoryBytes` (default 512 MiB, clamped to 32 MiB–8 GiB). The cap must
+  exceed the effective file limit with headroom: startup refuses a cap below three times that
+  budget (`Signatures:MaxFileBytes`, or the 64 MiB transport limit when unset), so a healthy
+  large file is never killed as `validation-worker-memory`. A worker that
   crashes, times out, overruns memory or answers unparseably costs one request — a named 503 —
   never the gateway process. `IsolateProcess: false` keeps the in-process path, which is only
   safe for PDFs from a trusted archive.
@@ -402,7 +405,9 @@ with a named HTTP 503 — `validation-worker-crashed`, `validation-worker-timeou
 `validation-worker-memory` — with no stack trace and no `Retry-After` (retrying a file that kills
 its worker just kills another worker). The gateway process keeps serving. One structured log line
 is written per worker outcome: outcome, exit code, duration, peak working set, and byte counts —
-never file content.
+never file content. The cap must exceed the effective file limit with headroom: startup
+refuses a cap below three times that budget (see "HTTP status and limits"), so a healthy large
+file is never killed for memory.
 
 A cold worker costs a process start plus JIT on every request: measured 2026-10-04 on the
 checked-in two-signature fixture (`odv-two-signatures-gen0.pdf`, Release build), a full cold run

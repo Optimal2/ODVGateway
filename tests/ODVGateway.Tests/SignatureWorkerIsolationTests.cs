@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using ODVGateway.Models;
 using ODVGateway.Options;
@@ -237,6 +238,81 @@ public sealed class SignatureWorkerIsolationTests : IDisposable
     }
 
     [Fact]
+    public async Task PooledWorkerCrash_LogCarriesRealExitCode()
+    {
+        // The pooled failure line must describe the worker that failed: the exit code and peak
+        // memory have to be read before the process is destroyed, not after, when they are -1/0.
+        var log = new CapturingLogger();
+        using var client = new SignatureWorkerClient(log, _fixtures.TempRoot);
+
+        var exception = await Assert.ThrowsAsync<SignatureWorkerException>(() =>
+            client.ValidatePooledForTestingAsync(
+                CreateOptions(testMode: SignatureWorkerProtocol.TestModes.BypassPrecheck),
+                KidsBareRefCyclePdf(), gatewayHost: null, TestContext.Current.CancellationToken));
+        Assert.Equal(SignatureValidationReasons.ValidationWorkerCrashed, exception.Code);
+
+        var failure = Assert.Single(log.Records, record =>
+            record.Level == LogLevel.Warning &&
+            record.Message.StartsWith("Signature validation worker failed.", StringComparison.Ordinal));
+        Assert.Equal("crashed", failure.StateValue("Outcome"));
+        Assert.NotEqual(-1, Assert.IsType<int>(failure.StateValue("ExitCode")));
+        // No peak assertion here: the OS does not retain the peak working set after exit, so an
+        // already-dead worker honestly reports zero. The peak half is covered below, where the
+        // worker is still alive when the failure is logged.
+    }
+
+    [Fact]
+    public async Task PooledWorkerTimeout_LogCarriesLivePeakMemory()
+    {
+        // The timed-out worker is still alive when the failure is logged: its peak working set
+        // must be captured before it is destroyed, or the line carries zero.
+        var log = new CapturingLogger();
+        using var client = new SignatureWorkerClient(log, _fixtures.TempRoot);
+        var bytes = File.ReadAllBytes(_fixtures.CreateUnsignedPdf());
+
+        var exception = await Assert.ThrowsAsync<SignatureWorkerException>(() =>
+            client.ValidatePooledForTestingAsync(
+                CreateOptions(testMode: SignatureWorkerProtocol.TestModes.Hang, workerTimeoutSeconds: 2),
+                bytes, gatewayHost: null, TestContext.Current.CancellationToken));
+        Assert.Equal(SignatureValidationReasons.ValidationWorkerTimeout, exception.Code);
+
+        var failure = Assert.Single(log.Records, record =>
+            record.Level == LogLevel.Warning &&
+            record.Message.StartsWith("Signature validation worker failed.", StringComparison.Ordinal));
+        Assert.Equal("timeout", failure.StateValue("Outcome"));
+        Assert.True(Assert.IsType<long>(failure.StateValue("PeakMemoryBytes")) > 0);
+    }
+
+    [Fact]
+    public async Task Endpoint_WorkerExitsBeforeReadingStdin_ReturnsNamedCrash503AndReleasesSlot()
+    {
+        // The one-shot parent writes the whole document to a worker that is already gone: every
+        // write/close failure on that path must surface as the named crash, never as a raw 500.
+        // The multi-megabyte body overflows the stdin pipe buffer, so the broken pipe is observed
+        // deterministically instead of depending on scheduling.
+        var bigPath = Path.Combine(_fixtures.FileDirectory, "exit-early-big.pdf");
+        File.WriteAllBytes(bigPath, new byte[8 * 1024 * 1024]);
+        using var factory = new WorkerFactory(
+            _fixtures, SignatureWorkerProtocol.TestModes.ExitEarly, maxConcurrentValidations: 1);
+        using var client = factory.CreateClient();
+        var sessionKey = PrepareSession(factory, bigPath);
+
+        using (var response = await client.GetAsync(
+            $"/signatures/{sessionKey}/0", TestContext.Current.CancellationToken))
+        {
+            var body = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+            Assert.Contains("\"code\":\"validation-worker-crashed\"", body);
+            Assert.False(response.Headers.Contains("Retry-After"));
+        }
+
+        // With a single permit, a leaked slot would refuse the next acquire: the crashed request
+        // must have released it.
+        using var lease = factory.Services.GetRequiredService<SignatureValidationLimiter>().TryAcquire();
+        Assert.True(lease.IsAcquired);
+    }
+
+    [Fact]
     public async Task Endpoint_WorkerCrash_ReturnsNamed503AndKeepsServing()
     {
         var cyclicPath = Path.Combine(_fixtures.FileDirectory, "cyclic-kids.pdf");
@@ -285,7 +361,8 @@ public sealed class SignatureWorkerIsolationTests : IDisposable
     public async Task Endpoint_WorkerAllocate_ReturnsNamedMemory503()
     {
         using var factory = new WorkerFactory(
-            _fixtures, SignatureWorkerProtocol.TestModes.Allocate, maxMemoryBytes: 128L * 1024L * 1024L);
+            _fixtures, SignatureWorkerProtocol.TestModes.Allocate, maxMemoryBytes: 128L * 1024L * 1024L,
+            maxFileBytes: 32L * 1024L * 1024L); // keeps the 128 MiB cap valid under the 3x startup rule
         using var client = factory.CreateClient();
         var sessionKey = PrepareSession(factory, _fixtures.CreateUnsignedPdf());
 
@@ -383,6 +460,56 @@ public sealed class SignatureWorkerIsolationTests : IDisposable
         return stored.Session!.SessionKey;
     }
 
+    private sealed class CapturingLogger : ILogger
+    {
+        private readonly List<Entry> entries = new();
+
+        public IReadOnlyList<Entry> Records
+        {
+            get
+            {
+                lock (entries)
+                {
+                    return entries.ToList();
+                }
+            }
+        }
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            var pairs = state is IEnumerable<KeyValuePair<string, object?>> list
+                ? list.ToList()
+                : new List<KeyValuePair<string, object?>>();
+            lock (entries)
+            {
+                entries.Add(new Entry(logLevel, formatter(state, exception), pairs));
+            }
+        }
+
+        public IDisposable BeginScope<TState>(TState state)
+            where TState : notnull => NullScope.Instance;
+
+        public sealed record Entry(
+            LogLevel Level, string Message, IReadOnlyList<KeyValuePair<string, object?>> State)
+        {
+            public object? StateValue(string name) =>
+                State.First(pair => string.Equals(pair.Key, name, StringComparison.Ordinal)).Value;
+        }
+
+        private sealed class NullScope : IDisposable
+        {
+            public static readonly NullScope Instance = new();
+
+            public void Dispose()
+            {
+            }
+        }
+    }
+
     public void Dispose() => _fixtures.Dispose();
 
     private sealed class WorkerFactory : WebApplicationFactory<Program>
@@ -391,17 +518,23 @@ public sealed class SignatureWorkerIsolationTests : IDisposable
         private readonly string? _testMode;
         private readonly int? _timeoutSeconds;
         private readonly long? _maxMemoryBytes;
+        private readonly int? _maxConcurrentValidations;
+        private readonly long? _maxFileBytes;
 
         public WorkerFactory(
             SignatureFixtures fixtures,
             string? testMode,
             int? timeoutSeconds = null,
-            long? maxMemoryBytes = null)
+            long? maxMemoryBytes = null,
+            int? maxConcurrentValidations = null,
+            long? maxFileBytes = null)
         {
             _fixtures = fixtures;
             _testMode = testMode;
             _timeoutSeconds = timeoutSeconds;
             _maxMemoryBytes = maxMemoryBytes;
+            _maxConcurrentValidations = maxConcurrentValidations;
+            _maxFileBytes = maxFileBytes;
         }
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -417,7 +550,7 @@ public sealed class SignatureWorkerIsolationTests : IDisposable
                 ["ODVGateway:TrustedSourceRoots:0"] = _fixtures.FileDirectory,
                 ["ODVGateway:signatures:enabled"] = "true",
                 ["ODVGateway:signatures:isolateProcess"] = "true",
-                ["ODVGateway:signatures:maxConcurrentValidations"] = "2",
+                ["ODVGateway:signatures:maxConcurrentValidations"] = (_maxConcurrentValidations ?? 2).ToString(),
                 ["ODVGateway:signatures:useWindowsTrustedRoots"] = "false",
                 ["ODVGateway:signatures:extraAnchorsDirectory"] = _fixtures.AnchorDirectory,
                 ["ODVGateway:signatures:crlDirectory"] = _fixtures.CrlDirectory,
@@ -427,6 +560,11 @@ public sealed class SignatureWorkerIsolationTests : IDisposable
             if (_timeoutSeconds is not null)
             {
                 settings["ODVGateway:signatures:workerTimeoutSeconds"] = _timeoutSeconds.ToString();
+            }
+
+            if (_maxFileBytes is not null)
+            {
+                settings["ODVGateway:signatures:maxFileBytes"] = _maxFileBytes.ToString();
             }
 
             if (_maxMemoryBytes is not null)

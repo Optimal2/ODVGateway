@@ -61,6 +61,17 @@ for its `0.1.x` release line.
   coverage: classic cross-reference tables only, with xref streams, object streams and catalog
   `/Dests`/`/Names` trees still reaching the library until validation runs in a separate process.
 
+- `GET /signatures/...` maps every one-shot worker write/close failure to the named
+  `validation-worker-crashed` failure (HTTP 503): closing stdin of a worker that died before
+  reading it no longer escapes the crash mapping as a raw 500. The pooled failure log line now
+  carries the real worker exit code and peak working set, read before the process is destroyed
+  instead of -1/0 after it.
+- `GET /signatures/...` refuses two worker misconfigurations at startup with a named reason
+  instead of failing per request: a test-only `signatures.workerTestMode` without the
+  `ODVGATEWAY_SIGNATURE_WORKER_TEST=1` environment gate (which used to fail every validation),
+  and a `signatures.workerMaxMemoryBytes` below three times the effective file budget (which
+  could kill a healthy large file as `validation-worker-memory`).
+
 ## [0.1.43] - 2026-09-27
 
 ### Fixed

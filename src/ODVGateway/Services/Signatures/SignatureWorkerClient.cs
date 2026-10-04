@@ -198,9 +198,12 @@ public sealed class SignatureWorkerClient : IDisposable
         {
             if (!settled)
             {
+                // Read before destroying: afterwards the exit code is -1 and the peak is 0.
+                var exitCode = ExitCode(worker.Process);
+                var peakMemoryBytes = PeakWorkingSetBytes(worker.Process);
                 worker.Destroy();
-                LogOutcome(WorkerOutcome(exception.Code), ExitCode(worker.Process), pooled: true,
-                    worker.Uses + 1, start, PeakWorkingSetBytes(worker.Process), stdoutBytes: 0,
+                LogOutcome(WorkerOutcome(exception.Code), exitCode, pooled: true,
+                    worker.Uses + 1, start, peakMemoryBytes, stdoutBytes: 0,
                     worker.StderrBytes);
             }
 
@@ -255,13 +258,15 @@ public sealed class SignatureWorkerClient : IDisposable
                 throw new OperationCanceledException(cancellationToken);
             }
         }
+        // A worker that died before reading stdin leaves a broken pipe: closing it must not
+        // escape the crash mapping, so close failures are swallowed here and named below.
         finally
         {
             try
             {
                 process.StandardInput.Close();
             }
-            catch (InvalidOperationException)
+            catch (Exception exception) when (exception is IOException or InvalidOperationException)
             {
             }
         }

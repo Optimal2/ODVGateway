@@ -75,19 +75,68 @@ public sealed class SignatureValidationOptions
     public int WorkerTimeoutSeconds { get; set; } = 30;
 
     /// <summary>
-    /// Working-set cap for one worker process, in bytes (clamped to 32 MiB-8 GiB). A worker that
-    /// grows past it is killed and the request fails with <c>validation-worker-memory</c>
-    /// (HTTP 503).
+    /// Working-set cap for one worker process, in bytes (clamped to 32 MiB-8 GiB). Startup refuses
+    /// a cap below three times the effective file budget (see <see cref="GetEffectiveMaxFileBytes"/>),
+    /// so a healthy large file is never killed as <c>validation-worker-memory</c> (HTTP 503).
     /// </summary>
     public long WorkerMaxMemoryBytes { get; set; } = 512L * 1024L * 1024L;
 
     /// <summary>
     /// Test-only worker fault injection (<c>hang</c>, <c>allocate</c>, <c>bad-output</c>,
-    /// <c>bypass-precheck</c>). Honored only when the
+    /// <c>bypass-precheck</c>, <c>exit-early</c>). Refused at startup unless the
     /// <c>ODVGATEWAY_SIGNATURE_WORKER_TEST</c> environment variable is <c>1</c>; any other value
-    /// (or an unset variable) makes the worker refuse to start. Never set in production.
+    /// (or an unset variable) fails the gateway start. Never set in production.
     /// </summary>
     public string? WorkerTestMode { get; set; }
+
+    /// <summary>
+    /// Headroom between the largest validated file and the worker memory cap: startup refuses a
+    /// <see cref="WorkerMaxMemoryBytes"/> below the effective file budget times this factor, so a
+    /// healthy large file is never killed as <c>validation-worker-memory</c>. A worker holds the
+    /// document, its parsed object graph, and the validation stack at once; three file sizes is
+    /// the documented minimum, not a measurement of any single file.
+    /// </summary>
+    internal const long WorkerMemoryCapFileBudgetMultiplier = 3;
+
+    /// <summary>
+    /// Largest PDF the signature endpoint accepts: the configured <see cref="MaxFileBytes"/> when
+    /// it is set, otherwise the gateway's source transport limit. A configured value can never
+    /// raise the transport limit, only lower it.
+    /// </summary>
+    internal long GetEffectiveMaxFileBytes(long transportLimitBytes) =>
+        MaxFileBytes > 0 ? Math.Min(MaxFileBytes, transportLimitBytes) : transportLimitBytes;
+
+    /// <summary>
+    /// Fail-fast startup validation for the isolated-worker knobs. A test mode in configuration
+    /// without the test-only environment gate would fail every request (a self-DoS once the
+    /// worker-side gate refuses to start), and a memory cap below the file budget with headroom
+    /// would kill healthy large files: both are refused here with a named reason instead. Runs
+    /// even when <see cref="Enabled"/> is false, so enabling the endpoint later cannot inherit a
+    /// broken worker configuration. Throws <see cref="InvalidOperationException"/> naming the
+    /// offending knob.
+    /// </summary>
+    internal void ValidateWorkerConfiguration(long transportLimitBytes, bool workerTestAllowed)
+    {
+        if (!string.IsNullOrEmpty(WorkerTestMode) && !workerTestAllowed)
+        {
+            throw new InvalidOperationException(
+                "ODVGateway: Signatures:WorkerTestMode is set to '" + WorkerTestMode + "' but the " +
+                "test-only ODVGATEWAY_SIGNATURE_WORKER_TEST=1 environment gate is not present. " +
+                "Remove WorkerTestMode from this configuration: with the gate absent the worker " +
+                "refuses to start and every validation fails.");
+        }
+
+        var fileBudgetBytes = GetEffectiveMaxFileBytes(transportLimitBytes);
+        var requiredBytes = fileBudgetBytes * WorkerMemoryCapFileBudgetMultiplier;
+        if (WorkerMaxMemoryBytes < requiredBytes)
+        {
+            throw new InvalidOperationException(
+                "ODVGateway: Signatures:WorkerMaxMemoryBytes is " + WorkerMaxMemoryBytes + " bytes but " +
+                "must be at least three times the effective signature file budget of " + fileBudgetBytes +
+                " bytes (" + requiredBytes + " bytes or more), so a healthy large file is never killed " +
+                "as validation-worker-memory. Raise WorkerMaxMemoryBytes or lower Signatures:MaxFileBytes.");
+        }
+    }
 
     /// <summary>Maps the configured mode to its legacy enum representation; not used for native chain policy.</summary>
     public X509RevocationMode GetRevocationMode() => RevocationMode switch

@@ -71,6 +71,9 @@ internal static class SignatureWorkerProtocol
         /// <summary>Validate normally but skip the page-tree pre-check. Proves isolation: a cyclic
         /// page tree then overflows the worker's stack instead of the gateway's.</summary>
         public const string BypassPrecheck = "bypass-precheck";
+
+        /// <summary>Exit 2 immediately, before reading stdin. Proves the parent maps an instantly-dead worker to the named crash failure.</summary>
+        public const string ExitEarly = "exit-early";
     }
 
     /// <summary>Envelope statuses the worker reports on stdout.</summary>

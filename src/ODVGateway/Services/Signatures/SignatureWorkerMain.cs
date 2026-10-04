@@ -66,6 +66,9 @@ internal static class SignatureWorkerMain
                 case SignatureWorkerProtocol.TestModes.BypassPrecheck:
                     PdfPageTreePrecheck.DisabledForTesting = true;
                     break;
+                case SignatureWorkerProtocol.TestModes.ExitEarly:
+                    // No stdin read: the parent must map the instantly-dead worker to the named crash.
+                    return 2;
                 case not null:
                     await Console.Error.WriteLineAsync("signature worker: unknown test mode.");
                     return 2;
@@ -170,6 +173,9 @@ internal static class SignatureWorkerMain
                 case SignatureWorkerProtocol.TestModes.BypassPrecheck:
                     PdfPageTreePrecheck.DisabledForTesting = true;
                     break;
+                case SignatureWorkerProtocol.TestModes.ExitEarly:
+                    // No stdin read: the parent must map the instantly-dead worker to the named crash.
+                    return 2;
                 case not null:
                     await WriteFrameAsync(stdout, new WorkerEnvelope(SignatureWorkerProtocol.Statuses.Error, null,
                         "UnknownTestMode"));

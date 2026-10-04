@@ -66,6 +66,15 @@ var startupOptions = builder.Configuration
 
 ValidateTrustedSourceRootConfiguration(startupOptions, builder.Environment.ContentRootPath);
 
+// A test mode or an under-sized worker memory cap in configuration would fail per request or
+// kill healthy files: refuse them here with a named reason instead of booting into a self-DoS.
+var signatureWorkerTestAllowed = string.Equals(
+    Environment.GetEnvironmentVariable(SignatureWorkerProtocol.TestEnvironmentVariable),
+    "1",
+    StringComparison.Ordinal);
+startupOptions.Signatures.ValidateWorkerConfiguration(
+    GetMaxSourcePackFrameBytes(startupOptions), signatureWorkerTestAllowed);
+
 builder.Services.Configure<ODVGatewayOptions>(
     builder.Configuration.GetSection(ODVGatewayOptions.SectionName));
 builder.Services.AddSingleton<ContentTypeMapper>();
@@ -1620,12 +1629,8 @@ static bool IsPdfSource(GatewaySourceFile source, ContentTypeMapper contentTypes
 /// gateway's existing source transport limit. A configured value can never raise the transport
 /// limit, only lower it, so the endpoint cannot ask for bytes the source reader would refuse.
 /// </summary>
-static long GetSignatureMaxFileBytes(ODVGatewayOptions options)
-{
-    var transportLimit = GetMaxSourcePackFrameBytes(options);
-    var configured = options.Signatures.MaxFileBytes;
-    return configured > 0 ? Math.Min(configured, transportLimit) : transportLimit;
-}
+static long GetSignatureMaxFileBytes(ODVGatewayOptions options) =>
+    options.Signatures.GetEffectiveMaxFileBytes(GetMaxSourcePackFrameBytes(options));
 
 /// <summary>
 /// Reads the whole PDF into memory for validation, reusing the buffered gateway source reader: the
