@@ -43,4 +43,16 @@ public static class SignatureValidationReasons
 
     /// <summary>A field, widget or annotation reference could not resolve to an existing object.</summary>
     public const string DanglingReferenceSkipped = "dangling-reference-skipped";
+
+    /// <summary>
+    /// A cyclic indirect-reference chain was skipped during a field/widget/annotation walk instead
+    /// of resolving to a field, /V or signature dictionary.
+    /// </summary>
+    public const string ReferenceCycleSkipped = "reference-cycle-skipped";
+
+    /// <summary>
+    /// An object of an unexpected type was skipped during a field/widget/annotation walk instead
+    /// of resolving to the requested field, /V or signature dictionary.
+    /// </summary>
+    public const string UnexpectedObjectTypeSkipped = "unexpected-object-type-skipped";
 }

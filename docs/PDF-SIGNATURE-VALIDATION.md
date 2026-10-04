@@ -73,7 +73,7 @@ Field values:
 | `trust` | `valid`, `invalid`, `unknown` | chain level, evaluated at `validationTime`. |
 | `signingTimeSource` | `signed-attribute`, `pdf-M`, `timestamp`, `none` | where `signingTime` came from. |
 | `integrityReason`, `trustReason` | string or `null` | short stable codes; see the tables below. |
-| `diagnostics` | array of strings | document-level notes on how the PDF was read; empty for specification-conforming files. `reference-generation-fallback`: a missing exact generation was read at the newest generation of that number. `dangling-reference-skipped`: a missing object was skipped during a field/widget/annotation walk (see "Reading the PDF"). |
+| `diagnostics` | array of strings | document-level notes on how the PDF was read; empty for specification-conforming files. `reference-generation-fallback`: a missing exact generation was read at the newest generation of that number. `dangling-reference-skipped`: a missing object was skipped during a field/widget/annotation walk; `reference-cycle-skipped`: a cyclic indirect-reference chain was skipped; `unexpected-object-type-skipped`: a direct value of the wrong type was skipped (see "Reading the PDF"). |
 
 Unknown or absent values are reported as `null` rather than guessed. `fieldName` is the AcroForm
 field name when the signature sits on a field, and `/Perms` markers use `DocMDP` / the dictionary
@@ -161,7 +161,7 @@ unlisted body found by PdfPig's lenient scan is not an exact cross-reference ent
 
 A dangling reference inside the field/widget/annotation walk is skipped when PdfPig cannot find
 the object and its resolved identity is absent from the cross-reference data. Remaining signatures
-are still validated, and `diagnostics` contains `dangling-reference-skipped` once per document.
+are still validated, and `diagnostics` contains `dangling-reference-skipped` once per document. A cyclic indirect-reference chain and a direct value of the wrong type are skipped the same way and reported as `reference-cycle-skipped` and `unexpected-object-type-skipped`: no unresolvable field, `/V` or signature dictionary is ever skipped silently.
 This tolerance applies to field and annotation arrays, their elements, field `/Kids`, `/Parent`
 and `/V` references. Catalog and AcroForm roots, page-tree references and other parser failures
 remain fatal (HTTP 422). The same depth, visited-set and traversal-budget limits still apply.

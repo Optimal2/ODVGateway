@@ -73,6 +73,46 @@ public sealed class IncrementalUpdateSignatureTests : IDisposable
         Assert.Equal(["dangling-reference-skipped"], response.Diagnostics);
     }
 
+    [Fact]
+    public async Task CyclicVReference_SkipsElementAndReportsRemainingSignature()
+    {
+        // Field 6 points at a two-object reference cycle (7 -> 8 -> 7) instead of a signature
+        // dictionary. The cycle must not hide the valid sibling, and the skip must be visible.
+        var bytes = BaseRevision(acroFormBody: "<< /Fields [4 0 R 6 0 R] >>",
+            extraObjects:
+            [
+                "<< /FT /Sig /T (Signature1) /V 5 0 R >>",
+                "<< /Type /Sig /SubFilter /adbe.pkcs7.detached /ByteRange [0 1 2 3] /Contents <00> >>",
+                "<< /FT /Sig /T (Looped) /V 7 0 R >>",
+                "8 0 R",
+                "7 0 R"
+            ]);
+
+        var response = await CreateService().ValidateAsync(bytes, TestContext.Current.CancellationToken);
+
+        Assert.Equal("Signature1", Assert.Single(response.Signatures).FieldName);
+        Assert.Contains(SignatureValidationReasons.ReferenceCycleSkipped, response.Diagnostics);
+    }
+
+    [Fact]
+    public async Task WrongTypeDirectVValue_SkipsElementAndReportsRemainingSignature()
+    {
+        // Field 6 carries a direct string as /V instead of a signature dictionary or a reference
+        // to one. The valid sibling must still be reported and the skip must be visible.
+        var bytes = BaseRevision(acroFormBody: "<< /Fields [4 0 R 6 0 R] >>",
+            extraObjects:
+            [
+                "<< /FT /Sig /T (Signature1) /V 5 0 R >>",
+                "<< /Type /Sig /SubFilter /adbe.pkcs7.detached /ByteRange [0 1 2 3] /Contents <00> >>",
+                "<< /FT /Sig /T (Broken) /V (not-a-dictionary) >>"
+            ]);
+
+        var response = await CreateService().ValidateAsync(bytes, TestContext.Current.CancellationToken);
+
+        Assert.Equal("Signature1", Assert.Single(response.Signatures).FieldName);
+        Assert.Contains(SignatureValidationReasons.UnexpectedObjectTypeSkipped, response.Diagnostics);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

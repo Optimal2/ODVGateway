@@ -525,7 +525,14 @@ public sealed class PdfSignatureLocator
                     current = objectToken.Data;
                     continue;
                 case IndirectReferenceToken referenceToken:
-                    if (!references.Add(ReferenceKey(referenceToken))) return null;
+                    if (!references.Add(ReferenceKey(referenceToken)))
+                    {
+                        // A reference cycle inside a field/widget/annotation walk: the element is
+                        // skipped, but the skip is reported like every other unresolvable reference.
+                        if (skipDangling)
+                            diagnostics.Add(SignatureValidationReasons.ReferenceCycleSkipped);
+                        return null;
+                    }
                     var key = ReferenceKey(referenceToken);
                     if (!objects.TryGetValue(key, out current))
                     {
@@ -542,10 +549,22 @@ public sealed class PdfSignatureLocator
                             diagnostics.Add(SignatureValidationReasons.DanglingReferenceSkipped);
                             return null;
                         }
+                        if (current is null && skipDangling)
+                        {
+                            // The parser returned no object without throwing: still a dangling
+                            // reference, still reported. Do not cache this as null: a later
+                            // strict lookup must still fail.
+                            diagnostics.Add(SignatureValidationReasons.DanglingReferenceSkipped);
+                            return null;
+                        }
                         objects.Add(key, current);
                     }
                     continue;
                 default:
+                    // A direct value of the wrong type inside a field/widget/annotation walk:
+                    // the element is skipped, but the skip is reported.
+                    if (skipDangling)
+                        diagnostics.Add(SignatureValidationReasons.UnexpectedObjectTypeSkipped);
                     return null;
             }
         }
