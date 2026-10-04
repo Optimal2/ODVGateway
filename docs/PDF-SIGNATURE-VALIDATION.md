@@ -1,6 +1,11 @@
 # PDF signature validation on the gateway (`GET /signatures/{sessionKey}/{fileIndex}`)
 
-Status: implemented, disabled by default.
+Status: implemented, disabled by default. Verified 2026-10-04 against
+`src/ODVGateway/Options/SignatureValidationOptions.cs` — `Enabled` has no initializer, so it is
+`false` and `GET /signatures/...` answers 404 until an environment opts in through configuration.
+A deployment that has enabled it through its own configuration overlay will behave differently
+from a fresh checkout; read the environment's effective configuration, not this default, when
+diagnosing a live gateway.
 Scope: ODVGateway (server track). OpenDocViewer is not involved and renders nothing from this contract.
 
 ## Why this exists
