@@ -8,6 +8,13 @@ for its `0.1.x` release line.
 
 ## [Unreleased]
 
+### Fixed
+
+- `GET /signatures/...` missed signatures added by an incremental update that rewrites
+  objects under a higher generation number (`5 1 obj`) while references still name `5 0 R`.
+  References now resolve to the newest in-use generation, so every signature field reachable
+  from the current trailer is reported; rule 5 and the traversal bounds are unchanged.
+
 ## [0.1.43] - 2026-09-27
 
 ### Fixed

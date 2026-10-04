@@ -1,5 +1,6 @@
 using System.Text;
 using UglyToad.PdfPig;
+using UglyToad.PdfPig.Core;
 using UglyToad.PdfPig.Tokens;
 
 namespace ODVGateway.Services.Signatures;
@@ -9,6 +10,9 @@ namespace ODVGateway.Services.Signatures;
 /// <c>/AcroForm/Fields</c> tree, the page annotation arrays, and the <c>/Perms</c> markers. Every
 /// object lookup goes through the parser's cross-reference data, so classic cross-reference tables,
 /// cross-reference streams, object streams and incremental updates are all handled by the library.
+/// References are resolved against the newest in-use generation of their object number, so an
+/// incremental update that rewrites an object under a higher generation is still the one reached
+/// from the current trailer (see <see cref="Current"/>).
 /// </summary>
 public sealed class PdfSignatureLocator
 {
@@ -19,6 +23,7 @@ public sealed class PdfSignatureLocator
     private byte[] fileBytes = [];
     private int visits;
     private readonly Dictionary<string, IToken?> objects = new(StringComparer.Ordinal);
+    private Dictionary<long, int> currentGenerations = new();
 
     private void CheckBudget()
     {
@@ -57,6 +62,7 @@ public sealed class PdfSignatureLocator
         using var stream = new CancellablePdfStream(fileBytes, cancellationToken);
         using var document = OpenDocument(stream);
         CheckBudget();
+        currentGenerations = IndexCurrentGenerations(document);
         var catalog = document.Structure.Catalog.CatalogDictionary;
         var certificationReferences = ReadCertificationReferences(document, catalog);
 
@@ -86,6 +92,38 @@ public sealed class PdfSignatureLocator
 
         return found;
     }
+
+    /// <summary>
+    /// Highest in-use generation per object number in the merged cross-reference data. Some writers
+    /// rewrite an object in an incremental update as <c>n 1 obj</c> (xref entry <c>00001 n</c>) but
+    /// leave every reference as <c>n 0 R</c>; an exact (number, generation) lookup then returns the
+    /// superseded revision and hides fields added later. Generations only grow, so the highest one
+    /// is the object the current trailer's revision lists. The index is linear in the xref data the
+    /// parser has already bounded by the file size.
+    /// </summary>
+    private Dictionary<long, int> IndexCurrentGenerations(PdfDocument document)
+    {
+        var index = new Dictionary<long, int>();
+        var count = 0;
+        foreach (var reference in document.Structure.CrossReferenceTable.ObjectOffsets.Keys)
+        {
+            if ((++count & 0xFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
+            if (!index.TryGetValue(reference.ObjectNumber, out var generation) || reference.Generation > generation)
+                index[reference.ObjectNumber] = reference.Generation;
+        }
+
+        return index;
+    }
+
+    /// <summary>
+    /// The reference as it exists in the newest revision: the same object number at its highest
+    /// in-use generation when that is higher than the one named. Never invents an object; a
+    /// reference to an unknown number is returned unchanged.
+    /// </summary>
+    private IndirectReference Current(IndirectReference reference) =>
+        currentGenerations.TryGetValue(reference.ObjectNumber, out var generation) && generation > reference.Generation
+            ? new IndirectReference(reference.ObjectNumber, generation)
+            : reference;
 
     /// <summary>
     /// Opens the document with lenient parsing (real-world signed PDFs frequently carry slightly
@@ -265,7 +303,7 @@ public sealed class PdfSignatureLocator
         }
 
         var physicalObject = valueToken is IndirectReferenceToken physicalReference
-            ? document.Structure.GetObject(physicalReference.Data) : null;
+            ? document.Structure.GetObject(Current(physicalReference.Data)) : null;
         var byteRange = ReadByteRange(document, signature);
         var span = SignatureContentsSpan.Find(fileBytes, physicalObject, byteRange, cancellationToken);
         found.Add(new SignatureDictionary(
@@ -282,9 +320,12 @@ public sealed class PdfSignatureLocator
             span.Start, span.End));
     }
 
-    private string ReferenceKey(IndirectReferenceToken token) =>
-        token.Data.ObjectNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)
-        + ":" + token.Data.Generation.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    private string ReferenceKey(IndirectReferenceToken token)
+    {
+        var current = Current(token.Data);
+        return current.ObjectNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            + ":" + current.Generation.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    }
 
     private long[] ReadByteRange(PdfDocument document, DictionaryToken signature)
     {
@@ -449,7 +490,7 @@ public sealed class PdfSignatureLocator
                     var key = ReferenceKey(referenceToken);
                     if (!objects.TryGetValue(key, out current))
                     {
-                        current = document.Structure.GetObject(referenceToken.Data);
+                        current = document.Structure.GetObject(Current(referenceToken.Data));
                         objects.Add(key, current);
                     }
                     continue;

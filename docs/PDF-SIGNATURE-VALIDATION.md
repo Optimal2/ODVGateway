@@ -122,6 +122,23 @@ Limits:
 `PdfPig` (Apache-2.0) is used to walk the PDF object graph: catalog, `/AcroForm/Fields` (including
 `/Kids` inheritance), `/FT /Sig` fields, their `/V` signature dictionaries, and `/Perms/DocMDP`.
 
+Traversal starts at the catalog named by the **current** trailer (the last one in the file; PdfPig
+follows `/Prev` and merges every cross-reference section), so fields added or rewritten by an
+incremental update are reached through the newest `/AcroForm` and page objects. Every signature
+field in `/AcroForm/Fields` (with `/Kids`) and in page `/Annots` is enumerated, recognised by
+`/FT /Sig` (inherited through `/Parent`) or by a `/V` dictionary of `/Type /Sig`, and
+de-duplicated by the resolved object identity of its `/V`.
+
+Indirect references are resolved by object number to the **highest in-use generation** in the
+merged cross-reference data, not by exact (number, generation) match. Some writers rewrite an object
+in an incremental update as `5 1 obj` (xref entry `00001 n`) while the catalog still says `5 0 R`; an
+exact lookup then returns the superseded revision-1 AcroForm and silently drops every signature
+added later. Generations only grow, so the highest one is the object the current revision lists.
+This only widens the inventory toward what the current revision contains, as browser PDF readers do;
+it never makes a signature `intact` on its own. Each located signature is still checked against its
+own byte range, and rule 5 below still decides whether an earlier approval survives later
+revisions. Remapped references go through the same visited sets, depth limit and traversal budget.
+
 Why a library and not a hand-written reader: signature dictionaries live behind cross-reference
 tables *and* cross-reference streams, object streams (`/ObjStm`), and incremental updates, and they
 are read again after each append. Getting those right is a PDF parser, which is exactly what PdfPig
@@ -334,9 +351,12 @@ helpers; no proxy logic is duplicated.
 
 Tests build a throwaway CA hierarchy in code (`CertificateRequest`, `X509SignatureGenerator`,
 `CertificateRevocationListBuilder`), sign synthetic single-page PDFs written by the fixture helper,
-and write DER CRL files into a temp directory. No network access, no fixtures in the repository:
-every byte is generated per test run, so nothing that looks like a customer document can leak into
-a public repository.
+and write DER CRL files into a temp directory. No network access, and almost every byte is generated
+per test run, so nothing that looks like a customer document can leak into a public repository.
+The one checked-in file, `tests/ODVGateway.Tests/Fixtures/Signatures/odv-two-signatures-incremental.pdf`,
+is the synthetic two-signature fixture from OpenDocViewer's `scripts/generate-signature-fixtures.mjs`
+(throwaway CA, fake names); it pins the generation-bumped incremental update described under
+"Reading the PDF". Its origin and hash are in the `README.md` next to it.
 
 Security regression coverage lives in `SignatureSecurityTests` and `SignatureValidationServiceTests`.
 Network tests use an in-memory HTTP responder and generated CRLs; address classification and mixed

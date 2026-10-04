@@ -20,6 +20,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Synthetic signature fixtures; see Fixtures/Signatures/README.md. -->
+    <None Include="Fixtures\**\*.pdf" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\ODVGateway\ODVGateway.csproj" />
   </ItemGroup>
 
