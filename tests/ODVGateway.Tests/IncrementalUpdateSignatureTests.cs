@@ -113,6 +113,79 @@ public sealed class IncrementalUpdateSignatureTests : IDisposable
         Assert.Contains(SignatureValidationReasons.UnexpectedObjectTypeSkipped, response.Diagnostics);
     }
 
+    [Fact]
+    public async Task DeepReferenceChain_SkipsElementAndReportsDepthDiagnostic()
+    {
+        // /Fields[1] reaches its field through 33 bare-reference hops (objects 6-38), past the
+        // depth-32 bound. The valid sibling must still be reported and the skip must be visible
+        // as reference-depth-exceeded instead of an empty diagnostics array.
+        var extraObjects = new List<string>
+        {
+            "<< /FT /Sig /T (Signature1) /V 5 0 R >>",
+            "<< /Type /Sig /SubFilter /adbe.pkcs7.detached /ByteRange [0 1 2 3] /Contents <00> >>"
+        };
+        for (var i = 6; i < 6 + 33; i++)
+            extraObjects.Add($"{i + 1} 0 R");
+        extraObjects.Add("<< /FT /Sig /T (Hidden) /V 40 0 R >>");
+        extraObjects.Add("<< /Type /Sig /SubFilter /adbe.pkcs7.detached /ByteRange [0 1 2 3] /Contents <00> >>");
+        var bytes = BaseRevision(acroFormBody: "<< /Fields [4 0 R 6 0 R] >>", extraObjects: extraObjects);
+
+        var response = await CreateService().ValidateAsync(bytes, TestContext.Current.CancellationToken);
+
+        Assert.Equal("Signature1", Assert.Single(response.Signatures).FieldName);
+        Assert.Contains(SignatureValidationReasons.ReferenceDepthExceeded, response.Diagnostics);
+    }
+
+    [Fact]
+    public async Task CyclicAcroFormReference_RejectsDocument()
+    {
+        // Object 3 is the AcroForm and a self-reference: resolving /AcroForm cycles instead of
+        // reaching a dictionary. A cyclic root must fail the file, not read as absent.
+        var bytes = BaseRevision(acroFormBody: "3 0 R");
+
+        var exception = Assert.Throws<PdfSignatureFormatException>(() =>
+            new PdfSignatureLocator().Locate(bytes, TestContext.Current.CancellationToken));
+        Assert.Contains("AcroForm", exception.Message, StringComparison.Ordinal);
+        await Assert.ThrowsAsync<PdfSignatureFormatException>(() =>
+            CreateService().ValidateAsync(bytes, TestContext.Current.CancellationToken));
+    }
+
+    [Fact(Skip = "Parked: PdfPig walks the page tree eagerly in PdfDocument.Open and stack-overflows on this reference cycle before the locator runs, killing the test host. Re-enable once opening is guarded; the test then proves the named fatal failure.")]
+    public async Task CyclicPageTreeKidsReference_RejectsDocument()
+    {
+        // The /Kids entry resolves through a 4 -> 5 -> 4 reference cycle instead of a page node.
+        var bytes = AppendUpdate(BaseRevision(),
+        [
+            (2, 0, "<< /Type /Pages /Kids [4 0 R] /Count 1 >>"),
+            (4, 0, "5 0 R"),
+            (5, 0, "4 0 R")
+        ]);
+
+        var exception = Assert.Throws<PdfSignatureFormatException>(() =>
+            new PdfSignatureLocator().Locate(bytes, TestContext.Current.CancellationToken));
+        Assert.Contains("page tree", exception.Message, StringComparison.Ordinal);
+        await Assert.ThrowsAsync<PdfSignatureFormatException>(() =>
+            CreateService().ValidateAsync(bytes, TestContext.Current.CancellationToken));
+    }
+
+    [Fact(Skip = "Parked: PdfPig walks the page tree eagerly in PdfDocument.Open and stack-overflows on this reference cycle before the locator runs, killing the test host. Re-enable once opening is guarded; the test then proves the named fatal failure.")]
+    public async Task CyclicPagesRootReference_RejectsDocument()
+    {
+        // The catalog /Pages reference itself cycles (4 -> 5 -> 4) instead of reaching the root.
+        var bytes = AppendUpdate(BaseRevision(),
+        [
+            (1, 0, "<< /Type /Catalog /Pages 4 0 R /AcroForm 3 0 R >>"),
+            (4, 0, "5 0 R"),
+            (5, 0, "4 0 R")
+        ]);
+
+        var exception = Assert.Throws<PdfSignatureFormatException>(() =>
+            new PdfSignatureLocator().Locate(bytes, TestContext.Current.CancellationToken));
+        Assert.Contains("page tree", exception.Message, StringComparison.Ordinal);
+        await Assert.ThrowsAsync<PdfSignatureFormatException>(() =>
+            CreateService().ValidateAsync(bytes, TestContext.Current.CancellationToken));
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

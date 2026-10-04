@@ -265,6 +265,9 @@ public sealed class PdfSignatureLocator
                 continue;
             }
 
+            // Strict on purpose: a broken page tree must fail the file, not read as empty. Note
+            // PdfPig walks this same chain eagerly while opening, so a cycling chain never
+            // reaches this call.
             foreach (var kid in EnumerateDictionaries(document, kidsToken))
             {
                 if (!visited.Add(kid)) continue;
@@ -498,7 +501,7 @@ public sealed class PdfSignatureLocator
             return false;
         }
 
-        var resolved = Resolve<DictionaryToken>(document, token);
+        var resolved = Resolve<DictionaryToken>(document, token, cycleRootName: name);
         if (resolved is null)
         {
             return false;
@@ -508,7 +511,7 @@ public sealed class PdfSignatureLocator
         return true;
     }
 
-    private T? Resolve<T>(PdfDocument document, IToken? token, bool skipDangling = false) where T : class, IToken
+    private T? Resolve<T>(PdfDocument document, IToken? token, bool skipDangling = false, string? cycleRootName = null) where T : class, IToken
     {
         var current = token;
         var references = new HashSet<string>(StringComparer.Ordinal);
@@ -529,6 +532,10 @@ public sealed class PdfSignatureLocator
                     {
                         // A reference cycle inside a field/widget/annotation walk: the element is
                         // skipped, but the skip is reported like every other unresolvable reference.
+                        // A cycle in a named strict root instead fails the file: it cannot be
+                        // inventoried, so it must never read as absent.
+                        if (!skipDangling && cycleRootName is not null)
+                            throw new PdfSignatureFormatException($"The PDF {cycleRootName} reference is cyclic.");
                         if (skipDangling)
                             diagnostics.Add(SignatureValidationReasons.ReferenceCycleSkipped);
                         return null;
@@ -568,6 +575,12 @@ public sealed class PdfSignatureLocator
                     return null;
             }
         }
+
+        // The chain outlived the depth bound: inside a field/widget/annotation walk the
+        // element is skipped, but the skip is reported so a signature hidden behind a
+        // long chain cannot vanish with an empty diagnostics array.
+        if (skipDangling)
+            diagnostics.Add(SignatureValidationReasons.ReferenceDepthExceeded);
 
         return null;
     }

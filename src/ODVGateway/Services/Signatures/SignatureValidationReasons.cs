@@ -55,4 +55,11 @@ public static class SignatureValidationReasons
     /// of resolving to the requested field, /V or signature dictionary.
     /// </summary>
     public const string UnexpectedObjectTypeSkipped = "unexpected-object-type-skipped";
+
+    /// <summary>
+    /// A reference chain longer than the traversal depth limit was skipped during a
+    /// field/widget/annotation walk instead of resolving to the requested field, /V or signature
+    /// dictionary.
+    /// </summary>
+    public const string ReferenceDepthExceeded = "reference-depth-exceeded";
 }
