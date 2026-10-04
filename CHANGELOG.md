@@ -29,7 +29,8 @@ for its `0.1.x` release line.
   the trailer's `/Root` → `/Pages` → `/Kids` path with the gateway's own raw reader (exact
   (number, generation) resolution with fallback diagnostics, visited set, depth bound 32, at most
   100,000 page-tree nodes); a proven cycle, depth overrun or malformed `/Kids` entry now fails
-  closed with a named `page-tree-cyclic` / `page-tree-too-deep` failure (HTTP 422) instead.
+  closed with a named `page-tree-cyclic` / `page-tree-too-deep` / `page-tree-malformed` failure
+  (HTTP 422) instead (the malformed code was split out in the entry below).
   Shapes the pre-check cannot read are left to PdfPig as before; isolating validation in a
   separate process is still pending (see `SECURITY.md`).
 
