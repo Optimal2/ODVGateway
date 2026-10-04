@@ -10,10 +10,17 @@ for its `0.1.x` release line.
 
 ### Fixed
 
-- `GET /signatures/...` missed signatures added by an incremental update that rewrites
-  objects under a higher generation number (`5 1 obj`) while references still name `5 0 R`.
-  References now resolve to the newest in-use generation, so every signature field reachable
-  from the current trailer is reported; rule 5 and the traversal bounds are unchanged.
+- `GET /signatures/...` resolves indirect references exactly by (number, generation), as the
+  PDF specification and PdfPig do, for the catalog, fields, `/V`, AcroForm, page objects,
+  `/Perms/DocMDP`, de-duplication and the physical `/Contents` lookup. An unreleased change had
+  remapped every reference to the newest generation of its number, which let an appended
+  `N 1 obj` shadow a signed `N 0 obj`: a signature could disappear from the report or have its
+  byte range and signer evidence replaced. An incremental update that rewrites an object under
+  a higher generation (`5 1 obj` while references keep `5 0 R`) is outside the specification;
+  the generation-0 original is read and a signature covering the earlier revision stays
+  `modified-after-signing`. Only a reference whose exact entry is missing from the
+  cross-reference data falls back to the newest generation, and that is reported in the new
+  document-level `diagnostics` array as `reference-generation-fallback` and logged.
 
 ## [0.1.43] - 2026-09-27
 

@@ -6,11 +6,14 @@ namespace ODVGateway.Models;
 /// <summary>
 /// The shape level 1 (OpenDocViewer) receives from <c>GET /signatures/{sessionKey}/{fileIndex}</c>.
 /// Names are pinned with attributes instead of relying on a naming policy, so the wire contract
-/// cannot drift when a member is renamed in C#.
+/// cannot drift when a member is renamed in C#. <c>Diagnostics</c> lists document-level notes about
+/// how the PDF was read (for example <c>reference-generation-fallback</c>); it is empty for
+/// specification-conforming files.
 /// </summary>
 public sealed record PdfSignatureValidationResponse(
     IReadOnlyList<PdfSignatureValidation> Signatures,
-    DateTimeOffset ValidatedAt);
+    DateTimeOffset ValidatedAt,
+    IReadOnlyList<string> Diagnostics);
 
 /// <summary>
 /// One signature field of one PDF, as the gateway read it. Fields are null when the document or the

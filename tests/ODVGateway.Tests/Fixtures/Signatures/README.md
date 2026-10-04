@@ -16,6 +16,10 @@ real certificates.
   discarded. That CA is not a trust anchor in any test, so trust is never `valid` for this file.
 - Why it is kept as a file: the incremental update rewrites the page (object 3) and the AcroForm
   (object 5) with generation number **1** (`3 1 obj`, `5 1 obj`, xref entries `00001 n`) while the
-  catalog and page tree still reference `3 0 R` and `5 0 R`. The gateway's own in-code fixtures
-  keep generation 0, so this structure is only covered by this file.
-  See `IncrementalUpdateSignatureTests`.
+  catalog and page tree still reference `3 0 R` and `5 0 R`. That is outside the PDF
+  specification (a rewritten object keeps its generation), so the file is a **negative** fixture:
+  exact (number, generation) resolution reads the generation-0 originals, reports only
+  `Signature1` as `modified-after-signing` / `bytes-appended-after-signed-range`, and records no
+  fallback diagnostic. `IncrementalUpdateSignatureTests` also derives the specification-conforming
+  variant from it in memory: same bytes with `3 0 obj` / `5 0 obj` and `00000 n`, `ApprovalTwo`
+  re-signed in place with the test CA, which yields both signatures through exact resolution.

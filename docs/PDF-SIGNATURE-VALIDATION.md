@@ -59,7 +59,8 @@ Response is `Cache-Control: no-store`, JSON, camelCase:
       "validationTime": "2025-06-04T09:12:35+00:00"
     }
   ],
-  "validatedAt": "2025-06-04T09:12:35+00:00"
+  "validatedAt": "2025-06-04T09:12:35+00:00",
+  "diagnostics": []
 }
 ```
 
@@ -72,6 +73,7 @@ Field values:
 | `trust` | `valid`, `invalid`, `unknown` | chain level, evaluated at `validationTime`. |
 | `signingTimeSource` | `signed-attribute`, `pdf-M`, `timestamp`, `none` | where `signingTime` came from. |
 | `integrityReason`, `trustReason` | string or `null` | short stable codes; see the tables below. |
+| `diagnostics` | array of strings | document-level notes on how the PDF was read; empty for specification-conforming files. `reference-generation-fallback`: a reference named a (number, generation) missing from the cross-reference data and was read at the newest generation of that number (see "Reading the PDF"). |
 
 Unknown or absent values are reported as `null` rather than guessed. `fieldName` is the AcroForm
 field name when the signature sits on a field, and `/Perms` markers use `DocMDP` / the dictionary
@@ -129,15 +131,33 @@ field in `/AcroForm/Fields` (with `/Kids`) and in page `/Annots` is enumerated, 
 `/FT /Sig` (inherited through `/Parent`) or by a `/V` dictionary of `/Type /Sig`, and
 de-duplicated by the resolved object identity of its `/V`.
 
-Indirect references are resolved by object number to the **highest in-use generation** in the
-merged cross-reference data, not by exact (number, generation) match. Some writers rewrite an object
-in an incremental update as `5 1 obj` (xref entry `00001 n`) while the catalog still says `5 0 R`; an
-exact lookup then returns the superseded revision-1 AcroForm and silently drops every signature
-added later. Generations only grow, so the highest one is the object the current revision lists.
-This only widens the inventory toward what the current revision contains, as browser PDF readers do;
-it never makes a signature `intact` on its own. Each located signature is still checked against its
-own byte range, and rule 5 below still decides whether an earlier approval survives later
-revisions. Remapped references go through the same visited sets, depth limit and traversal budget.
+Indirect references are resolved **exactly by (number, generation)**, as the PDF specification and
+PdfPig do. This applies to the catalog named by the trailer's `/Root`, to every field, `/V`,
+AcroForm and page object, to `/Perms/DocMDP` matching, to de-duplication, and to locating `/Contents`
+physically. An object that exists at the referenced generation is never replaced by a higher
+generation of the same number.
+
+Some writers rewrite an object in an incremental update as `5 1 obj` (xref entry `00001 n`) while
+the catalog still says `5 0 R`. That is outside the specification: an object rewritten by an
+incremental update keeps its generation number, and a higher generation only appears after the
+number has been freed and reused, at which point `5 0 R` no longer names it. In such a file the
+generation-0 original is the object `5 0 R` names, so it is the one read; the `5 1 obj` body is
+unreferenced content appended after any signature that covers the earlier revision, and such a
+signature is reported as `modified-after-signing` / `bytes-appended-after-signed-range`. Resolving
+references to the newest generation instead would let any appended `N 1 obj` shadow a signed field,
+`/V` dictionary or AcroForm: a signature could vanish from the report or have its byte range,
+`/Contents` and signer evidence swapped for the shadow's, while a strict reader still shows the
+original.
+
+Only when the exact (number, generation) entry is **missing** from the merged cross-reference data
+does the reference fall back to the newest in-use generation of that object number. The fallback is
+conservative and never silent: the response's document-level `diagnostics` array then contains
+`reference-generation-fallback`, and the gateway logs a warning. It never makes a signature `intact`
+on its own: each located signature is still checked against its own byte range, and rule 5 below
+still decides whether an earlier approval survives later revisions. Fallback references go through
+the same visited sets, depth limit and traversal budget. For the catalog the fallback is reached
+only when PdfPig could open the file at all, which needs some `1 0 obj` body for `/Root 1 0 R`; an
+unlisted body found by PdfPig's lenient scan is not an exact cross-reference entry.
 
 Why a library and not a hand-written reader: signature dictionaries live behind cross-reference
 tables *and* cross-reference streams, object streams (`/ObjStm`), and incremental updates, and they
@@ -355,12 +375,15 @@ and write DER CRL files into a temp directory. No network access, and almost eve
 per test run, so nothing that looks like a customer document can leak into a public repository.
 The one checked-in file, `tests/ODVGateway.Tests/Fixtures/Signatures/odv-two-signatures-incremental.pdf`,
 is the synthetic two-signature fixture from OpenDocViewer's `scripts/generate-signature-fixtures.mjs`
-(throwaway CA, fake names); it pins the generation-bumped incremental update described under
-"Reading the PDF". Its origin and hash are in the `README.md` next to it.
+(throwaway CA, fake names). It is a negative fixture for the out-of-specification generation bump
+described under "Reading the PDF": its appended `3 1 obj` / `5 1 obj` must never shadow the
+generation-0 originals. `IncrementalUpdateSignatureTests` derives the specification-conforming
+variant from it in memory (generation 0 throughout, the second signature re-signed with the test
+CA). Its origin and hash are in the `README.md` next to it.
 
 Security regression coverage lives in `SignatureSecurityTests` and `SignatureValidationServiceTests`.
 Network tests use an in-memory HTTP responder and generated CRLs; address classification and mixed
 DNS results are tested separately, with no outbound network. `scripts/verify-signature-regressions.py`
-temporarily breaks each F1–F7 and N1–N4 guard, expects its selected xUnit test to fail, restores the source in
+temporarily breaks each F1–F7, N1–N4 and G1–G2 guard, expects its selected xUnit test to fail, restores the source in
 a `finally` block, and runs the complete signature tests against the restored source. Run it only
 in an isolated worktree without concurrent builds. Its logs stay under gitignored `TestResults/`.

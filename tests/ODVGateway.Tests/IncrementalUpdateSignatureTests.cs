@@ -8,18 +8,45 @@ using ODVGateway.Tests.Signatures;
 namespace ODVGateway.Tests;
 
 /// <summary>
-/// Signatures added by incremental updates whose rewritten objects carry a new generation number
-/// while older references still name generation 0. See Fixtures/Signatures/README.md.
+/// Signatures added by incremental updates, and incremental updates that write an object number
+/// again under a higher generation. References resolve exactly by (number, generation); only a
+/// reference whose exact entry is missing falls back to the newest generation, and that fallback
+/// is reported as a diagnostic. See Fixtures/Signatures/README.md.
 /// </summary>
 public sealed class IncrementalUpdateSignatureTests : IDisposable
 {
+    private static readonly long[] OdvSignature1ByteRange = [0, 877, 17263, 383];
+    private static readonly long[] OdvApprovalTwoByteRange = [0, 18212, 34598, 214];
+
     private readonly SignatureFixtures _fixtures = new();
 
     [Fact]
-    public async Task OdvTwoSignatureFixture_ReportsBothSignatures()
+    public async Task OdvGenerationBumpedFixture_NeverShadowsTheGenerationZeroOriginal()
     {
-        var bytes = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory,
-            "Fixtures", "Signatures", "odv-two-signatures-incremental.pdf"));
+        // Out of specification: the update writes `3 1 obj` / `5 1 obj` while every reference keeps
+        // naming generation 0. Generation 0 exists, so it is the object reached; the later revision
+        // is unsigned content appended after Signature1, which is what a strict reader shows too.
+        var bytes = ReadOdvFixture();
+
+        var located = new PdfSignatureLocator().Locate(bytes, TestContext.Current.CancellationToken);
+        var response = await CreateService().ValidateAsync(bytes, TestContext.Current.CancellationToken);
+
+        var dictionary = Assert.Single(located);
+        Assert.Equal("Signature1", dictionary.FieldName);
+        Assert.Equal(OdvSignature1ByteRange, dictionary.ByteRange);
+        var signature = Assert.Single(response.Signatures);
+        Assert.Equal("Signature1", signature.FieldName);
+        Assert.Equal(PdfSignatureIntegrity.ModifiedAfterSigning, signature.Integrity);
+        Assert.Equal(SignatureValidationReasons.BytesAppendedAfterSignedRange, signature.IntegrityReason);
+        Assert.NotEqual(PdfSignatureTrust.Valid, signature.Trust);
+        // Generation 0 exists for every reference, so nothing fell back.
+        Assert.Empty(response.Diagnostics);
+    }
+
+    [Fact]
+    public async Task SpecCorrectTwoSignatureIncremental_ReportsBothSignatures()
+    {
+        var bytes = SpecCorrectTwoSignatureFixture();
 
         var response = await CreateService().ValidateAsync(bytes, TestContext.Current.CancellationToken);
 
@@ -33,15 +60,15 @@ public sealed class IncrementalUpdateSignatureTests : IDisposable
         Assert.Equal(PdfSignatureIntegrity.Intact, second.Integrity);
         Assert.Null(second.IntegrityReason);
         Assert.Equal(true, second.CoversWholeFile);
-        // The generator's throwaway CA is never an anchor here.
         Assert.All(response.Signatures, s => Assert.NotEqual(PdfSignatureTrust.Valid, s.Trust));
+        // Reached through exact resolution alone.
+        Assert.Empty(response.Diagnostics);
     }
 
     [Fact]
-    public async Task OdvTwoSignatureFixture_DamagedLaterSignature_LeavesEarlierModified()
+    public async Task SpecCorrectTwoSignatureIncremental_DamagedLaterSignature_LeavesEarlierModified()
     {
-        var bytes = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory,
-            "Fixtures", "Signatures", "odv-two-signatures-incremental.pdf"));
+        var bytes = SpecCorrectTwoSignatureFixture();
         // Flip one byte of the second revision's /Reason text: covered by ApprovalTwo only.
         var text = Encoding.Latin1.GetString(bytes);
         bytes[text.IndexOf("(Second approval)", StringComparison.Ordinal) + 1] = (byte)'X';
@@ -56,15 +83,147 @@ public sealed class IncrementalUpdateSignatureTests : IDisposable
     }
 
     [Fact]
+    public async Task ShadowSignatureDictionaryAtHigherGeneration_DoesNotReplaceTheSignedEvidence()
+    {
+        var original = File.ReadAllBytes(_fixtures.CreateSignedPdf(new SignatureFixtures.SignedPdfRequest()));
+        var originalSignature = Assert.Single(new PdfSignatureLocator().Locate(original, TestContext.Current.CancellationToken));
+        // `5 1 obj` next to the signed `5 0 obj` that field 4 references as `5 0 R`.
+        var shadowed = AppendUpdate(original,
+        [
+            (5, 1, "<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /Reason (Shadow) " +
+                   "/Name (Shadow Signer) /ByteRange [0 10 20 30] /Contents <0102030405> >>")
+        ]);
+
+        var located = Assert.Single(new PdfSignatureLocator().Locate(shadowed, TestContext.Current.CancellationToken));
+        var response = await CreateService().ValidateAsync(shadowed, TestContext.Current.CancellationToken);
+
+        Assert.Equal(originalSignature.ByteRange, located.ByteRange);
+        Assert.Equal(originalSignature.Contents, located.Contents);
+        Assert.Equal(originalSignature.ContentsStart, located.ContentsStart);
+        Assert.Equal("Approval", located.Reason);
+        var signature = Assert.Single(response.Signatures);
+        Assert.Equal("Approval", signature.Reason);
+        Assert.Equal(PdfSignatureIntegrity.ModifiedAfterSigning, signature.Integrity);
+        Assert.Equal(SignatureValidationReasons.BytesAppendedAfterSignedRange, signature.IntegrityReason);
+        Assert.NotNull(signature.Signer);
+        Assert.Empty(response.Diagnostics);
+    }
+
+    [Fact]
+    public async Task ShadowFieldAtHigherGeneration_DoesNotHideTheSignature()
+    {
+        var original = File.ReadAllBytes(_fixtures.CreateSignedPdf(new SignatureFixtures.SignedPdfRequest()));
+        var shadowed = AppendUpdate(original, [(4, 1, "<< /T (Shadow) >>")]);
+
+        var response = await CreateService().ValidateAsync(shadowed, TestContext.Current.CancellationToken);
+
+        var signature = Assert.Single(response.Signatures);
+        Assert.Equal("Signature1", signature.FieldName);
+        Assert.Equal(PdfSignatureIntegrity.ModifiedAfterSigning, signature.Integrity);
+        Assert.Equal(SignatureValidationReasons.BytesAppendedAfterSignedRange, signature.IntegrityReason);
+    }
+
+    [Fact]
+    public async Task ShadowCatalogAtHigherGeneration_DoesNotHideTheSignature()
+    {
+        var original = File.ReadAllBytes(_fixtures.CreateSignedPdf(new SignatureFixtures.SignedPdfRequest()));
+        var shadowed = AppendUpdate(original, [(1, 1, "<< /Type /Catalog /Pages 2 0 R >>")]);
+
+        var response = await CreateService().ValidateAsync(shadowed, TestContext.Current.CancellationToken);
+
+        var signature = Assert.Single(response.Signatures);
+        Assert.Equal("Signature1", signature.FieldName);
+        Assert.Equal(PdfSignatureIntegrity.ModifiedAfterSigning, signature.Integrity);
+    }
+
+    [Fact]
+    public async Task ShadowDocMdpSignatureAtHigherGeneration_KeepsTheCertification()
+    {
+        var original = File.ReadAllBytes(_fixtures.CreateSignedPdf(new SignatureFixtures.SignedPdfRequest
+        {
+            Certification = true
+        }));
+        var shadowed = AppendUpdate(original,
+            [(5, 1, "<< /Type /Sig /SubFilter /adbe.pkcs7.detached /ByteRange [0 10 20 30] /Contents <00> >>")]);
+
+        var response = await CreateService().ValidateAsync(shadowed, TestContext.Current.CancellationToken);
+
+        var signature = Assert.Single(response.Signatures);
+        Assert.Equal(PdfSignatureKind.Certification, signature.Kind);
+        Assert.Equal(PdfSignatureIntegrity.ModifiedAfterSigning, signature.Integrity);
+        Assert.Equal(PdfSignatureTrust.Invalid, signature.Trust);
+        Assert.Equal(SignatureValidationReasons.ModifiedAfterCertification, signature.TrustReason);
+    }
+
+    [Fact]
+    public async Task MissingExactGeneration_FallsBackToNewestGeneration_WithDiagnostic()
+    {
+        // Field 4 and signature 5 exist only at generation 1 while the references name generation 0.
+        var bytes = AppendUpdate(BaseRevision(),
+        [
+            (3, 0, "<< /Fields [4 0 R] >>"),
+            (4, 1, "<< /FT /Sig /T (late) /V 5 0 R >>"),
+            (5, 1, "<< /Type /Sig /SubFilter /adbe.pkcs7.detached /Reason (Late) /ByteRange [0 1 2 3] /Contents <00> >>")
+        ]);
+
+        var located = new PdfSignatureLocator().LocateDocument(bytes, TestContext.Current.CancellationToken);
+        var response = await CreateService().ValidateAsync(bytes, TestContext.Current.CancellationToken);
+
+        Assert.Equal("Late", Assert.Single(located.Signatures).Reason);
+        Assert.Equal([SignatureValidationReasons.ReferenceGenerationFallback], located.Diagnostics);
+        var signature = Assert.Single(response.Signatures);
+        Assert.Equal("late", signature.FieldName);
+        Assert.NotEqual(PdfSignatureIntegrity.Intact, signature.Integrity);
+        Assert.Equal([SignatureValidationReasons.ReferenceGenerationFallback], response.Diagnostics);
+    }
+
+    [Fact]
+    public void CatalogOnlyAtHigherGeneration_FallsBack_WithDiagnostic()
+    {
+        // The trailer says /Root 1 0 R but the only catalog in the xref data is `1 1 obj`. PdfPig
+        // refuses to open the file unless its lenient scan finds some `1 0 obj`, so the file also
+        // carries an unlisted, field-less one; being outside the xref data it is not an exact entry.
+        var bytes = BaseRevision(catalogGeneration: 1, acroFormBody: "<< /Fields [4 0 R] >>",
+            orphanBody: "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
+            extraObjects:
+            [
+                "<< /FT /Sig /T (Signature1) /V 5 0 R >>",
+                "<< /Type /Sig /SubFilter /adbe.pkcs7.detached /ByteRange [0 1 2 3] /Contents <00> >>"
+            ]);
+
+        var located = new PdfSignatureLocator().LocateDocument(bytes, TestContext.Current.CancellationToken);
+
+        Assert.Equal("Signature1", Assert.Single(located.Signatures).FieldName);
+        Assert.Equal([SignatureValidationReasons.ReferenceGenerationFallback], located.Diagnostics);
+    }
+
+    [Fact]
+    public void CatalogShadowAtHigherGeneration_KeepsTheExactCatalog_WithoutDiagnostic()
+    {
+        var bytes = AppendUpdate(BaseRevision(acroFormBody: "<< /Fields [4 0 R] >>",
+                extraObjects:
+                [
+                    "<< /FT /Sig /T (Signature1) /V 5 0 R >>",
+                    "<< /Type /Sig /SubFilter /adbe.pkcs7.detached /ByteRange [0 1 2 3] /Contents <00> >>"
+                ]),
+            [(1, 1, "<< /Type /Catalog /Pages 2 0 R >>")]);
+
+        var located = new PdfSignatureLocator().LocateDocument(bytes, TestContext.Current.CancellationToken);
+
+        Assert.Equal("Signature1", Assert.Single(located.Signatures).FieldName);
+        Assert.Empty(located.Diagnostics);
+    }
+
+    [Fact]
     public void MaliciousGenerationBumpedUpdate_DeepFieldChain_StillHitsDepthLimit()
     {
-        // The update re-points the AcroForm through a generation-bumped object to a /Kids chain
-        // deeper than the traversal depth limit; the newer revision must not escape the bound.
-        var update = new List<(int Number, string Body)> { (3, "<< /Fields [4 0 R] >>") };
+        // The update re-points the AcroForm to a /Kids chain that exists only at generation 1 and
+        // is deeper than the traversal depth limit; the fallback must not escape the bound.
+        var update = new List<(int Number, int Generation, string Body)> { (3, 0, "<< /Fields [4 0 R] >>") };
         for (var i = 4; i < 4 + 40; i++)
-            update.Add((i, $"<< /T (k{i}) /Kids [{i + 1} 0 R] >>"));
-        update.Add((44, "<< /FT /Sig /T (leaf) >>"));
-        var bytes = GenerationBumpedUpdate(update);
+            update.Add((i, 1, $"<< /T (k{i}) /Kids [{i + 1} 0 R] >>"));
+        update.Add((44, 1, "<< /FT /Sig /T (leaf) >>"));
+        var bytes = AppendUpdate(BaseRevision(), update);
 
         Assert.Throws<PdfSignatureFormatException>(() =>
             new PdfSignatureLocator().Locate(bytes, TestContext.Current.CancellationToken));
@@ -73,54 +232,110 @@ public sealed class IncrementalUpdateSignatureTests : IDisposable
     [Fact]
     public void MaliciousGenerationBumpedUpdate_SelfReferences_Terminate()
     {
-        var bytes = GenerationBumpedUpdate(
+        var bytes = AppendUpdate(BaseRevision(),
         [
-            (3, "<< /Fields [4 0 R 4 1 R 3 0 R] >>"),
-            (4, "<< /T (loop) /Parent 4 0 R /Kids [4 0 R 4 1 R 3 0 R] /V 4 0 R >>")
+            (3, 0, "<< /Fields [4 0 R 4 1 R 3 0 R] >>"),
+            (4, 1, "<< /T (loop) /Parent 4 0 R /Kids [4 0 R 4 1 R 3 0 R] /V 4 0 R >>")
         ]);
 
-        Assert.Empty(new PdfSignatureLocator().Locate(bytes, TestContext.Current.CancellationToken));
+        var located = new PdfSignatureLocator().LocateDocument(bytes, TestContext.Current.CancellationToken);
+
+        Assert.Empty(located.Signatures);
+        Assert.Equal([SignatureValidationReasons.ReferenceGenerationFallback], located.Diagnostics);
+    }
+
+    private static byte[] ReadOdvFixture() => File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory,
+        "Fixtures", "Signatures", "odv-two-signatures-incremental.pdf"));
+
+    /// <summary>
+    /// The ODV fixture as a specification-conforming writer produces it: the incremental update
+    /// rewrites the page (3) and the AcroForm (5) under their existing generation 0 (`3 0 obj`,
+    /// `5 0 obj`, xref entries `00000 n`). Every edit keeps the byte length, so all offsets stay
+    /// valid; ApprovalTwo covers the edited bytes and is re-signed in place with the fixture leaf.
+    /// Signature1 and its revision are untouched.
+    /// </summary>
+    private byte[] SpecCorrectTwoSignatureFixture()
+    {
+        var bytes = ReadOdvFixture();
+        var revisionOneEnd = (int)(OdvSignature1ByteRange[2] + OdvSignature1ByteRange[3]);
+        Replace(bytes, revisionOneEnd, "3 1 obj", "3 0 obj");
+        Replace(bytes, revisionOneEnd, "5 1 obj", "5 0 obj");
+        var text = Encoding.Latin1.GetString(bytes);
+        var xref = text.LastIndexOf("\nxref\n", StringComparison.Ordinal);
+        for (var at = text.IndexOf(" 00001 n", xref, StringComparison.Ordinal); at >= 0;
+             at = text.IndexOf(" 00001 n", at + 1, StringComparison.Ordinal))
+            bytes[at + 5] = (byte)'0';
+        Assert.DoesNotContain(" 1 obj", Encoding.Latin1.GetString(bytes), StringComparison.Ordinal);
+        _fixtures.SignByteRange(bytes, OdvApprovalTwoByteRange);
+        return bytes;
+    }
+
+    private static void Replace(byte[] bytes, int from, string oldText, string newText)
+    {
+        var at = Encoding.Latin1.GetString(bytes).IndexOf(oldText, from, StringComparison.Ordinal);
+        Assert.True(at >= 0, oldText);
+        Encoding.Latin1.GetBytes(newText).CopyTo(bytes, at);
     }
 
     /// <summary>
-    /// A one-page revision 0 (catalog 1, pages 2, AcroForm 3 with no fields), followed by one
-    /// incremental update that writes every given object with generation 1 while all references
-    /// in the file keep naming generation 0.
+    /// A revision 0 with catalog 1 (written under <paramref name="catalogGeneration"/>, referenced
+    /// as <c>1 0 R</c> by the trailer), an empty page tree 2, AcroForm 3 and the extra objects as
+    /// 4, 5, ... at generation 0. <paramref name="orphanBody"/> is written first and is not listed
+    /// in the cross-reference table.
     /// </summary>
-    private static byte[] GenerationBumpedUpdate(IReadOnlyList<(int Number, string Body)> update)
+    private static byte[] BaseRevision(int catalogGeneration = 0, string acroFormBody = "<< /Fields [] >>",
+        IReadOnlyList<string>? extraObjects = null, string? orphanBody = null)
     {
         using var stream = new MemoryStream();
         stream.Write("%PDF-1.7\n"u8);
-        var baseObjects = new[]
+        if (orphanBody is not null) stream.Write(Encoding.ASCII.GetBytes(orphanBody));
+        var baseObjects = new List<string>
         {
             "<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>",
             "<< /Type /Pages /Kids [] /Count 0 >>",
-            "<< /Fields [] >>"
+            acroFormBody
         };
+        baseObjects.AddRange(extraObjects ?? []);
         var offsets = new List<long>();
-        for (var i = 0; i < baseObjects.Length; i++)
+        for (var i = 0; i < baseObjects.Count; i++)
         {
             offsets.Add(stream.Position);
-            stream.Write(Encoding.ASCII.GetBytes($"{i + 1} 0 obj\n{baseObjects[i]}\nendobj\n"));
+            var generation = i == 0 ? catalogGeneration : 0;
+            stream.Write(Encoding.ASCII.GetBytes($"{i + 1} {generation} obj\n{baseObjects[i]}\nendobj\n"));
         }
         var firstXref = stream.Position;
-        stream.Write(Encoding.ASCII.GetBytes($"xref\n0 4\n0000000000 65535 f \n"));
-        foreach (var offset in offsets) stream.Write(Encoding.ASCII.GetBytes($"{offset:D10} 00000 n \n"));
-        stream.Write(Encoding.ASCII.GetBytes($"trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n{firstXref}\n%%EOF\n"));
+        stream.Write(Encoding.ASCII.GetBytes($"xref\n0 {baseObjects.Count + 1}\n0000000000 65535 f \n"));
+        for (var i = 0; i < offsets.Count; i++)
+            stream.Write(Encoding.ASCII.GetBytes($"{offsets[i]:D10} {(i == 0 ? catalogGeneration : 0):D5} n \n"));
+        stream.Write(Encoding.ASCII.GetBytes(
+            $"trailer\n<< /Size {baseObjects.Count + 1} /Root 1 0 R >>\nstartxref\n{firstXref}\n%%EOF\n"));
+        return stream.ToArray();
+    }
 
-        var updated = new List<(int Number, long Offset)>();
-        foreach (var (number, body) in update)
+    /// <summary>
+    /// Appends one incremental update that writes every given object under the given generation
+    /// (xref entry with that generation) and keeps <c>/Root 1 0 R</c>.
+    /// </summary>
+    private static byte[] AppendUpdate(byte[] original, IReadOnlyList<(int Number, int Generation, string Body)> update)
+    {
+        var text = Encoding.Latin1.GetString(original);
+        var previousXref = long.Parse(text[(text.LastIndexOf("startxref", StringComparison.Ordinal) + 9)..]
+            .Trim().Split('\n')[0], System.Globalization.CultureInfo.InvariantCulture);
+        using var stream = new MemoryStream();
+        stream.Write(original);
+        var written = new List<(int Number, int Generation, long Offset)>();
+        foreach (var (number, generation, body) in update)
         {
-            updated.Add((number, stream.Position));
-            stream.Write(Encoding.ASCII.GetBytes($"{number} 1 obj\n{body}\nendobj\n"));
+            written.Add((number, generation, stream.Position));
+            stream.Write(Encoding.ASCII.GetBytes($"{number} {generation} obj\n{body}\nendobj\n"));
         }
         var xref = stream.Position;
-        var size = Math.Max(4, update.Max(o => o.Number) + 1);
+        var size = Math.Max(16, update.Max(o => o.Number) + 1);
         stream.Write("xref\n0 1\n0000000000 65535 f \n"u8);
-        foreach (var (number, offset) in updated)
-            stream.Write(Encoding.ASCII.GetBytes($"{number} 1\n{offset:D10} 00001 n \n"));
+        foreach (var (number, generation, offset) in written)
+            stream.Write(Encoding.ASCII.GetBytes($"{number} 1\n{offset:D10} {generation:D5} n \n"));
         stream.Write(Encoding.ASCII.GetBytes(
-            $"trailer\n<< /Size {size} /Root 1 0 R /Prev {firstXref} >>\nstartxref\n{xref}\n%%EOF\n"));
+            $"trailer\n<< /Size {size} /Root 1 0 R /Prev {previousXref} >>\nstartxref\n{xref}\n%%EOF\n"));
         return stream.ToArray();
     }
 

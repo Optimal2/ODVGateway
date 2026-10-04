@@ -1,4 +1,4 @@
-"""Temporarily break F1-F7 and N1-N4 guards and prove the xUnit tests fail.
+"""Temporarily break F1-F7, N1-N4 and G1-G2 guards and prove the xUnit tests fail.
 
 No network is used by these tests. Source bytes are restored even on failure. Never run alongside
 another build/edit in the same worktree. Results are written only to gitignored TestResults.
@@ -37,7 +37,7 @@ MUTATIONS = [
      'if (!visited.Add(kid)) continue;', '// Mutation: enqueue duplicate page references.',
      'F3_RepeatedAndCyclicPageReferences'),
     ('F4', 'PdfSignatureValidationService.cs',
-     'signatures = locator.Locate(fileBytes, token);', 'signatures = locator.Locate(fileBytes);',
+     'locator.LocateDocument(fileBytes, token);', 'locator.LocateDocument(fileBytes);',
      'F4_CancelledValidation_StopsBeforeParsing'),
     ('F5', 'RevocationHttpClient.cs',
      '|| IsAllowedAddress(address));', '|| true);', 'F5_Transport_BlocksSchemesPrivateHostsAndRedirects'),
@@ -48,6 +48,12 @@ MUTATIONS = [
     ('F7', 'SignatureTrustEvaluator.cs',
      'if (verdict.Trust != PdfSignatureTrust.Valid)', 'if (false)',
      'F7_RevokedTimestampResponder_CannotReviveExpiredSigner'),
+    ('G1', 'PdfSignatureLocator.cs',
+     'if (objectOffsets.ContainsKey(reference) ||', 'if (false ||',
+     'ShadowSignatureDictionaryAtHigherGeneration_DoesNotReplaceTheSignedEvidence'),
+    ('G2', 'PdfSignatureLocator.cs',
+     'var catalog = ReadCatalog(document);', 'var catalog = document.Structure.Catalog.CatalogDictionary;',
+     'CatalogOnlyAtHigherGeneration_FallsBack_WithDiagnostic'),
 ]
 
 

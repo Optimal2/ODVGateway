@@ -10,9 +10,9 @@ namespace ODVGateway.Services.Signatures;
 /// <c>/AcroForm/Fields</c> tree, the page annotation arrays, and the <c>/Perms</c> markers. Every
 /// object lookup goes through the parser's cross-reference data, so classic cross-reference tables,
 /// cross-reference streams, object streams and incremental updates are all handled by the library.
-/// References are resolved against the newest in-use generation of their object number, so an
-/// incremental update that rewrites an object under a higher generation is still the one reached
-/// from the current trailer (see <see cref="Current"/>).
+/// References are resolved exactly by (number, generation), as the PDF specification and PdfPig do;
+/// only a reference whose exact entry is missing falls back to the newest in-use generation of its
+/// object number, and that fallback is reported as a diagnostic (see <see cref="Target"/>).
 /// </summary>
 public sealed class PdfSignatureLocator
 {
@@ -23,7 +23,9 @@ public sealed class PdfSignatureLocator
     private byte[] fileBytes = [];
     private int visits;
     private readonly Dictionary<string, IToken?> objects = new(StringComparer.Ordinal);
-    private Dictionary<long, int> currentGenerations = new();
+    private IReadOnlyDictionary<IndirectReference, XrefLocation> objectOffsets = new Dictionary<IndirectReference, XrefLocation>();
+    private Dictionary<long, int> newestGenerations = new();
+    private readonly SortedSet<string> diagnostics = new(StringComparer.Ordinal);
 
     private void CheckBudget()
     {
@@ -54,16 +56,29 @@ public sealed class PdfSignatureLocator
     /// reference so a field listed both in the AcroForm and in a page annotation is reported once.
     /// </summary>
     public IReadOnlyList<SignatureDictionary> Locate(byte[] fileBytes, CancellationToken cancellationToken = default) =>
+        LocateDocument(fileBytes, cancellationToken).Signatures;
+
+    /// <summary>
+    /// The signature dictionaries of one document plus document-level diagnostics such as
+    /// <see cref="SignatureValidationReasons.ReferenceGenerationFallback"/>.
+    /// </summary>
+    public sealed record LocatedSignatures(IReadOnlyList<SignatureDictionary> Signatures, IReadOnlyList<string> Diagnostics);
+
+    /// <summary>
+    /// <see cref="Locate"/> plus the diagnostics collected while walking the object graph.
+    /// </summary>
+    public LocatedSignatures LocateDocument(byte[] fileBytes, CancellationToken cancellationToken = default) =>
         new PdfSignatureLocator { fileBytes = fileBytes, cancellationToken = cancellationToken }.LocateCore();
 
-    private IReadOnlyList<SignatureDictionary> LocateCore()
+    private LocatedSignatures LocateCore()
     {
         CheckBudget();
         using var stream = new CancellablePdfStream(fileBytes, cancellationToken);
         using var document = OpenDocument(stream);
         CheckBudget();
-        currentGenerations = IndexCurrentGenerations(document);
-        var catalog = document.Structure.Catalog.CatalogDictionary;
+        objectOffsets = document.Structure.CrossReferenceTable.ObjectOffsets;
+        newestGenerations = IndexNewestGenerations();
+        var catalog = ReadCatalog(document);
         var certificationReferences = ReadCertificationReferences(document, catalog);
 
         var found = new List<SignatureDictionary>();
@@ -90,22 +105,19 @@ public sealed class PdfSignatureLocator
             }
         }
 
-        return found;
+        return new LocatedSignatures(found, diagnostics.ToArray());
     }
 
     /// <summary>
-    /// Highest in-use generation per object number in the merged cross-reference data. Some writers
-    /// rewrite an object in an incremental update as <c>n 1 obj</c> (xref entry <c>00001 n</c>) but
-    /// leave every reference as <c>n 0 R</c>; an exact (number, generation) lookup then returns the
-    /// superseded revision and hides fields added later. Generations only grow, so the highest one
-    /// is the object the current trailer's revision lists. The index is linear in the xref data the
-    /// parser has already bounded by the file size.
+    /// Highest in-use generation per object number in the merged cross-reference data, used only by
+    /// the fallback in <see cref="Target"/>. The index is linear in the xref data the parser has
+    /// already bounded by the file size.
     /// </summary>
-    private Dictionary<long, int> IndexCurrentGenerations(PdfDocument document)
+    private Dictionary<long, int> IndexNewestGenerations()
     {
         var index = new Dictionary<long, int>();
         var count = 0;
-        foreach (var reference in document.Structure.CrossReferenceTable.ObjectOffsets.Keys)
+        foreach (var reference in objectOffsets.Keys)
         {
             if ((++count & 0xFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
             if (!index.TryGetValue(reference.ObjectNumber, out var generation) || reference.Generation > generation)
@@ -116,14 +128,40 @@ public sealed class PdfSignatureLocator
     }
 
     /// <summary>
-    /// The reference as it exists in the newest revision: the same object number at its highest
-    /// in-use generation when that is higher than the one named. Never invents an object; a
-    /// reference to an unknown number is returned unchanged.
+    /// The object a reference names. An entry with exactly this (number, generation) always wins,
+    /// even when the same number also exists under a higher generation: an incremental update that
+    /// writes <c>n 1 obj</c> next to a referenced <c>n 0 obj</c> is out of specification (a rewritten
+    /// object keeps its generation) and must never shadow the object the reference names. Only when
+    /// the exact entry is missing does the reference fall back to the newest in-use generation of
+    /// its number, and that is recorded as
+    /// <see cref="SignatureValidationReasons.ReferenceGenerationFallback"/>. Never invents an object;
+    /// a reference to an unknown number is returned unchanged.
     /// </summary>
-    private IndirectReference Current(IndirectReference reference) =>
-        currentGenerations.TryGetValue(reference.ObjectNumber, out var generation) && generation > reference.Generation
-            ? new IndirectReference(reference.ObjectNumber, generation)
-            : reference;
+    private IndirectReference Target(IndirectReference reference)
+    {
+        if (objectOffsets.ContainsKey(reference) ||
+            !newestGenerations.TryGetValue(reference.ObjectNumber, out var generation) ||
+            generation == reference.Generation)
+            return reference;
+
+        diagnostics.Add(SignatureValidationReasons.ReferenceGenerationFallback);
+        return new IndirectReference(reference.ObjectNumber, generation);
+    }
+
+    /// <summary>
+    /// The catalog named by the current trailer's <c>/Root</c>, under the same exact-first rule as
+    /// every other reference: PdfPig's catalog when the exact entry exists, otherwise the newest
+    /// generation of the root's object number (with the fallback diagnostic).
+    /// </summary>
+    private DictionaryToken ReadCatalog(PdfDocument document)
+    {
+        var root = document.Structure.Trailer.Root;
+        if (Target(root).Equals(root))
+            return document.Structure.Catalog.CatalogDictionary;
+
+        return Resolve<DictionaryToken>(document, new IndirectReferenceToken(root))
+            ?? document.Structure.Catalog.CatalogDictionary;
+    }
 
     /// <summary>
     /// Opens the document with lenient parsing (real-world signed PDFs frequently carry slightly
@@ -303,7 +341,7 @@ public sealed class PdfSignatureLocator
         }
 
         var physicalObject = valueToken is IndirectReferenceToken physicalReference
-            ? document.Structure.GetObject(Current(physicalReference.Data)) : null;
+            ? document.Structure.GetObject(Target(physicalReference.Data)) : null;
         var byteRange = ReadByteRange(document, signature);
         var span = SignatureContentsSpan.Find(fileBytes, physicalObject, byteRange, cancellationToken);
         found.Add(new SignatureDictionary(
@@ -322,7 +360,7 @@ public sealed class PdfSignatureLocator
 
     private string ReferenceKey(IndirectReferenceToken token)
     {
-        var current = Current(token.Data);
+        var current = Target(token.Data);
         return current.ObjectNumber.ToString(System.Globalization.CultureInfo.InvariantCulture)
             + ":" + current.Generation.ToString(System.Globalization.CultureInfo.InvariantCulture);
     }
@@ -490,7 +528,7 @@ public sealed class PdfSignatureLocator
                     var key = ReferenceKey(referenceToken);
                     if (!objects.TryGetValue(key, out current))
                     {
-                        current = document.Structure.GetObject(Current(referenceToken.Data));
+                        current = document.Structure.GetObject(Target(referenceToken.Data));
                         objects.Add(key, current);
                     }
                     continue;

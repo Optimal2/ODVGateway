@@ -33,4 +33,11 @@ public static class SignatureValidationReasons
     public const string KeyUsageNotSigning = "key-usage-not-signing";
     public const string ValidationError = "validation-error";
     public const string ValidationTimeout = "validation-timeout";
+
+    /// <summary>
+    /// Document-level diagnostic: at least one indirect reference named a (number, generation) that
+    /// is not in the cross-reference data and was resolved to the newest in-use generation of that
+    /// object number instead. Specification-conforming files never need it.
+    /// </summary>
+    public const string ReferenceGenerationFallback = "reference-generation-fallback";
 }

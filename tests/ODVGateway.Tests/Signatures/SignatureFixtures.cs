@@ -266,6 +266,25 @@ public sealed class SignatureFixtures : IDisposable
         return bytes;
     }
 
+    /// <summary>
+    /// Re-signs an existing signature in place with the fixture leaf: the CMS blob over the given
+    /// byte range is written into the <c>/Contents</c> hex string that starts at <c>byteRange[1]</c>.
+    /// The placeholder must hold <see cref="ContentsHexChars"/> hex digits.
+    /// </summary>
+    public void SignByteRange(byte[] bytes, long[] byteRange)
+    {
+        var covered = new byte[byteRange[1] + byteRange[3]];
+        Buffer.BlockCopy(bytes, 0, covered, 0, (int)byteRange[1]);
+        Buffer.BlockCopy(bytes, (int)byteRange[2], covered, (int)byteRange[1], (int)byteRange[3]);
+        var cms = new SignedCms(new ContentInfo(covered), detached: true);
+        var signer = new CmsSigner(SubjectIdentifierType.IssuerAndSerialNumber, Leaf, _leafKey)
+        { IncludeOption = X509IncludeOption.EndCertOnly, DigestAlgorithm = new Oid(Sha256Oid) };
+        signer.Certificates.Add(Root);
+        signer.SignedAttributes.Add(new Pkcs9SigningTime(Now.UtcDateTime));
+        cms.ComputeSignature(signer);
+        WriteContents(bytes, (int)byteRange[1], cms.Encode());
+    }
+
     /// <summary>A PDF that parses but carries no signature dictionary.</summary>
     public string CreateUnsignedPdf(string fileName = "unsigned.pdf")
     {

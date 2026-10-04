@@ -55,9 +55,10 @@ public sealed class PdfSignatureValidationService
         budget.CancelAfter(TimeSpan.FromSeconds(SignatureValidationLimits.FileBudgetSeconds));
         var token = budget.Token;
         IReadOnlyList<PdfSignatureLocator.SignatureDictionary> signatures;
+        IReadOnlyList<string> diagnostics;
         try
         {
-            signatures = locator.Locate(fileBytes, token);
+            (signatures, diagnostics) = locator.LocateDocument(fileBytes, token);
         }
         catch (PdfEncryptedException)
         {
@@ -106,11 +107,18 @@ public sealed class PdfSignatureValidationService
                 };
         }
 
+        if (diagnostics.Count > 0)
+        {
+            logger.LogWarning(
+                "Signature validation: the PDF needed out-of-specification reading. Diagnostics={Diagnostics}",
+                string.Join(",", diagnostics));
+        }
+
         logger.LogInformation(
             "Signature validation finished. SignatureCount={SignatureCount} RevocationMode={RevocationMode}",
             results.Count,
             options.RevocationMode);
-        return new PdfSignatureValidationResponse(results, validatedAt);
+        return new PdfSignatureValidationResponse(results, validatedAt, diagnostics);
     }
 
     private async Task<PdfSignatureValidation> ValidateOneAsync(
