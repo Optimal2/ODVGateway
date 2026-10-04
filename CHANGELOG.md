@@ -22,6 +22,17 @@ for its `0.1.x` release line.
   cross-reference data falls back to the newest generation, and that is reported in the new
   document-level `diagnostics` array as `reference-generation-fallback` and logged.
 
+- `GET /signatures/...` proves the page tree acyclic before PdfPig opens the file. PdfPig builds
+  the page tree eagerly inside `PdfDocument.Open` and resolves bare indirect references through
+  unguarded recursion, so one cyclic `/Kids` or `/Type` chain killed the whole gateway process with
+  an uncatchable stack overflow whenever signature validation was enabled. A new pre-check walks
+  the trailer's `/Root` → `/Pages` → `/Kids` path with the gateway's own raw reader (exact
+  (number, generation) resolution with fallback diagnostics, visited set, depth bound 32, at most
+  100,000 page-tree nodes); a proven cycle, depth overrun or malformed `/Kids` entry now fails
+  closed with a named `page-tree-cyclic` / `page-tree-too-deep` failure (HTTP 422) instead.
+  Shapes the pre-check cannot read are left to PdfPig as before; isolating validation in a
+  separate process is still pending (see `SECURITY.md`).
+
 ## [0.1.43] - 2026-09-27
 
 ### Fixed

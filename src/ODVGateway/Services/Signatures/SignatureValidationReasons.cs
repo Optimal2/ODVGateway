@@ -62,4 +62,18 @@ public static class SignatureValidationReasons
     /// dictionary.
     /// </summary>
     public const string ReferenceDepthExceeded = "reference-depth-exceeded";
+
+    /// <summary>
+    /// Fatal page-tree reason: the pre-open walk of <c>/Root</c> -&gt; <c>/Pages</c> -&gt; <c>/Kids</c>
+    /// proved a reference cycle, a self-referencing node or a malformed <c>/Kids</c> entry. Carried in
+    /// the <c>PdfSignatureFormatException</c> message; the endpoint answers 422.
+    /// </summary>
+    public const string PageTreeCyclic = "page-tree-cyclic";
+
+    /// <summary>
+    /// Fatal page-tree reason: the page tree exceeds the traversal bound — deeper than 32 levels, more
+    /// than 100,000 nodes, or past the shared work budget. Carried in the
+    /// <c>PdfSignatureFormatException</c> message; the endpoint answers 422.
+    /// </summary>
+    public const string PageTreeTooDeep = "page-tree-too-deep";
 }

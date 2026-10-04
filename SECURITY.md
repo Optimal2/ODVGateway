@@ -82,6 +82,18 @@ First official release. Changes since the 0.1.38 artifact:
 - Corrected the documented test command and added a "Running tests" section; the local CI help text no longer describes this public repository as private.
 - Added the release process itself: an official version in `Directory.Build.props`, a publishing release helper, and a tag-triggered workflow that attaches the deployable archive.
 
+## Known limitations
+
+PDF signature validation (`GET /signatures/...`, off by default) runs inside the gateway process.
+A pre-open page-tree check rejects the measured stack-overflow shapes (cyclic `/Kids` and `/Type`
+reference chains, self-referencing page-tree nodes) with a named HTTP 422 failure before the PDF
+library opens the file. Shapes outside that walked path that the library's eager open dereferences
+through the same unguarded recursion — catalog `/Dests` and `/Names` name trees in particular — and
+files whose cross-reference data the pre-check cannot read still reach the library, so one crafted
+file could still kill the gateway process while validation is enabled. Running validation in a
+separate process is the complete fix and is still pending. Deployments that do not need server-side
+signature verdicts should keep `signatures.enabled` at its default `false`.
+
 ## Reporting a Vulnerability
 
 Report vulnerabilities privately before any public disclosure. The

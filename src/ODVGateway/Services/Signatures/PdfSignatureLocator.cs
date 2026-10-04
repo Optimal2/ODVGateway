@@ -73,6 +73,13 @@ public sealed class PdfSignatureLocator
     private LocatedSignatures LocateCore()
     {
         CheckBudget();
+        // The page tree is proven acyclic before PdfPig opens the file: its eager page-tree build
+        // resolves bare indirect references through unguarded recursion, so a cycle kills the process
+        // with an uncatchable stack overflow. Files the pre-check cannot read are left to PdfPig.
+        foreach (var diagnostic in PdfPageTreePrecheck.Validate(fileBytes, cancellationToken))
+        {
+            diagnostics.Add(diagnostic);
+        }
         using var stream = new CancellablePdfStream(fileBytes, cancellationToken);
         using var document = OpenDocument(stream);
         CheckBudget();
@@ -166,6 +173,7 @@ public sealed class PdfSignatureLocator
     /// <summary>
     /// Opens the document with lenient parsing (real-world signed PDFs frequently carry slightly
     /// off-by-one xref entries) but refuses encrypted documents: the gateway has no password.
+    /// Validation flows reach this through Locate/LocateDocument, which run the page-tree pre-check first.
     /// </summary>
     public static PdfDocument OpenDocument(byte[] fileBytes) => OpenDocument(new MemoryStream(fileBytes, false));
 
@@ -254,7 +262,7 @@ public sealed class PdfSignatureLocator
         {
             CheckBudget();
             var (node, depth) = queue.Dequeue();
-            if (depth > MaxDepth) throw new PdfSignatureFormatException("The PDF page tree is too deep.");
+            if (depth > MaxDepth) throw new PdfSignatureFormatException($"The PDF page tree is too deep ({SignatureValidationReasons.PageTreeTooDeep}).");
             if (!node.TryGet(NameToken.Create("Kids"), out var kidsToken))
             {
                 if (string.Equals(TypeName(node, "Type"), "Page", StringComparison.Ordinal))

@@ -87,7 +87,7 @@ name they were found under.
 | session not found or expired | `404` with the same body as `/source` |
 | `fileIndex` outside the prepared session | `404` with the same body as `/source` |
 | resolved source is not a PDF (by extension) | `415` |
-| PDF cannot be opened/parsed at all, or is encrypted | `422` |
+| PDF cannot be opened/parsed at all, is encrypted, or fails the page-tree pre-check (`page-tree-cyclic`, `page-tree-too-deep`) | `422` |
 | file larger than `Signatures:MaxFileBytes` | `413` |
 | all signature validation slots occupied | `503` with `Retry-After: 1` |
 | PDF parses but has no signature fields | `200` with `signatures: []` |
@@ -163,7 +163,32 @@ A dangling reference inside the field/widget/annotation walk is skipped when Pdf
 the object and its resolved identity is absent from the cross-reference data. Remaining signatures
 are still validated, and `diagnostics` contains `dangling-reference-skipped` once per document. A cyclic indirect-reference chain, a direct value of the wrong type and a reference chain longer than the depth limit are skipped the same way and reported as `reference-cycle-skipped`, `unexpected-object-type-skipped` and `reference-depth-exceeded`: no unresolvable field, `/V` or signature dictionary is ever skipped silently.
 This tolerance applies to field and annotation arrays, their elements, field `/Kids`, `/Parent`
-and `/V` references. Catalog and AcroForm roots, page-tree references and other parser failures
+and `/V` references.
+
+Before PdfPig opens the file at all, the gateway walks the page tree itself —
+trailer `/Root` → `/Pages` → `/Kids` — with a small raw reader over the file bytes
+(`PdfPageTreePrecheck`). The reason is a crash, not a shortcut: PdfPig builds the page tree eagerly
+inside `PdfDocument.Open` and resolves bare indirect references through the unguarded self-recursion
+`DirectObjectFinder.TryGet`, so one cyclic chain kills the process with a stack overflow that .NET
+cannot catch (measured 2026-10-04 on PdfPig 0.1.16: exit `0xC00000FD`, about 9,600 repeating `TryGet`
+frames via `PagesFactory.ProcessPagesNode`). The pre-check uses the same exact (number, generation)
+resolution with newest-generation fallback as the locator, a visited set, and the same depth bound
+(32). A proven cycle — including a page-tree node that references itself and a cyclic `/Type` chain,
+which crashes the same way — a depth overrun, or a `/Kids` entry that is not an array of indirect
+references fails closed with a named `PdfSignatureFormatException` (`page-tree-cyclic` /
+`page-tree-too-deep`, HTTP 422). Page-tree dictionaries are additionally capped at 100,000 visited
+nodes so a huge legitimate tree cannot pin the validator's CPU, and the walk shares the locator's
+work-budget shape at four times its touch density (value tokenizing costs more than edge counting). A
+longer already-visited cycle is skipped once, preserving the visited-once contract.
+
+The pre-check only judges what it can read completely: cross-reference streams, hybrid files,
+encrypted files, dangling references and unparseable objects are left to PdfPig, whose behavior for
+those shapes is unchanged. Shapes outside the walked path that the eager open dereferences through
+the same unguarded recursion — catalog `/Dests` and `/Names` name trees in particular — likewise still
+reach the library. Process isolation for the whole validation step is the complete fix and is still
+pending; see the Known limitation note in `SECURITY.md`.
+
+Catalog and AcroForm roots, page-tree references and other parser failures
 remain fatal (HTTP 422). A cyclic `/AcroForm` reference fails the file with the named reason `The PDF AcroForm reference is cyclic.` instead of reading as absent. The same depth, visited-set and traversal-budget limits still apply.
 
 Why a library and not a hand-written reader: signature dictionaries live behind cross-reference

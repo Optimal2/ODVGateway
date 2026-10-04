@@ -150,7 +150,15 @@ public sealed class IncrementalUpdateSignatureTests : IDisposable
             CreateService().ValidateAsync(bytes, TestContext.Current.CancellationToken));
     }
 
-    [Fact(Skip = "Parked: PdfPig walks the page tree eagerly in PdfDocument.Open and stack-overflows on this reference cycle before the locator runs, killing the test host. Re-enable once opening is guarded; the test then proves the named fatal failure.")]
+    // Measured 2026-10-04 against PdfPig 0.1.16 (isolated probe process, deleted after): without the
+    // page-tree pre-check, PdfDocument.Open dies here with exit code 0xC00000FD (stack overflow). The
+    // crash stack below the overflow point is PdfDocument.Open -> PdfDocumentFactory.OpenDocument ->
+    // CatalogFactory.Create -> PagesFactory.Create -> PagesFactory.ProcessPagesNode, and the ~9,600
+    // repeating frames are the unguarded self-recursion
+    // UglyToad.PdfPig.Parser.Parts.DirectObjectFinder.TryGet[T], alternating with one
+    // PdfTokenScanner.Get lap each. The pre-check rejects the file first with page-tree-cyclic, so
+    // this test must never crash the host.
+    [Fact]
     public async Task CyclicPageTreeKidsReference_RejectsDocument()
     {
         // The /Kids entry resolves through a 4 -> 5 -> 4 reference cycle instead of a page node.
@@ -161,14 +169,16 @@ public sealed class IncrementalUpdateSignatureTests : IDisposable
             (5, 0, "4 0 R")
         ]);
 
-        var exception = Assert.Throws<PdfSignatureFormatException>(() =>
-            new PdfSignatureLocator().Locate(bytes, TestContext.Current.CancellationToken));
-        Assert.Contains("page tree", exception.Message, StringComparison.Ordinal);
-        await Assert.ThrowsAsync<PdfSignatureFormatException>(() =>
-            CreateService().ValidateAsync(bytes, TestContext.Current.CancellationToken));
+        await AssertRejectsDocument(bytes, SignatureValidationReasons.PageTreeCyclic);
     }
 
-    [Fact(Skip = "Parked: PdfPig walks the page tree eagerly in PdfDocument.Open and stack-overflows on this reference cycle before the locator runs, killing the test host. Re-enable once opening is guarded; the test then proves the named fatal failure.")]
+    // Measured 2026-10-04: unlike the /Kids shape above, this /Pages-root cycle does NOT
+    // stack-overflow on PdfPig 0.1.16. CatalogFactory resolves /Pages through the alternating
+    // DirectObjectFinder.Get overloads, which enter StackDepthGuard on every lap and throw a catchable
+    // PdfDocumentStackDepthException after 32 laps (probe exit 0xE0434352). The pre-check still rejects
+    // the file first with the same named page-tree-cyclic failure, so the gateway never depends on the
+    // library's guard, and Locate throws PdfSignatureFormatException instead of the library type.
+    [Fact]
     public async Task CyclicPagesRootReference_RejectsDocument()
     {
         // The catalog /Pages reference itself cycles (4 -> 5 -> 4) instead of reaching the root.
@@ -179,11 +189,114 @@ public sealed class IncrementalUpdateSignatureTests : IDisposable
             (5, 0, "4 0 R")
         ]);
 
-        var exception = Assert.Throws<PdfSignatureFormatException>(() =>
-            new PdfSignatureLocator().Locate(bytes, TestContext.Current.CancellationToken));
-        Assert.Contains("page tree", exception.Message, StringComparison.Ordinal);
-        await Assert.ThrowsAsync<PdfSignatureFormatException>(() =>
-            CreateService().ValidateAsync(bytes, TestContext.Current.CancellationToken));
+        await AssertRejectsDocument(bytes, SignatureValidationReasons.PageTreeCyclic);
+    }
+
+    [Fact]
+    public async Task SelfReferencingPageTreeNode_RejectsDocument()
+    {
+        // Object 4 lists itself in its own /Kids. A self-edge can never be a well-formed tree edge;
+        // longer already-visited cycles stay visited-once (see F3_RepeatedAndCyclicPageReferences).
+        var bytes = AppendUpdate(BaseRevision(),
+        [
+            (2, 0, "<< /Type /Pages /Kids [4 0 R] /Count 1 >>"),
+            (4, 0, "<< /Type /Pages /Kids [4 0 R] /Count 1 >>")
+        ]);
+
+        await AssertRejectsDocument(bytes, SignatureValidationReasons.PageTreeCyclic);
+    }
+
+    [Fact]
+    public async Task NonArrayKidsEntry_RejectsDocument()
+    {
+        // A /Kids entry that is not an array is malformed; it must fail the file, not read as empty.
+        var bytes = AppendUpdate(BaseRevision(),
+        [
+            (2, 0, "<< /Type /Pages /Kids 5 /Count 1 >>")
+        ]);
+
+        await AssertRejectsDocument(bytes, SignatureValidationReasons.PageTreeCyclic);
+    }
+
+    [Fact]
+    public async Task CyclicTypeReference_RejectsDocument()
+    {
+        // The page node's /Type resolves through a 6 -> 7 -> 6 bare-reference cycle. Measured
+        // 2026-10-04: without the pre-check this crashes the host the same way the /Kids shape does
+        // (0xC00000FD via PagesFactory.CheckIfIsPage -> DirectObjectFinder.TryGet), because the eager
+        // page-tree build dereferences /Type through the same unguarded recursion.
+        var bytes = AppendUpdate(BaseRevision(),
+        [
+            (2, 0, "<< /Type /Pages /Kids [4 0 R] /Count 1 >>"),
+            (4, 0, "<< /Type 6 0 R /Parent 2 0 R /MediaBox [0 0 10 10] >>"),
+            (6, 0, "7 0 R"),
+            (7, 0, "6 0 R")
+        ]);
+
+        await AssertRejectsDocument(bytes, SignatureValidationReasons.PageTreeCyclic);
+    }
+
+    [Fact]
+    public async Task DeepPageTreeChain_RejectsDocument()
+    {
+        // Thirty-four nested /Pages nodes: the node at depth 33 exceeds the shared depth bound of 32.
+        var update = new List<(int Number, int Generation, string Body)>
+        {
+            (2, 0, "<< /Type /Pages /Kids [4 0 R] /Count 1 >>")
+        };
+        for (var i = 4; i <= 36; i++)
+        {
+            update.Add((i, 0, $"<< /Type /Pages /Kids [{i + 1} 0 R] /Count 1 >>"));
+        }
+        update.Add((37, 0, "<< /Type /Page /Parent 36 0 R /MediaBox [0 0 10 10] >>"));
+
+        await AssertRejectsDocument(AppendUpdate(BaseRevision(), update), SignatureValidationReasons.PageTreeTooDeep);
+    }
+
+    [Fact]
+    public async Task PageTreeBeyondNodeLimit_RejectsDocument()
+    {
+        // 100,001 sibling pages: past the 100,000-node cap that keeps a huge legitimate tree from
+        // pinning the validator's CPU. The 20,000-page acceptance side is pinned by
+        // N4_LargePageTree_WithinSizeLimit_IsAccepted.
+        const int pages = 100_001;
+        var update = new List<(int Number, int Generation, string Body)>
+        {
+            (2, 0, $"<< /Type /Pages /Count {pages} /Kids [{string.Join(' ', Enumerable.Range(4, pages).Select(i => $"{i} 0 R"))}] >>")
+        };
+        for (var i = 4; i < 4 + pages; i++)
+        {
+            update.Add((i, 0, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>"));
+        }
+
+        await AssertRejectsDocument(AppendUpdate(BaseRevision(), update), SignatureValidationReasons.PageTreeTooDeep);
+    }
+
+    [Fact]
+    public async Task LegitimateThreeLevelPageTree_ValidatesNormally()
+    {
+        // A well-formed root -> intermediate -> page tree must pass the pre-check untouched: the
+        // signature is found once (AcroForm and page annotation de-duplicate by /V identity) and no
+        // fallback diagnostic is reported for exact references.
+        var bytes = BaseRevision(acroFormBody: "<< /Fields [4 0 R] >>",
+            extraObjects:
+            [
+                "<< /FT /Sig /T (Signature1) /V 5 0 R >>",
+                "<< /Type /Sig /SubFilter /adbe.pkcs7.detached /ByteRange [0 1 2 3] /Contents <00> >>",
+                "<< /Type /Pages /Kids [7 0 R] /Count 1 >>",
+                "<< /Type /Page /Parent 6 0 R /MediaBox [0 0 300 300] /Annots [4 0 R] >>"
+            ]);
+        bytes = AppendUpdate(bytes, [(2, 0, "<< /Type /Pages /Kids [6 0 R] /Count 1 >>")]);
+
+        var located = new PdfSignatureLocator().LocateDocument(bytes, TestContext.Current.CancellationToken);
+        var response = await CreateService().ValidateAsync(bytes, TestContext.Current.CancellationToken);
+
+        Assert.Equal("Signature1", Assert.Single(located.Signatures).FieldName);
+        Assert.Empty(located.Diagnostics);
+        var signature = Assert.Single(response.Signatures);
+        Assert.Equal("Signature1", signature.FieldName);
+        Assert.Equal(PdfSignatureIntegrity.Unreadable, signature.Integrity);
+        Assert.Empty(response.Diagnostics);
     }
 
     [Theory]
@@ -518,6 +631,17 @@ public sealed class IncrementalUpdateSignatureTests : IDisposable
         stream.Write(Encoding.ASCII.GetBytes(
             $"trailer\n<< /Size {size} /Root 1 0 R /Prev {previousXref} >>\nstartxref\n{xref}\n%%EOF\n"));
         return stream.ToArray();
+    }
+
+    private async Task AssertRejectsDocument(byte[] bytes, string code)
+    {
+        var exception = Assert.Throws<PdfSignatureFormatException>(() =>
+            new PdfSignatureLocator().Locate(bytes, TestContext.Current.CancellationToken));
+        Assert.Contains("page tree", exception.Message, StringComparison.Ordinal);
+        Assert.Contains(code, exception.Message, StringComparison.Ordinal);
+        var serviceException = await Assert.ThrowsAsync<PdfSignatureFormatException>(() =>
+            CreateService().ValidateAsync(bytes, TestContext.Current.CancellationToken));
+        Assert.Contains(code, serviceException.InnerException?.Message ?? string.Empty, StringComparison.Ordinal);
     }
 
     private PdfSignatureValidationService CreateService()
