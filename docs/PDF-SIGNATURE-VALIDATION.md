@@ -87,7 +87,7 @@ name they were found under.
 | session not found or expired | `404` with the same body as `/source` |
 | `fileIndex` outside the prepared session | `404` with the same body as `/source` |
 | resolved source is not a PDF (by extension) | `415` |
-| PDF cannot be opened/parsed at all, is encrypted, or fails the page-tree pre-check (`page-tree-cyclic`, `page-tree-too-deep`) | `422` |
+| PDF cannot be opened/parsed at all, is encrypted, or fails the page-tree pre-check (`page-tree-cyclic`, `page-tree-malformed`, `page-tree-too-deep`) | `422` |
 | file larger than `Signatures:MaxFileBytes` | `413` |
 | all signature validation slots occupied | `503` with `Retry-After: 1` |
 | PDF parses but has no signature fields | `200` with `signatures: []` |
@@ -172,14 +172,17 @@ inside `PdfDocument.Open` and resolves bare indirect references through the ungu
 `DirectObjectFinder.TryGet`, so one cyclic chain kills the process with a stack overflow that .NET
 cannot catch (measured 2026-10-04 on PdfPig 0.1.16: exit `0xC00000FD`, about 9,600 repeating `TryGet`
 frames via `PagesFactory.ProcessPagesNode`). The pre-check uses the same exact (number, generation)
-resolution with newest-generation fallback as the locator, a visited set, and the same depth bound
-(32). A proven cycle — including a page-tree node that references itself and a cyclic `/Type` chain,
-which crashes the same way — a depth overrun, or a `/Kids` entry that is not an array of indirect
-references fails closed with a named `PdfSignatureFormatException` (`page-tree-cyclic` /
-`page-tree-too-deep`, HTTP 422). Page-tree dictionaries are additionally capped at 100,000 visited
-nodes so a huge legitimate tree cannot pin the validator's CPU, and the walk shares the locator's
-work-budget shape at four times its touch density (value tokenizing costs more than edge counting). A
-longer already-visited cycle is skipped once, preserving the visited-once contract.
+resolution with newest-generation fallback as the locator, depth-first traversal with on-path cycle
+detection, and the same depth bound (32). Any revisit of a node on the current traversal path is a
+true cycle — including a page-tree node that references itself and a cyclic `/Type` chain, which
+crashes the same way — while a node reached again after its subtree finished (a DAG, legal in some
+producers) is counted once and is not a cycle. A proven cycle or depth overrun fails closed with a
+named `PdfSignatureFormatException` (`page-tree-cyclic` / `page-tree-too-deep`, HTTP 422); a `/Kids`
+entry that is not an array of indirect references fails closed with its own code (`page-tree-malformed`,
+still HTTP 422). Page-tree dictionaries are additionally capped at 100,000 visited nodes so a huge
+legitimate tree cannot pin the validator's CPU, and the walk shares the locator's work-budget shape
+at four times its touch density (value tokenizing costs more than edge counting). The check runs
+inside the single document-open path, so no caller can reach `PdfDocument.Open` without it.
 
 The pre-check only judges what it can read completely: cross-reference streams, hybrid files,
 encrypted files, dangling references and unparseable objects are left to PdfPig, whose behavior for

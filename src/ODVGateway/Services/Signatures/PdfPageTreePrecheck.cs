@@ -13,8 +13,9 @@ namespace ODVGateway.Services.Signatures;
 /// <remarks>
 /// <para>
 /// A proven cycle, depth overrun, malformed <c>/Kids</c> entry or oversized tree fails closed with a
-/// named <see cref="PdfSignatureFormatException"/> (<c>page-tree-cyclic</c> / <c>page-tree-too-deep</c>,
-/// HTTP 422). Anything the reader cannot parse — cross-reference streams, hybrid files, encrypted
+/// named <see cref="PdfSignatureFormatException"/> (<c>page-tree-cyclic</c> / <c>page-tree-malformed</c> /
+/// <c>page-tree-too-deep</c>, HTTP 422). Anything the reader cannot parse — cross-reference streams,
+/// hybrid files, encrypted
 /// files, dangling references, unparseable objects — is left to PdfPig, whose behavior for those
 /// shapes is unchanged. The pre-check is therefore a pure filter: it throws, or the file proceeds to
 /// <c>PdfDocument.Open</c> exactly as before.
@@ -24,9 +25,10 @@ namespace ODVGateway.Services.Signatures;
 /// <c>clamp(fileBytes / 2, 40,000, 32,000,000)</c> work budget. The budget allows four times the
 /// locator's touch density because the pre-check tokenizes full values (dictionary entries, array
 /// elements, nested arrays such as /MediaBox) where the locator counts one visit per object edge;
-/// the pinned 20,000-page file uses about a quarter of it. A page-tree node
-/// that references itself is fatal, while a longer already-visited cycle is skipped once, preserving
-/// the locator's visited-once contract for page references. Every visited node's <c>/Type</c> chain is
+/// the pinned 20,000-page file uses about a quarter of it. Any revisit of a node on the
+/// current traversal path is a true cycle and is fatal; a node reached again after its subtree
+/// finished (a DAG, legal in some producers) is counted once and is not a cycle. Every visited
+/// node's <c>/Type</c> chain is
 /// proven acyclic too, because the eager page-tree build dereferences it through the same unguarded
 /// recursion; <c>/Parent</c> is never dereferenced in lenient mode and is not followed.
 /// </para>
@@ -95,13 +97,16 @@ public static class PdfPageTreePrecheck
 
         private void Walk(RawDict root, (long Number, long Generation) rootId)
         {
-            var visited = new HashSet<(long, long)> { rootId };
-            var queue = new Queue<(RawDict Node, (long Number, long Generation) Id, int Depth)>();
-            queue.Enqueue((root, rootId, 0));
+            // Depth-first: a kid still on the current traversal path is a true cycle, while a kid
+            // whose subtree already finished is a DAG share and is counted once. Recursion depth is
+            // bounded by MaxDepth (32), so the walk itself cannot overflow the stack.
+            var visited = new HashSet<(long, long)>();
+            var onPath = new HashSet<(long, long)>();
             var nodes = 0;
-            while (queue.Count > 0)
+            Visit(root, rootId, 0);
+
+            void Visit(RawDict node, (long Number, long Generation) id, int depth)
             {
-                var (node, id, depth) = queue.Dequeue();
                 if (depth > MaxDepth)
                 {
                     throw TooDeep("The PDF page tree is too deep");
@@ -112,35 +117,44 @@ public static class PdfPageTreePrecheck
                 }
                 Touch();
                 CheckType(node);
-                if (!node.Entries.TryGetValue("Kids", out var kidsValue))
+                onPath.Add(id);
+                try
                 {
-                    continue;
+                    if (!node.Entries.TryGetValue("Kids", out var kidsValue))
+                    {
+                        return;
+                    }
+                    if (ResolveKidsValue(kidsValue) is not { } kids)
+                    {
+                        return;
+                    }
+                    foreach (var element in kids.Elements)
+                    {
+                        Touch();
+                        if (element is not RawRef kid)
+                        {
+                            throw Malformed();
+                        }
+                        if (ResolveChain(kid) is not { Value: RawDict kidDict } target)
+                        {
+                            continue;
+                        }
+                        var kidId = (target.Number, target.Generation);
+                        if (onPath.Contains(kidId))
+                        {
+                            throw Cyclic();
+                        }
+                        if (visited.Contains(kidId))
+                        {
+                            continue;
+                        }
+                        Visit(kidDict, kidId, depth + 1);
+                    }
                 }
-                if (ResolveKidsValue(kidsValue) is not { } kids)
+                finally
                 {
-                    continue;
-                }
-                foreach (var element in kids.Elements)
-                {
-                    Touch();
-                    if (element is not RawRef kid)
-                    {
-                        throw new PdfSignatureFormatException(
-                            $"The PDF page tree has a malformed /Kids entry ({SignatureValidationReasons.PageTreeCyclic}).");
-                    }
-                    if (ResolveChain(kid) is not { Value: RawDict kidDict } target)
-                    {
-                        continue;
-                    }
-                    var kidId = (target.Number, target.Generation);
-                    if (kidId == id)
-                    {
-                        throw Cyclic();
-                    }
-                    if (visited.Add(kidId))
-                    {
-                        queue.Enqueue((kidDict, kidId, depth + 1));
-                    }
+                    onPath.Remove(id);
+                    visited.Add(id);
                 }
             }
         }
@@ -169,11 +183,9 @@ public static class PdfPageTreePrecheck
             {
                 null => null,
                 { Value: RawArray array } => array,
-                _ => throw new PdfSignatureFormatException(
-                    $"The PDF page tree has a malformed /Kids entry ({SignatureValidationReasons.PageTreeCyclic}).")
+                _ => throw Malformed()
             },
-            _ => throw new PdfSignatureFormatException(
-                $"The PDF page tree has a malformed /Kids entry ({SignatureValidationReasons.PageTreeCyclic}).")
+            _ => throw Malformed()
         };
 
         private Resolved? ResolveChain(RawRef start)
@@ -215,6 +227,9 @@ public static class PdfPageTreePrecheck
 
         private static PdfSignatureFormatException Cyclic() => new(
             $"The PDF page tree is cyclic ({SignatureValidationReasons.PageTreeCyclic}).");
+
+        private static PdfSignatureFormatException Malformed() => new(
+            $"The PDF page tree has a malformed /Kids entry ({SignatureValidationReasons.PageTreeMalformed}).");
 
         private static PdfSignatureFormatException TooDeep(string message) => new(
             $"{message} ({SignatureValidationReasons.PageTreeTooDeep}).");

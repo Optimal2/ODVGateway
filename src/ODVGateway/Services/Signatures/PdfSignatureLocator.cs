@@ -73,15 +73,17 @@ public sealed class PdfSignatureLocator
     private LocatedSignatures LocateCore()
     {
         CheckBudget();
-        // The page tree is proven acyclic before PdfPig opens the file: its eager page-tree build
-        // resolves bare indirect references through unguarded recursion, so a cycle kills the process
-        // with an uncatchable stack overflow. Files the pre-check cannot read are left to PdfPig.
-        foreach (var diagnostic in PdfPageTreePrecheck.Validate(fileBytes, cancellationToken))
+        // The single open path proves the page tree acyclic before PdfPig opens the file: its
+        // eager page-tree build resolves bare indirect references through unguarded recursion,
+        // so a cycle kills the process with an uncatchable stack overflow. Files the pre-check
+        // cannot read are left to PdfPig.
+        using var stream = new CancellablePdfStream(fileBytes, cancellationToken);
+        var opened = OpenValidatedDocument(fileBytes, stream, cancellationToken);
+        using var document = opened.Document;
+        foreach (var diagnostic in opened.Diagnostics)
         {
             diagnostics.Add(diagnostic);
         }
-        using var stream = new CancellablePdfStream(fileBytes, cancellationToken);
-        using var document = OpenDocument(stream);
         CheckBudget();
         objectOffsets = document.Structure.CrossReferenceTable.ObjectOffsets;
         newestGenerations = IndexNewestGenerations();
@@ -173,12 +175,31 @@ public sealed class PdfSignatureLocator
     /// <summary>
     /// Opens the document with lenient parsing (real-world signed PDFs frequently carry slightly
     /// off-by-one xref entries) but refuses encrypted documents: the gateway has no password.
-    /// Validation flows reach this through Locate/LocateDocument, which run the page-tree pre-check first.
+    /// The page-tree pre-check always runs first, inside the single open path, so no caller can
+    /// reach <c>PdfDocument.Open</c> without it.
     /// </summary>
-    public static PdfDocument OpenDocument(byte[] fileBytes) => OpenDocument(new MemoryStream(fileBytes, false));
-
-    private static PdfDocument OpenDocument(Stream stream)
+    public static PdfDocument OpenDocument(byte[] fileBytes, CancellationToken cancellationToken = default)
     {
+        var stream = new MemoryStream(fileBytes, false);
+        try
+        {
+            return OpenValidatedDocument(fileBytes, stream, cancellationToken).Document;
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The single path to <c>PdfDocument.Open</c>: proves the page tree safe first, then opens
+    /// with lenient parsing. Returns the document plus the diagnostics the pre-check observed.
+    /// </summary>
+    private static (PdfDocument Document, IReadOnlyList<string> Diagnostics) OpenValidatedDocument(
+        byte[] fileBytes, Stream stream, CancellationToken cancellationToken)
+    {
+        var diagnostics = PdfPageTreePrecheck.Validate(fileBytes, cancellationToken);
         var document = PdfDocument.Open(stream, new ParsingOptions
         {
             UseLenientParsing = true,
@@ -192,7 +213,7 @@ public sealed class PdfSignatureLocator
             throw new PdfEncryptedException("The PDF is encrypted; signature validation needs the document in the clear.");
         }
 
-        return document;
+        return (document, diagnostics);
     }
 
     private HashSet<string> ReadCertificationReferences(PdfDocument document, DictionaryToken catalog)

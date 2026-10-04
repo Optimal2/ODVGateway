@@ -35,7 +35,7 @@ MUTATIONS = [
      'if (!built || flags != X509ChainStatusFlags.NoError)', 'if (false)', 'F2_IncompleteOrUnexpectedChain'),
     ('F3', 'PdfSignatureLocator.cs',
      'if (!visited.Add(kid)) continue;', '// Mutation: enqueue duplicate page references.',
-     'F3_RepeatedAndCyclicPageReferences'),
+     'F3_RepeatedPageReferences'),
     ('F4', 'PdfSignatureValidationService.cs',
      'locator.LocateDocument(fileBytes, token);', 'locator.LocateDocument(fileBytes);',
      'F4_CancelledValidation_StopsBeforeParsing'),

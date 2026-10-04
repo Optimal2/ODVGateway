@@ -48,13 +48,24 @@ public sealed class SignatureSecurityTests
             SignatureTrustEvaluator.ClassifyChain(true, true, X509ChainStatusFlags.NoError).Trust);
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void F3_RepeatedAndCyclicPageReferences_AreVisitedOnce(bool cycle)
+    [Fact]
+    public void F3_RepeatedPageReferences_AreVisitedOnce()
     {
-        var bytes = GraphPdf(cycle);
+        // The same page node listed twice (a DAG, legal in some producers) is counted once,
+        // not a cycle: the file opens and answers 200 with an empty page list.
+        var bytes = GraphPdf(cycle: false);
         Assert.Empty(new PdfSignatureLocator().Locate(bytes, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public void F3_CyclicPageReferences_AreRejected()
+    {
+        // Any revisit of a node on the current traversal path is a true cycle and fails closed
+        // with the named page-tree-cyclic 422 instead of opening with an empty page list.
+        var bytes = GraphPdf(cycle: true);
+        var exception = Assert.Throws<PdfSignatureFormatException>(() =>
+            new PdfSignatureLocator().Locate(bytes, TestContext.Current.CancellationToken));
+        Assert.Contains(SignatureValidationReasons.PageTreeCyclic, exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

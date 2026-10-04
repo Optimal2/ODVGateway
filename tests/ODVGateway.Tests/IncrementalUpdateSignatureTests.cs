@@ -195,8 +195,9 @@ public sealed class IncrementalUpdateSignatureTests : IDisposable
     [Fact]
     public async Task SelfReferencingPageTreeNode_RejectsDocument()
     {
-        // Object 4 lists itself in its own /Kids. A self-edge can never be a well-formed tree edge;
-        // longer already-visited cycles stay visited-once (see F3_RepeatedAndCyclicPageReferences).
+        // Object 4 lists itself in its own /Kids. A self-edge can never be a well-formed tree edge,
+        // and neither can a longer cycle (see F3_CyclicPageReferences_AreRejected); only a DAG share
+        // stays visited-once (see F3_RepeatedPageReferences_AreVisitedOnce).
         var bytes = AppendUpdate(BaseRevision(),
         [
             (2, 0, "<< /Type /Pages /Kids [4 0 R] /Count 1 >>"),
@@ -206,16 +207,76 @@ public sealed class IncrementalUpdateSignatureTests : IDisposable
         await AssertRejectsDocument(bytes, SignatureValidationReasons.PageTreeCyclic);
     }
 
-    [Fact]
-    public async Task NonArrayKidsEntry_RejectsDocument()
+    [Theory]
+    [InlineData("<< /Type /Pages /Kids 5 /Count 1 >>")]
+    [InlineData("<< /Type /Pages /Kids << /Foo 1 >> /Count 1 >>")]
+    public async Task NonArrayKidsEntry_RejectsDocument(string pagesBody)
     {
-        // A /Kids entry that is not an array is malformed; it must fail the file, not read as empty.
+        // A /Kids entry that is not an array of indirect references is malformed, not a cycle;
+        // it must fail the file with its own code, not read as empty.
         var bytes = AppendUpdate(BaseRevision(),
         [
-            (2, 0, "<< /Type /Pages /Kids 5 /Count 1 >>")
+            (2, 0, pagesBody)
+        ]);
+
+        await AssertRejectsDocument(bytes, SignatureValidationReasons.PageTreeMalformed);
+    }
+
+    [Fact]
+    public async Task DictionaryLevelCycleOfThree_RejectsDocument()
+    {
+        // A dictionary-level /Kids cycle of length 3 (4 -> 5 -> 6 -> 4): any revisit of a node
+        // on the current traversal path is a true cycle, not just a self-edge.
+        var bytes = AppendUpdate(BaseRevision(),
+        [
+            (2, 0, "<< /Type /Pages /Kids [4 0 R] /Count 1 >>"),
+            (4, 0, "<< /Type /Pages /Kids [5 0 R] /Count 1 >>"),
+            (5, 0, "<< /Type /Pages /Kids [6 0 R] /Count 1 >>"),
+            (6, 0, "<< /Type /Pages /Kids [4 0 R] /Count 1 >>")
         ]);
 
         await AssertRejectsDocument(bytes, SignatureValidationReasons.PageTreeCyclic);
+    }
+
+    [Fact]
+    public void SharedPageNodeViaTwoParents_IsCountedOnce()
+    {
+        // One page node reached via two different parents is a DAG, not a cycle: the file opens
+        // and the shared node is visited once.
+        var bytes = AppendUpdate(BaseRevision(),
+        [
+            (2, 0, "<< /Type /Pages /Kids [4 0 R 5 0 R] /Count 2 >>"),
+            (4, 0, "<< /Type /Pages /Kids [6 0 R] /Count 1 >>"),
+            (5, 0, "<< /Type /Pages /Kids [6 0 R] /Count 1 >>"),
+            (6, 0, "<< /Type /Page /Parent 4 0 R /MediaBox [0 0 10 10] >>")
+        ]);
+
+        Assert.Empty(new PdfSignatureLocator().Locate(bytes, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public void OpenDocument_RunsPrecheck_CyclicFixtureRejected()
+    {
+        // The single open path always validates first: the cyclic fixture is rejected with the
+        // named failure instead of reaching PdfDocument.Open. Uses the /Pages-root cycle shape,
+        // which the library answers with a catchable exception rather than a stack overflow.
+        var bytes = AppendUpdate(BaseRevision(),
+        [
+            (1, 0, "<< /Type /Catalog /Pages 4 0 R /AcroForm 3 0 R >>"),
+            (4, 0, "5 0 R"),
+            (5, 0, "4 0 R")
+        ]);
+
+        var exception = Assert.Throws<PdfSignatureFormatException>(() =>
+            PdfSignatureLocator.OpenDocument(bytes, TestContext.Current.CancellationToken));
+        Assert.Contains(SignatureValidationReasons.PageTreeCyclic, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void OpenDocument_HealthyFile_Opens()
+    {
+        using var document = PdfSignatureLocator.OpenDocument(BaseRevision(), TestContext.Current.CancellationToken);
+        Assert.NotNull(document);
     }
 
     [Fact]

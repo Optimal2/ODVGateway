@@ -33,6 +33,16 @@ for its `0.1.x` release line.
   Shapes the pre-check cannot read are left to PdfPig as before; isolating validation in a
   separate process is still pending (see `SECURITY.md`).
 
+- `GET /signatures/...` fails closed with a named `page-tree-cyclic` failure (HTTP 422) on any
+  page-tree cycle, not just a self-edge: the pre-check now walks depth-first and treats any
+  revisit of a node on the current traversal path as a true cycle, while a node reached again
+  after its subtree finished (a DAG, legal in some producers) is counted once. A `/Kids` entry
+  that is not an array of indirect references gets its own code (`page-tree-malformed`, still
+  HTTP 422), and the pre-check runs inside the single document-open path so no caller can reach
+  `PdfDocument.Open` without it. The known-limitation notes now state the pre-check's actual
+  coverage: classic cross-reference tables only, with xref streams, object streams and catalog
+  `/Dests`/`/Names` trees still reaching the library until validation runs in a separate process.
+
 ## [0.1.43] - 2026-09-27
 
 ### Fixed

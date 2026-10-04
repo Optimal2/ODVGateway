@@ -65,10 +65,18 @@ public static class SignatureValidationReasons
 
     /// <summary>
     /// Fatal page-tree reason: the pre-open walk of <c>/Root</c> -&gt; <c>/Pages</c> -&gt; <c>/Kids</c>
-    /// proved a reference cycle, a self-referencing node or a malformed <c>/Kids</c> entry. Carried in
-    /// the <c>PdfSignatureFormatException</c> message; the endpoint answers 422.
+    /// proved a reference cycle: a node revisited on the current traversal path, a self-referencing
+    /// node, or a cyclic bare-reference chain. Carried in the <c>PdfSignatureFormatException</c>
+    /// message; the endpoint answers 422.
     /// </summary>
     public const string PageTreeCyclic = "page-tree-cyclic";
+
+    /// <summary>
+    /// Fatal page-tree reason: a <c>/Kids</c> entry that is not an array of indirect references
+    /// (a scalar, a direct dictionary, or a reference to a non-array). Carried in the
+    /// <c>PdfSignatureFormatException</c> message; the endpoint answers 422.
+    /// </summary>
+    public const string PageTreeMalformed = "page-tree-malformed";
 
     /// <summary>
     /// Fatal page-tree reason: the page tree exceeds the traversal bound — deeper than 32 levels, more
