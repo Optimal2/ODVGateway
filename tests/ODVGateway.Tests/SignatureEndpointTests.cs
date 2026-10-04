@@ -16,15 +16,18 @@ namespace ODVGateway.Tests;
 /// index guards shared with <c>/source</c>, the size and format limits, and the JSON contract on the
 /// happy path. These probes run the real application on the in-memory TestServer; the only
 /// filesystem use is a throwaway fixture directory, which is what the gateway's file source needs.
+/// Every test runs in both validation modes: isolated worker (the default) and in-process.
 /// </summary>
 public sealed class SignatureEndpointTests : IDisposable
 {
     private readonly SignatureFixtures _fixtures = new();
 
-    [Fact]
-    public async Task N3_Saturation_Returns503AndReleasesPermitAfterError()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task N3_Saturation_Returns503AndReleasesPermitAfterError(bool isolateProcess)
     {
-        using var factory = new SignatureFactory(_fixtures);
+        using var factory = new SignatureFactory(_fixtures, isolateProcess: isolateProcess);
         using var client = factory.CreateClient();
         var sessionKey = PrepareSession(factory, _fixtures.CreateNonPdf("broken.pdf", 4096));
         var limiter = factory.Services.GetRequiredService<SignatureValidationLimiter>();
@@ -42,10 +45,12 @@ public sealed class SignatureEndpointTests : IDisposable
         Assert.True(available.IsAcquired);
     }
 
-    [Fact]
-    public async Task Disabled_ReturnsNotFoundWithClearReason()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Disabled_ReturnsNotFoundWithClearReason(bool isolateProcess)
     {
-        using var factory = new SignatureFactory(_fixtures, enabled: false);
+        using var factory = new SignatureFactory(_fixtures, enabled: false, isolateProcess: isolateProcess);
         using var client = factory.CreateClient();
 
         using var response = await client.GetAsync("/signatures/any-session/0", TestContext.Current.CancellationToken);
@@ -55,10 +60,12 @@ public sealed class SignatureEndpointTests : IDisposable
         Assert.Contains("not enabled", body);
     }
 
-    [Fact]
-    public async Task UnknownSession_ReturnsNotFound()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task UnknownSession_ReturnsNotFound(bool isolateProcess)
     {
-        using var factory = new SignatureFactory(_fixtures);
+        using var factory = new SignatureFactory(_fixtures, isolateProcess: isolateProcess);
         using var client = factory.CreateClient();
 
         using var response = await client.GetAsync("/signatures/not-a-session-key/0", TestContext.Current.CancellationToken);
@@ -68,10 +75,12 @@ public sealed class SignatureEndpointTests : IDisposable
         Assert.Contains("session was not found", body);
     }
 
-    [Fact]
-    public async Task IndexOutsidePreparedSession_ReturnsNotFound()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task IndexOutsidePreparedSession_ReturnsNotFound(bool isolateProcess)
     {
-        using var factory = new SignatureFactory(_fixtures);
+        using var factory = new SignatureFactory(_fixtures, isolateProcess: isolateProcess);
         using var client = factory.CreateClient();
         var sessionKey = PrepareSession(factory, _fixtures.CreateSignedPdf(new SignatureFixtures.SignedPdfRequest()));
 
@@ -82,13 +91,15 @@ public sealed class SignatureEndpointTests : IDisposable
         Assert.Contains("outside the prepared session", body);
     }
 
-    [Fact]
-    public async Task SignedPdf_ReturnsVerdictsAndNoStoreCaching()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SignedPdf_ReturnsVerdictsAndNoStoreCaching(bool isolateProcess)
     {
         _fixtures.WriteRootAnchor();
         _fixtures.WriteRootCrl([]);
         var path = _fixtures.CreateSignedPdf(new SignatureFixtures.SignedPdfRequest());
-        using var factory = new SignatureFactory(_fixtures);
+        using var factory = new SignatureFactory(_fixtures, isolateProcess: isolateProcess);
         using var client = factory.CreateClient();
         var sessionKey = PrepareSession(factory, path);
 
@@ -120,8 +131,10 @@ public sealed class SignatureEndpointTests : IDisposable
         Assert.Equal(PdfSignatureTrust.Valid, parsed.Signatures[0].Trust);
     }
 
-    [Fact]
-    public async Task BrokenCertification_IsReportedNotHidden()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task BrokenCertification_IsReportedNotHidden(bool isolateProcess)
     {
         _fixtures.WriteRootAnchor();
         _fixtures.WriteRootCrl([]);
@@ -130,7 +143,7 @@ public sealed class SignatureEndpointTests : IDisposable
             Certification = true,
             AppendBytesAfterSigning = 64
         });
-        using var factory = new SignatureFactory(_fixtures);
+        using var factory = new SignatureFactory(_fixtures, isolateProcess: isolateProcess);
         using var client = factory.CreateClient();
         var sessionKey = PrepareSession(factory, path);
 
@@ -143,13 +156,15 @@ public sealed class SignatureEndpointTests : IDisposable
         Assert.Contains("\"trustReason\":\"modified-after-certification\"", body);
     }
 
-    [Fact]
-    public async Task NonPdfSource_ReturnsUnsupportedMediaType()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task NonPdfSource_ReturnsUnsupportedMediaType(bool isolateProcess)
     {
         var path = _fixtures.CreateSignedPdf(new SignatureFixtures.SignedPdfRequest());
         var tifPath = Path.ChangeExtension(path, ".tif");
         File.Move(path, tifPath);
-        using var factory = new SignatureFactory(_fixtures);
+        using var factory = new SignatureFactory(_fixtures, isolateProcess: isolateProcess);
         using var client = factory.CreateClient();
         var sessionKey = PrepareSession(factory, tifPath, extension: "tif");
 
@@ -158,12 +173,14 @@ public sealed class SignatureEndpointTests : IDisposable
         Assert.Equal(HttpStatusCode.UnsupportedMediaType, response.StatusCode);
     }
 
-    [Fact]
-    public async Task DocumentAboveTheSizeLimit_ReturnsPayloadTooLarge()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task DocumentAboveTheSizeLimit_ReturnsPayloadTooLarge(bool isolateProcess)
     {
         _fixtures.WriteRootAnchor();
         var path = _fixtures.CreateSignedPdf(new SignatureFixtures.SignedPdfRequest());
-        using var factory = new SignatureFactory(_fixtures, maxFileBytes: 1024);
+        using var factory = new SignatureFactory(_fixtures, maxFileBytes: 1024, isolateProcess: isolateProcess);
         using var client = factory.CreateClient();
         var sessionKey = PrepareSession(factory, path);
 
@@ -174,11 +191,13 @@ public sealed class SignatureEndpointTests : IDisposable
         Assert.Contains("too large", body);
     }
 
-    [Fact]
-    public async Task UnreadablePdf_ReturnsUnprocessableEntity()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task UnreadablePdf_ReturnsUnprocessableEntity(bool isolateProcess)
     {
         var path = _fixtures.CreateNonPdf(fileName: "junk.pdf", bytes: 4096);
-        using var factory = new SignatureFactory(_fixtures);
+        using var factory = new SignatureFactory(_fixtures, isolateProcess: isolateProcess);
         using var client = factory.CreateClient();
         var sessionKey = PrepareSession(factory, path);
 
@@ -189,11 +208,13 @@ public sealed class SignatureEndpointTests : IDisposable
         Assert.Contains("could not be parsed", body);
     }
 
-    [Fact]
-    public async Task DocumentWithoutSignatures_ReturnsEmptyList()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task DocumentWithoutSignatures_ReturnsEmptyList(bool isolateProcess)
     {
         var path = _fixtures.CreateUnsignedPdf();
-        using var factory = new SignatureFactory(_fixtures);
+        using var factory = new SignatureFactory(_fixtures, isolateProcess: isolateProcess);
         using var client = factory.CreateClient();
         var sessionKey = PrepareSession(factory, path);
 
@@ -230,12 +251,18 @@ public sealed class SignatureEndpointTests : IDisposable
         private readonly SignatureFixtures _fixtures;
         private readonly bool _enabled;
         private readonly long? _maxFileBytes;
+        private readonly bool _isolateProcess;
 
-        public SignatureFactory(SignatureFixtures fixtures, bool enabled = true, long? maxFileBytes = null)
+        public SignatureFactory(
+            SignatureFixtures fixtures,
+            bool enabled = true,
+            long? maxFileBytes = null,
+            bool isolateProcess = true)
         {
             _fixtures = fixtures;
             _enabled = enabled;
             _maxFileBytes = maxFileBytes;
+            _isolateProcess = isolateProcess;
         }
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -249,6 +276,7 @@ public sealed class SignatureEndpointTests : IDisposable
                     ["ODVGateway:TrustClientFilePath"] = "true",
                     ["ODVGateway:TrustedSourceRoots:0"] = _fixtures.FileDirectory,
                     ["ODVGateway:signatures:enabled"] = _enabled ? "true" : "false",
+                    ["ODVGateway:signatures:isolateProcess"] = _isolateProcess ? "true" : "false",
                     ["ODVGateway:signatures:maxConcurrentValidations"] = "1",
                     ["ODVGateway:signatures:useWindowsTrustedRoots"] = "false",
                     ["ODVGateway:signatures:extraAnchorsDirectory"] = _fixtures.AnchorDirectory,

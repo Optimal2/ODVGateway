@@ -57,6 +57,38 @@ public sealed class SignatureValidationOptions
     /// <summary>Concurrent signature requests, including buffering. Clamped to 1–16; no queue.</summary>
     public int MaxConcurrentValidations { get; set; } = 2;
 
+    /// <summary>
+    /// Run the PDF open, signature extraction and validation of each file in a separate worker
+    /// process (the same assembly started with <c>--signature-worker</c>, fed the document bytes
+    /// over stdin). A worker that crashes, times out or exceeds its memory cap costs one request
+    /// (a named HTTP 503) instead of the gateway process. False keeps the in-process path, which
+    /// is only safe for PDFs from a trusted archive: a crafted file can overflow the stack inside
+    /// the PDF library's eager open, and a stack overflow terminates the whole process.
+    /// </summary>
+    public bool IsolateProcess { get; set; } = true;
+
+    /// <summary>
+    /// Wall-clock budget for one worker run, in seconds (clamped to 1-120). A worker that has not
+    /// answered in time is killed and the request fails with
+    /// <c>validation-worker-timeout</c> (HTTP 503).
+    /// </summary>
+    public int WorkerTimeoutSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// Working-set cap for one worker process, in bytes (clamped to 32 MiB-8 GiB). A worker that
+    /// grows past it is killed and the request fails with <c>validation-worker-memory</c>
+    /// (HTTP 503).
+    /// </summary>
+    public long WorkerMaxMemoryBytes { get; set; } = 512L * 1024L * 1024L;
+
+    /// <summary>
+    /// Test-only worker fault injection (<c>hang</c>, <c>allocate</c>, <c>bad-output</c>,
+    /// <c>bypass-precheck</c>). Honored only when the
+    /// <c>ODVGATEWAY_SIGNATURE_WORKER_TEST</c> environment variable is <c>1</c>; any other value
+    /// (or an unset variable) makes the worker refuse to start. Never set in production.
+    /// </summary>
+    public string? WorkerTestMode { get; set; }
+
     /// <summary>Maps the configured mode to its legacy enum representation; not used for native chain policy.</summary>
     public X509RevocationMode GetRevocationMode() => RevocationMode switch
     {

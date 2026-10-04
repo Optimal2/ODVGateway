@@ -84,4 +84,23 @@ public static class SignatureValidationReasons
     /// <c>PdfSignatureFormatException</c> message; the endpoint answers 422.
     /// </summary>
     public const string PageTreeTooDeep = "page-tree-too-deep";
+
+    /// <summary>
+    /// The isolated validation worker crashed, was killed by the operating system, or answered
+    /// with output the gateway could not parse. The gateway process is unaffected; the request
+    /// fails with HTTP 503 and this code. Never carries a stack trace or document content.
+    /// </summary>
+    public const string ValidationWorkerCrashed = "validation-worker-crashed";
+
+    /// <summary>
+    /// The isolated validation worker did not answer within
+    /// <c>Signatures:WorkerTimeoutSeconds</c> and was killed. HTTP 503.
+    /// </summary>
+    public const string ValidationWorkerTimeout = "validation-worker-timeout";
+
+    /// <summary>
+    /// The isolated validation worker grew past <c>Signatures:WorkerMaxMemoryBytes</c> and was
+    /// killed. HTTP 503.
+    /// </summary>
+    public const string ValidationWorkerMemory = "validation-worker-memory";
 }

@@ -8,6 +8,23 @@ for its `0.1.x` release line.
 
 ## [Unreleased]
 
+### Added
+
+- `GET /signatures/...` validates each PDF in an isolated worker process by default
+  (`signatures.isolateProcess: true`): the same assembly runs as
+  `ODVGateway --signature-worker`, is fed the document bytes over stdin (never a temp file),
+  and answers one JSON envelope over stdout. Each run is supervised with a wall-clock timeout
+  (`signatures.workerTimeoutSeconds`, default 30 s) and a working-set cap
+  (`signatures.workerMaxMemoryBytes`, default 512 MiB) under the same concurrency limiter as
+  before. A worker that crashes — including an uncatchable stack overflow inside the PDF
+  library's eager open — times out, overruns memory or answers unparseably costs one request
+  (a named HTTP 503: `validation-worker-crashed`, `validation-worker-timeout`,
+  `validation-worker-memory`, no stack trace, no `Retry-After`) instead of the gateway process,
+  which keeps serving. A small warm pool (at most two idle workers, retired after 25 requests,
+  five idle minutes, or any failure) keeps the per-request cost near the in-process one; see
+  `docs/PDF-SIGNATURE-VALIDATION.md` for the measured numbers. `isolateProcess: false` keeps
+  the in-process path, documented as "only for trusted archives".
+
 ### Fixed
 
 - `GET /signatures/...` resolves indirect references exactly by (number, generation), as the

@@ -90,6 +90,9 @@ name they were found under.
 | PDF cannot be opened/parsed at all, is encrypted, or fails the page-tree pre-check (`page-tree-cyclic`, `page-tree-malformed`, `page-tree-too-deep`) | `422` |
 | file larger than `Signatures:MaxFileBytes` | `413` |
 | all signature validation slots occupied | `503` with `Retry-After: 1` |
+| isolated worker crashed or answered unparseably (`validation-worker-crashed`) | `503` with `{ "code": "validation-worker-crashed" }`, no `Retry-After` |
+| isolated worker exceeded its wall-clock budget (`validation-worker-timeout`) | `503` with `{ "code": "validation-worker-timeout" }`, no `Retry-After` |
+| isolated worker exceeded its memory cap (`validation-worker-memory`) | `503` with `{ "code": "validation-worker-memory" }`, no `Retry-After` |
 | PDF parses but has no signature fields | `200` with `signatures: []` |
 
 Limits:
@@ -111,11 +114,19 @@ Limits:
   indirect-reference traversal uses visited sets and cached object identities. Limit violations
   produce 422. Physical signature dictionaries larger than 1 MiB are unreadable.
 - **Concurrency**: `Signatures:MaxConcurrentValidations` defaults to 2 and is clamped to 1–16.
-  A process-wide limiter covers both source buffering and validation, with no waiting queue.
-  Saturated requests receive 503 and `Retry-After: 1`; slots are released on success, error and
-  cancellation. Revocation I/O is awaited throughout the validation path, including timestamp
-  responder checks. The gateway has no existing per-session/client rate-limit policy; this limit
-  bounds concurrent work across all sessions. It is per process, not shared across replicas.
+  A process-wide limiter covers source buffering, validation, and isolated worker processes alike,
+  with no waiting queue. Saturated requests receive 503 and `Retry-After: 1`; slots are released
+  on success, error and cancellation. Revocation I/O is awaited throughout the validation path,
+  including timestamp responder checks. The gateway has no existing per-session/client rate-limit
+  policy; this limit bounds concurrent work across all sessions. It is per process, not shared
+  across replicas.
+- **Process isolation**: with the default `Signatures:IsolateProcess: true`, the PDF open,
+  signature extraction and validation of each file run in a separate worker process (see "Process
+  isolation" below), bounded by `Signatures:WorkerTimeoutSeconds` (default 30, clamped to 1–120)
+  and `Signatures:WorkerMaxMemoryBytes` (default 512 MiB, clamped to 32 MiB–8 GiB). A worker that
+  crashes, times out, overruns memory or answers unparseably costs one request — a named 503 —
+  never the gateway process. `IsolateProcess: false` keeps the in-process path, which is only
+  safe for PDFs from a trusted archive.
 - `Cache-Control: no-store` always, including on error responses, because a verdict is a statement
   about "now".
 
@@ -188,8 +199,10 @@ The pre-check only judges what it can read completely: cross-reference streams, 
 encrypted files, dangling references and unparseable objects are left to PdfPig, whose behavior for
 those shapes is unchanged. Shapes outside the walked path that the eager open dereferences through
 the same unguarded recursion — catalog `/Dests` and `/Names` name trees in particular — likewise still
-reach the library. Process isolation for the whole validation step is the complete fix and is still
-pending; see the Known limitation note in `SECURITY.md`.
+reach the library. That is why validation runs isolated by default: the pre-check stays as the cheap
+first line that rejects known-bad files with a 422, and process isolation is the backstop that turns
+any remaining crash into a named 503 for one request (see "Process isolation" below and the Known
+limitation note in `SECURITY.md`).
 
 Catalog and AcroForm roots, page-tree references and other parser failures
 remain fatal (HTTP 422). A cyclic `/AcroForm` reference fails the file with the named reason `The PDF AcroForm reference is cyclic.` instead of reading as absent. The same depth, visited-set and traversal-budget limits still apply.
@@ -370,6 +383,41 @@ names. **No document content, no signer names or other subject strings, no certi
 issuer DN** — those are in the response for the user, not in the log. Certificate subjects are the
 kind of personal data a production log must not collect.
 
+## Process isolation
+
+With the default `Signatures:IsolateProcess: true`, the gateway never opens a PDF itself. Each
+validation runs in a worker process — the same assembly started as
+`ODVGateway --signature-worker`, so packaging and the OMP artifact stay one unit — fed the document
+bytes over stdin and answering one JSON envelope over stdout. No temp files, no persisted bytes, on
+either side; the worker never builds the web host and never touches logging providers. As a second
+layer, every worker is pointed at a private per-client temp directory (`odv-sigworker-*`, removed
+when the gateway shuts down), so even a future framework temp write could never land document bytes
+in the shared temp.
+
+Each worker run is supervised with a wall-clock timeout (`Signatures:WorkerTimeoutSeconds`,
+default 30 s) and a working-set cap (`Signatures:WorkerMaxMemoryBytes`, default 512 MiB). A worker
+that crashes (including an uncatchable stack overflow inside the PDF library), times out, overruns
+its memory cap or answers with unparseable output is killed if still alive, and the request fails
+with a named HTTP 503 — `validation-worker-crashed`, `validation-worker-timeout` or
+`validation-worker-memory` — with no stack trace and no `Retry-After` (retrying a file that kills
+its worker just kills another worker). The gateway process keeps serving. One structured log line
+is written per worker outcome: outcome, exit code, duration, peak working set, and byte counts —
+never file content.
+
+A cold worker costs a process start plus JIT on every request: measured 2026-10-04 on the
+checked-in two-signature fixture (`odv-two-signatures-gen0.pdf`, Release build), a full cold run
+took ~915 ms median against ~115 ms for the same validation in-process. The gateway therefore
+keeps a small warm pool of persistent workers (`--signature-worker --persistent`,
+length-prefixed request frames over the same pipes): at most two idle workers are retained, each
+is retired after 25 requests, after five idle minutes, or on any failure, and a dead idle worker
+is never reused. A pooled request costs ~170 ms median on the same fixture — the isolation
+overhead left is one frame round-trip plus supervision, about 55 ms. The pool shape (2 idle, 25
+requests, 5 minutes) is fixed in code, not configured.
+
+`IsolateProcess: false` keeps the previous in-process path unchanged: same verdicts, same 422s,
+no worker, no timeout or memory cap beyond the file budget. Use it only for PDFs from a trusted
+archive, where no crafted file can reach the validator.
+
 ## Byte source
 
 `/source` and `/signatures` need the same bytes with different shapes: `/source` streams, while
@@ -397,7 +445,10 @@ helpers; no proxy logic is duplicated.
     "revocationTimeoutSeconds": 15,
     "revocationHostAllowList": [],
     "maxFileBytes": 0,
-    "maxConcurrentValidations": 2
+    "maxConcurrentValidations": 2,
+    "isolateProcess": true,
+    "workerTimeoutSeconds": 30,
+    "workerMaxMemoryBytes": 536870912
   }
 }
 ```
@@ -418,6 +469,12 @@ also derives a conforming variant of the negative fixture in memory, re-signing 
 signature with the test CA for tampering tests. Origins and hashes are in the fixtures `README.md`.
 
 Security regression coverage lives in `SignatureSecurityTests` and `SignatureValidationServiceTests`.
+Isolation coverage lives in `SignatureWorkerIsolationTests`: a worker fed a `/Kids` bare-reference
+cycle with the pre-check bypassed dies with a real stack overflow while the parent answers the named
+503 and keeps serving; hang/allocate fault modes prove the timeout and memory cap; a private
+per-client temp directory that must stay empty proves no document bytes reach the disk; and pool
+tests prove reuse, recycling and no-reuse-after-failure. The endpoint tests run every case twice,
+once per validation mode.
 Network tests use an in-memory HTTP responder and generated CRLs; address classification and mixed
 DNS results are tested separately, with no outbound network. `scripts/verify-signature-regressions.py`
 temporarily breaks each F1–F7, N1–N4 and G1–G2 guard, expects its selected xUnit test to fail, restores the source in

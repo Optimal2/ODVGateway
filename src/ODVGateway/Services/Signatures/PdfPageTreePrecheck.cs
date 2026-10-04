@@ -42,6 +42,13 @@ public static class PdfPageTreePrecheck
     public const int MaxNodes = 100_000;
 
     /// <summary>
+    /// Test-only escape hatch, honored by the isolated worker's <c>bypass-precheck</c> mode.
+    /// Setting this in the gateway process itself re-exposes the uncatchable stack overflow the
+    /// pre-check exists to prevent: never set it outside the worker fault-injection tests.
+    /// </summary>
+    internal static bool DisabledForTesting { get; set; }
+
+    /// <summary>
     /// Walks the trailer's <c>/Root</c> -&gt; <c>/Pages</c> -&gt; <c>/Kids</c> path. Returns the
     /// diagnostics observed along the way (at most
     /// <see cref="SignatureValidationReasons.ReferenceGenerationFallback"/>); throws a named
@@ -49,7 +56,17 @@ public static class PdfPageTreePrecheck
     /// malformed or oversized.
     /// </summary>
     public static IReadOnlyList<string> Validate(byte[] fileBytes, CancellationToken cancellationToken = default) =>
-        new Walker(fileBytes, cancellationToken).Run();
+        ValidateCore(fileBytes, cancellationToken);
+
+    private static IReadOnlyList<string> ValidateCore(byte[] fileBytes, CancellationToken cancellationToken)
+    {
+        if (DisabledForTesting)
+        {
+            return [];
+        }
+
+        return new Walker(fileBytes, cancellationToken).Run();
+    }
 
     private sealed record Resolved(RawValue Value, long Number, long Generation, bool Direct);
 

@@ -46,7 +46,7 @@ is supported.
 Changes since v0.1.43:
 
 - New `GET /signatures/{sessionKey}/{fileIndex}` validates PDF signatures server-side (integrity, trust with reason codes, signer, signing time, timestamps, whole-file coverage) in bounded memory and time, never persisting or caching document bytes. **Off by default** (`signatures.enabled: false` answers 404 and loads nothing). `revocationMode` selects `Online` (issuer CRLs through the gateway's own bounded transport: public addresses only, optional exact host allow-list, 1–30 s timeout, AIA and OS downloads disabled), `Offline` (CRL files only, no network) or `NoCheck` (verdict always `unknown`). Review-found gaps in integrity, trust and revocation handling were closed before release (detached CMS content handed to the verifier, strict ByteRange gap check, archived CRL selection, rejection of base CRLs advertising unsupported delta CRLs, asynchronous validation bounded by the file budget), and object references resolve exactly by (number, generation), so an appended higher-generation object cannot shadow a signed one (a missing exact entry falls back to the newest generation only with a `reference-generation-fallback` diagnostic).
-- Known limitation while validation is enabled: a pre-open page-tree check rejects the measured stack-overflow shapes for files with classic cross-reference tables (cyclic `/Pages`→`/Kids` chains, self-referencing nodes, malformed `/Kids` entries) with a named HTTP 422 failure before PdfPig opens the file. Files whose cross-reference is a stream (xref streams / object streams, i.e. most modern producers) pass through to PdfPig without the pre-check, and catalog `/Dests` and `/Names` trees are not pre-checked either, so one crafted file of those shapes can still overflow the stack inside `PdfDocument.Open` (uncatchable, terminates the process). The default `signatures.enabled: false` never opens a file; process isolation is the remaining mitigation (campaign `odvgateway-signaturvalidering-i-separat-process`). Enable validation only for PDFs from a trusted archive until then.
+- Known limitation while validation is enabled: a pre-open page-tree check rejects the measured stack-overflow shapes for files with classic cross-reference tables (cyclic `/Pages`→`/Kids` chains, self-referencing nodes, malformed `/Kids` entries) with a named HTTP 422 failure before PdfPig opens the file. Files whose cross-reference is a stream (xref streams / object streams, i.e. most modern producers) pass through to PdfPig without the pre-check, and catalog `/Dests` and `/Names` trees are not pre-checked either — but with the default `signatures.isolateProcess: true` (campaign `odvgateway-signaturvalidering-i-separat-process`) each file is validated in a separate worker process with a wall-clock timeout and a memory cap, so one crafted file of those shapes can only cost its own request (a named HTTP 503), never the gateway process. The default `signatures.enabled: false` never opens a file at all. Only `signatures.isolateProcess: false` (documented as "only for trusted archives") still exposes the gateway process to an uncatchable stack overflow from a crafted file.
 - Status and error pages follow the shared OMP light/dark theme with hardened theme-cookie parsing; unknown-length proxy responses are validated; static web assets carry a pinned `Last-Modified` so the web artifact is reproducible. No known vulnerable packages (`dotnet list package --vulnerable --include-transitive`).
 
 ### ODVGateway v0.1.43
@@ -84,17 +84,23 @@ First official release. Changes since the 0.1.38 artifact:
 
 ## Known limitations
 
-PDF signature validation (`GET /signatures/...`, off by default) runs inside the gateway process.
-A pre-open page-tree check rejects the measured stack-overflow shapes for files with classic
-cross-reference tables (cyclic `/Kids` and `/Type` reference chains, self-referencing page-tree
-nodes, malformed `/Kids` entries) with a named HTTP 422 failure before the PDF library opens the
-file. Files whose cross-reference is a stream (xref streams / object streams, i.e. most modern
-producers) pass through to PdfPig without the pre-check, as do shapes outside the walked path
-that the library's eager open dereferences through the same unguarded recursion — catalog
-`/Dests` and `/Names` name trees in particular — so one crafted file of those shapes could still
-kill the gateway process while validation is enabled. Running validation in a separate process
-is the complete fix and is still pending. Deployments that do not need server-side signature
-verdicts should keep `signatures.enabled` at its default `false`.
+PDF signature validation (`GET /signatures/...`, off by default) runs each file in a
+separate worker process by default (`signatures.isolateProcess: true`). A pre-open page-tree
+check remains the cheap first line: it rejects the measured stack-overflow shapes for files with
+classic cross-reference tables (cyclic `/Kids` and `/Type` reference chains, self-referencing
+page-tree nodes, malformed `/Kids` entries) with a named HTTP 422 failure before the PDF library
+opens the file. Files whose cross-reference is a stream (xref streams / object streams, i.e. most
+modern producers) pass through to PdfPig without the pre-check, as do shapes outside the walked
+path that the library's eager open dereferences through the same unguarded recursion — catalog
+`/Dests` and `/Names` name trees in particular — but with isolation on, one crafted file of those
+shapes can only cost its own request: the worker is supervised with a wall-clock timeout (default
+30 s) and a memory cap (default 512 MiB), and a crash, timeout, overrun or unparseable answer
+becomes a named HTTP 503 (`validation-worker-crashed`, `validation-worker-timeout`,
+`validation-worker-memory`) while the gateway process keeps serving. Only
+`signatures.isolateProcess: false` — documented as "only for trusted archives" — still lets a
+crafted file overflow the stack inside `PdfDocument.Open` and terminate the gateway process.
+Deployments that do not need server-side signature verdicts should keep `signatures.enabled` at
+its default `false`.
 
 ## Reporting a Vulnerability
 

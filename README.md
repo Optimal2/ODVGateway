@@ -347,6 +347,9 @@ leaves the gateway. It is disabled by default and answered with `404` until
 | `signatures.revocationHostAllowList` | `[]` | Optional exact DNS hosts, in addition to mandatory public-address checks. |
 | `signatures.revocationTimeoutSeconds` | `15` | Bounds each CRL attempt, clamped to 1–30 seconds. |
 | `signatures.maxFileBytes` | `0` | Largest validated PDF. `0` follows the source transport limit (64 MiB); a positive value never raises it. |
+| `signatures.isolateProcess` | `true` | Validate each file in a separate worker process. `false` is in-process and only safe for trusted archives. |
+| `signatures.workerTimeoutSeconds` | `30` | Wall-clock budget per file (1–120 s); expiry kills the worker and answers `503 validation-worker-timeout`. |
+| `signatures.workerMaxMemoryBytes` | `536870912` | Working-set cap per worker (32 MiB–8 GiB); overrun kills the worker and answers `503 validation-worker-memory`. |
 
 The full contract, the trust/expiry/timestamp rules, and the PDF reading
 choice are in [docs/PDF-SIGNATURE-VALIDATION.md](docs/PDF-SIGNATURE-VALIDATION.md).

@@ -30,6 +30,14 @@ using ODVGateway.Services.Signatures;
 // response — which this middleware stamps on every response. Without blob:
 // the worker path degrades silently to the main thread (a logged warning,
 // slower prints). The generated PDF blob itself is never fetched.
+// Isolated signature-validation worker entry mode: the same assembly validates one document
+// from stdin and answers one JSON envelope on stdout, then exits. This runs before anything
+// else so the worker never builds the web host, never opens a socket, and never touches logging.
+if (SignatureWorkerMain.ShouldRun(args))
+{
+    return await SignatureWorkerMain.RunAsync(args);
+}
+
 const string DefaultContentSecurityPolicy =
     "default-src 'self'; " +
     "script-src 'self' 'unsafe-inline'; " +
@@ -69,6 +77,9 @@ builder.Services.AddSingleton<OpenDocViewerBundleFactory>();
 builder.Services.AddSingleton<OpenDocViewerIndexRenderer>();
 builder.Services.AddSingleton<WebClientSourceProxyLimiter>();
 builder.Services.AddSingleton<SignatureValidationLimiter>();
+builder.Services.AddSingleton(provider => new SignatureWorkerClient(
+    provider.GetRequiredService<ILoggerFactory>().CreateLogger(GatewayLogNames.SignatureValidation),
+    provider.GetRequiredService<IHostEnvironment>().ContentRootPath));
 builder.Services.AddSingleton<WebClientFallbackUrlBuilder>();
 builder.Services.AddHttpClient("ODVGateway.RemoteInline");
 
@@ -423,6 +434,7 @@ app.MapGet("/signatures/{sessionKey}/{fileIndex:int}", async (
     IHttpClientFactory httpClientFactory,
     WebClientFallbackUrlBuilder fallbackUrlBuilder,
     PdfSignatureValidationService signatureValidator,
+    SignatureWorkerClient signatureWorker,
     SignatureValidationLimiter signatureLimiter,
     ILoggerFactory loggerFactory,
     CancellationToken cancellationToken) =>
@@ -475,13 +487,30 @@ app.MapGet("/signatures/{sessionKey}/{fileIndex:int}", async (
 
     try
     {
-        var validation = await signatureValidator.ValidateAsync(signatureSource.Bytes!, cancellationToken, httpContext.Request.Host.Host);
+        // Isolation is the default: one worker process per request, bounded by the same limiter
+        // slot held since before buffering. The in-process path exists only for trusted archives.
+        var validation = options.Value.Signatures.IsolateProcess
+            ? await signatureWorker.ValidateAsync(
+                options.Value.Signatures, signatureSource.Bytes!, httpContext.Request.Host.Host, cancellationToken)
+            : await signatureValidator.ValidateAsync(
+                signatureSource.Bytes!, cancellationToken, httpContext.Request.Host.Host);
         return Results.Json(validation, SignatureValidationJson.Options, statusCode: StatusCodes.Status200OK);
     }
     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
     {
         // The client went away mid-validation: nothing to report, and nothing to log as a failure.
         throw;
+    }
+    catch (SignatureWorkerException exception)
+    {
+        // Named worker failure for this file only: no Retry-After, because retrying a file that
+        // crashes its worker just crashes another worker. The gateway process is unaffected.
+        logger.LogWarning(
+            "Signature validation worker failed for one request. Index={FileIndex} Code={Code}",
+            fileIndex,
+            exception.Code);
+        return Results.Json(new { error = exception.Message, code = exception.Code },
+            statusCode: StatusCodes.Status503ServiceUnavailable);
     }
     catch (PdfEncryptedException)
     {
@@ -552,6 +581,8 @@ app.MapGet("/source-pack/{sessionKey}", async (    HttpContext httpContext,
 });
 
 app.Run();
+
+return 0;
 
 static async Task<IResult> RenderViewerAsync(
     HttpContext context,
