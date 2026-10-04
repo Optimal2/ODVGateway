@@ -99,7 +99,7 @@ public sealed class PdfSignatureLocator
                 continue;
             }
 
-            foreach (var annotation in EnumerateDictionaries(document, annotationsToken))
+            foreach (var annotation in EnumerateDictionaries(document, annotationsToken, skipDangling: true))
             {
                 TryAddSignature(document, annotation, found, seen, certificationReferences, fieldName: null);
             }
@@ -222,7 +222,7 @@ public sealed class PdfSignatureLocator
         }
         var visited = new HashSet<DictionaryToken>(ReferenceEqualityComparer.Instance);
         var queue = new Queue<(DictionaryToken Field, int Depth)>();
-        foreach (var field in EnumerateDictionaries(document, fieldsToken))
+        foreach (var field in EnumerateDictionaries(document, fieldsToken, skipDangling: true))
             if (visited.Add(field)) queue.Enqueue((field, 0));
         while (queue.Count > 0)
         {
@@ -231,7 +231,7 @@ public sealed class PdfSignatureLocator
             if (depth > MaxDepth) throw new PdfSignatureFormatException("The PDF field tree is too deep.");
             yield return field;
             if (!field.TryGet(NameToken.Create("Kids"), out var kids)) continue;
-            foreach (var child in EnumerateDictionaries(document, kids))
+            foreach (var child in EnumerateDictionaries(document, kids, skipDangling: true))
                 if (visited.Add(child)) queue.Enqueue((child, depth + 1));
         }
     }
@@ -282,9 +282,10 @@ public sealed class PdfSignatureLocator
         return result;
     }
 
-    private IEnumerable<DictionaryToken> EnumerateDictionaries(PdfDocument document, IToken? token)
+    private IEnumerable<DictionaryToken> EnumerateDictionaries(PdfDocument document, IToken? token,
+        bool skipDangling = false)
     {
-        var array = Resolve<ArrayToken>(document, token);
+        var array = Resolve<ArrayToken>(document, token, skipDangling);
         if (array is null)
         {
             yield break;
@@ -293,7 +294,7 @@ public sealed class PdfSignatureLocator
         foreach (var entry in array.Data)
         {
             CheckBudget();
-            var dictionary = Resolve<DictionaryToken>(document, entry);
+            var dictionary = Resolve<DictionaryToken>(document, entry, skipDangling);
             if (dictionary is not null)
             {
                 yield return dictionary;
@@ -317,7 +318,7 @@ public sealed class PdfSignatureLocator
         }
 
         CheckBudget();
-        var signature = Resolve<DictionaryToken>(document, valueToken);
+        var signature = Resolve<DictionaryToken>(document, valueToken, skipDangling: true);
         if (signature is null)
         {
             return;
@@ -429,7 +430,7 @@ public sealed class PdfSignatureLocator
                 return null;
             }
 
-            current = Resolve<DictionaryToken>(document, parentToken);
+            current = Resolve<DictionaryToken>(document, parentToken, skipDangling: true);
         }
 
         return null;
@@ -452,7 +453,7 @@ public sealed class PdfSignatureLocator
                 break;
             }
 
-            current = Resolve<DictionaryToken>(document, parentToken);
+            current = Resolve<DictionaryToken>(document, parentToken, skipDangling: true);
         }
 
         return parts.Count == 0 ? null : string.Join(".", parts);
@@ -507,7 +508,7 @@ public sealed class PdfSignatureLocator
         return true;
     }
 
-    private T? Resolve<T>(PdfDocument document, IToken? token) where T : class, IToken
+    private T? Resolve<T>(PdfDocument document, IToken? token, bool skipDangling = false) where T : class, IToken
     {
         var current = token;
         var references = new HashSet<string>(StringComparer.Ordinal);
@@ -528,7 +529,19 @@ public sealed class PdfSignatureLocator
                     var key = ReferenceKey(referenceToken);
                     if (!objects.TryGetValue(key, out current))
                     {
-                        current = document.Structure.GetObject(Target(referenceToken.Data));
+                        var target = Target(referenceToken.Data);
+                        try
+                        {
+                            current = document.Structure.GetObject(target);
+                        }
+                        catch (InvalidOperationException) when (skipDangling && !objectOffsets.ContainsKey(target))
+                        {
+                            // PdfPig throws for an absent object. Only field/widget/annotation
+                            // walks may skip it; roots and other parser failures still fail closed.
+                            // Do not cache this as null: a later strict lookup must still fail.
+                            diagnostics.Add(SignatureValidationReasons.DanglingReferenceSkipped);
+                            return null;
+                        }
                         objects.Add(key, current);
                     }
                     continue;

@@ -109,6 +109,7 @@ public sealed class SignatureEndpointTests : IDisposable
         Assert.Contains("\"signingTimeSource\":\"signed-attribute\"", body);
         Assert.Contains("\"coversWholeFile\":true", body);
         Assert.Contains("\"validatedAt\":", body);
+        Assert.Contains("\"diagnostics\":[]", body);
         Assert.Contains("\"validationTime\":", body);
         Assert.Contains("\"signerOrganization\":\"Test Unit AB\"", body);
 

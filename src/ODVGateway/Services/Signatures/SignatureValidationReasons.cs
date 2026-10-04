@@ -40,4 +40,7 @@ public static class SignatureValidationReasons
     /// object number instead. Specification-conforming files never need it.
     /// </summary>
     public const string ReferenceGenerationFallback = "reference-generation-fallback";
+
+    /// <summary>A field, widget or annotation reference could not resolve to an existing object.</summary>
+    public const string DanglingReferenceSkipped = "dangling-reference-skipped";
 }

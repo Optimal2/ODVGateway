@@ -13,7 +13,7 @@ namespace ODVGateway.Models;
 public sealed record PdfSignatureValidationResponse(
     IReadOnlyList<PdfSignatureValidation> Signatures,
     DateTimeOffset ValidatedAt,
-    IReadOnlyList<string> Diagnostics);
+    [property: JsonPropertyName("diagnostics")] IReadOnlyList<string> Diagnostics);
 
 /// <summary>
 /// One signature field of one PDF, as the gateway read it. Fields are null when the document or the

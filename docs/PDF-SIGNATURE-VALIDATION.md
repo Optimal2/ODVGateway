@@ -73,7 +73,7 @@ Field values:
 | `trust` | `valid`, `invalid`, `unknown` | chain level, evaluated at `validationTime`. |
 | `signingTimeSource` | `signed-attribute`, `pdf-M`, `timestamp`, `none` | where `signingTime` came from. |
 | `integrityReason`, `trustReason` | string or `null` | short stable codes; see the tables below. |
-| `diagnostics` | array of strings | document-level notes on how the PDF was read; empty for specification-conforming files. `reference-generation-fallback`: a reference named a (number, generation) missing from the cross-reference data and was read at the newest generation of that number (see "Reading the PDF"). |
+| `diagnostics` | array of strings | document-level notes on how the PDF was read; empty for specification-conforming files. `reference-generation-fallback`: a missing exact generation was read at the newest generation of that number. `dangling-reference-skipped`: a missing object was skipped during a field/widget/annotation walk (see "Reading the PDF"). |
 
 Unknown or absent values are reported as `null` rather than guessed. `fieldName` is the AcroForm
 field name when the signature sits on a field, and `/Perms` markers use `DocMDP` / the dictionary
@@ -158,6 +158,13 @@ still decides whether an earlier approval survives later revisions. Fallback ref
 the same visited sets, depth limit and traversal budget. For the catalog the fallback is reached
 only when PdfPig could open the file at all, which needs some `1 0 obj` body for `/Root 1 0 R`; an
 unlisted body found by PdfPig's lenient scan is not an exact cross-reference entry.
+
+A dangling reference inside the field/widget/annotation walk is skipped when PdfPig cannot find
+the object and its resolved identity is absent from the cross-reference data. Remaining signatures
+are still validated, and `diagnostics` contains `dangling-reference-skipped` once per document.
+This tolerance applies to field and annotation arrays, their elements, field `/Kids`, `/Parent`
+and `/V` references. Catalog and AcroForm roots, page-tree references and other parser failures
+remain fatal (HTTP 422). The same depth, visited-set and traversal-budget limits still apply.
 
 Why a library and not a hand-written reader: signature dictionaries live behind cross-reference
 tables *and* cross-reference streams, object streams (`/ObjStm`), and incremental updates, and they
@@ -373,13 +380,14 @@ Tests build a throwaway CA hierarchy in code (`CertificateRequest`, `X509Signatu
 `CertificateRevocationListBuilder`), sign synthetic single-page PDFs written by the fixture helper,
 and write DER CRL files into a temp directory. No network access, and almost every byte is generated
 per test run, so nothing that looks like a customer document can leak into a public repository.
-The one checked-in file, `tests/ODVGateway.Tests/Fixtures/Signatures/odv-two-signatures-incremental.pdf`,
-is the synthetic two-signature fixture from OpenDocViewer's `scripts/generate-signature-fixtures.mjs`
-(throwaway CA, fake names). It is a negative fixture for the out-of-specification generation bump
-described under "Reading the PDF": its appended `3 1 obj` / `5 1 obj` must never shadow the
-generation-0 originals. `IncrementalUpdateSignatureTests` derives the specification-conforming
-variant from it in memory (generation 0 throughout, the second signature re-signed with the test
-CA). Its origin and hash are in the `README.md` next to it.
+The two checked-in files under `tests/ODVGateway.Tests/Fixtures/Signatures/` come from
+OpenDocViewer's `scripts/generate-signature-fixtures.mjs` (throwaway CA, fake names).
+`odv-two-signatures-incremental.pdf` is a negative fixture for the out-of-specification generation
+bump described under "Reading the PDF": its appended `3 1 obj` / `5 1 obj` must never shadow the
+generation-0 originals. `odv-two-signatures-gen0.pdf` is the specification-conforming positive
+fixture: both signatures are intact and document diagnostics are empty. `IncrementalUpdateSignatureTests`
+also derives a conforming variant of the negative fixture in memory, re-signing the second
+signature with the test CA for tampering tests. Origins and hashes are in the fixtures `README.md`.
 
 Security regression coverage lives in `SignatureSecurityTests` and `SignatureValidationServiceTests`.
 Network tests use an in-memory HTTP responder and generated CRLs; address classification and mixed

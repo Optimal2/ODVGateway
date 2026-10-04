@@ -21,6 +21,74 @@ public sealed class IncrementalUpdateSignatureTests : IDisposable
     private readonly SignatureFixtures _fixtures = new();
 
     [Fact]
+    public async Task OdvGenerationZeroFixture_ReportsTwoIntactSignaturesWithoutDiagnostics()
+    {
+        var bytes = File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory,
+            "Fixtures", "Signatures", "odv-two-signatures-gen0.pdf"));
+
+        var response = await CreateService().ValidateAsync(bytes, TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, response.Signatures.Count);
+        Assert.Equal(PdfSignatureIntegrity.Intact,
+            response.Signatures.Single(s => s.FieldName == "Signature1").Integrity);
+        Assert.Equal(PdfSignatureIntegrity.Intact,
+            response.Signatures.Single(s => s.FieldName == "ApprovalTwo").Integrity);
+        Assert.False(response.Signatures.Single(s => s.FieldName == "Signature1").CoversWholeFile);
+        Assert.True(response.Signatures.Single(s => s.FieldName == "ApprovalTwo").CoversWholeFile);
+        Assert.All(response.Signatures, s => Assert.NotEqual(PdfSignatureTrust.Valid, s.Trust));
+        Assert.Empty(response.Diagnostics);
+    }
+
+    [Theory]
+    [InlineData("/AcroForm << /Fields [99 0 R 4 0 R 99 0 R] >>")]
+    [InlineData("/AcroForm << /Fields [<< /Kids [99 0 R 4 0 R] >>] >>")]
+    [InlineData("/AcroForm << /Fields [<< /FT /Sig /V 99 0 R >> 4 0 R] >>")]
+    [InlineData("/AcroForm << /Fields [<< /Parent 99 0 R >> 4 0 R] >>")]
+    public async Task DanglingFieldReference_SkipsElementAndReportsRemainingSignature(string form)
+    {
+        var original = File.ReadAllBytes(_fixtures.CreateSignedPdf(new SignatureFixtures.SignedPdfRequest()));
+        var bytes = AppendUpdate(original, [(1, 0, $"<< /Type /Catalog /Pages 2 0 R {form} >>")]);
+
+        var response = await CreateService().ValidateAsync(bytes, TestContext.Current.CancellationToken);
+
+        var signature = Assert.Single(response.Signatures);
+        Assert.Equal("Signature1", signature.FieldName);
+        Assert.Equal(PdfSignatureIntegrity.ModifiedAfterSigning, signature.Integrity);
+        Assert.Equal(["dangling-reference-skipped"], response.Diagnostics);
+    }
+
+    [Fact]
+    public async Task DanglingAnnotationReference_SkipsElementAndReportsRemainingSignature()
+    {
+        var original = File.ReadAllBytes(_fixtures.CreateSignedPdf(new SignatureFixtures.SignedPdfRequest()));
+        var bytes = AppendUpdate(original,
+        [
+            (1, 0, "<< /Type /Catalog /Pages 2 0 R >>"),
+            (3, 0, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Annots [99 0 R 4 0 R] >>")
+        ]);
+
+        var response = await CreateService().ValidateAsync(bytes, TestContext.Current.CancellationToken);
+
+        Assert.Equal("Signature1", Assert.Single(response.Signatures).FieldName);
+        Assert.Equal(["dangling-reference-skipped"], response.Diagnostics);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task DanglingRootReference_StillRejectsDocument(bool catalog)
+    {
+        var bytes = BaseRevision();
+        var text = Encoding.Latin1.GetString(bytes);
+        bytes = Encoding.Latin1.GetBytes(catalog
+            ? text.Replace("/Root 1 0 R", "/Root 9 0 R", StringComparison.Ordinal)
+            : text.Replace("/AcroForm 3 0 R", "/AcroForm 9 0 R", StringComparison.Ordinal));
+
+        await Assert.ThrowsAsync<PdfSignatureFormatException>(() =>
+            CreateService().ValidateAsync(bytes, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
     public async Task OdvGenerationBumpedFixture_NeverShadowsTheGenerationZeroOriginal()
     {
         // Out of specification: the update writes `3 1 obj` / `5 1 obj` while every reference keeps
