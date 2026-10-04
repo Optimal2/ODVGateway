@@ -8,9 +8,9 @@ Security issues should be reported privately before public disclosure.
 
 ## Supported Versions
 
-**ODVGateway v0.1.43** is the current supported release and the recommended
+**ODVGateway v0.1.44** is the current supported release and the recommended
 deployment target. The OMP artifact version that ships the supported build is
-`0.1.53` (`odvgateway-web` in `omp-components.json`); the two lines are
+`0.1.61` (`odvgateway-web` in `omp-components.json`); the two lines are
 deliberately independent and are not forced to match. Read each version out of
 its source file — `Directory.Build.props` for the application version and
 `omp-components.json` for the OMP artifact.
@@ -28,7 +28,8 @@ test-standard and dependency updates listed below.
 
 | Version | Security support | Notes |
 | --- | --- | --- |
-| 0.1.43 | :white_check_mark: | Current recommended release and only supported baseline |
+| 0.1.44 | :white_check_mark: | Current recommended release and only supported baseline |
+| 0.1.43 | :x: | Superseded by v0.1.44: server-side PDF signature validation (off by default), themed status pages, reproducible static assets |
 | 0.1.42 | :x: | Superseded by v0.1.43: the default Content-Security-Policy no longer blocks the viewer's PDF print path or its PDF worker |
 | 0.1.41 | :x: | Superseded by v0.1.42: the handoff redirect keeps the WebClient initiator visible, so `allowedInitiatorUrls` works with the default bundle handoff |
 | 0.1.40 | :x: | Superseded by v0.1.41: real `/health` and error status codes, reproducible assemblies, refreshed test baseline |
@@ -40,6 +41,12 @@ test-standard and dependency updates listed below.
 
 The most recent releases are listed below for operational context. Only v0.1.43
 is supported.
+
+### ODVGateway v0.1.44
+Changes since v0.1.43:
+
+- New `GET /signatures/{sessionKey}/{fileIndex}` validates PDF signatures server-side (integrity, trust with reason codes, signer, signing time, timestamps, whole-file coverage) in bounded memory and time, never persisting or caching document bytes. **Off by default** (`signatures.enabled: false` answers 404 and loads nothing). `revocationMode` selects `Online` (issuer CRLs through the gateway's own bounded transport: public addresses only, optional exact host allow-list, 1–30 s timeout, AIA and OS downloads disabled), `Offline` (CRL files only, no network) or `NoCheck` (verdict always `unknown`). Review-found gaps in integrity, trust and revocation handling were closed before release (detached CMS content handed to the verifier, strict ByteRange gap check, archived CRL selection, rejection of base CRLs advertising unsupported delta CRLs, asynchronous validation bounded by the file budget), and signatures added by generation-bumped incremental updates are enumerated.
+- Status and error pages follow the shared OMP light/dark theme with hardened theme-cookie parsing; unknown-length proxy responses are validated; static web assets carry a pinned `Last-Modified` so the web artifact is reproducible. No known vulnerable packages (`dotnet list package --vulnerable --include-transitive`).
 
 ### ODVGateway v0.1.43
 Changes since v0.1.42:
