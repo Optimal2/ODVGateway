@@ -1,0 +1,33 @@
+<Project>
+  <PropertyGroup>
+    <!-- Build against the selected SDK's compiler, without package downloads. -->
+    <ImportDirectoryBuildProps>false</ImportDirectoryBuildProps>
+    <ImportDirectoryBuildTargets>false</ImportDirectoryBuildTargets>
+    <!-- A consumer and its referenced OMP checkout both carry this project.
+         Distinguish their physical copies within the caller's isolated root. -->
+    <_OmpRazorBuildIdentity>$([MSBuild]::StableStringHash('$(MSBuildThisFileDirectory)'))</_OmpRazorBuildIdentity>
+    <BaseIntermediateOutputPath Condition="'$(OmpIsolatedBuildRoot)' != ''">$(OmpIsolatedBuildRoot)/obj/OmpDeterministicRazor/$(_OmpRazorBuildIdentity)/</BaseIntermediateOutputPath>
+    <BaseOutputPath Condition="'$(OmpIsolatedBuildRoot)' != ''">$(OmpIsolatedBuildRoot)/bin/OmpDeterministicRazor/$(_OmpRazorBuildIdentity)/</BaseOutputPath>
+  </PropertyGroup>
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <EnableNETAnalyzers>false</EnableNETAnalyzers>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+    <PathMap>$(MSBuildThisFileDirectory)=/_/omp-build/</PathMap>
+    <PathMap Condition="'$(OmpIsolatedBuildRoot)' != ''">$([MSBuild]::EnsureTrailingSlash('$(BaseIntermediateOutputPath)'))=/_/omp-build/obj/,$([MSBuild]::EnsureTrailingSlash('$(BaseOutputPath)'))=/_/omp-build/bin/,$(PathMap)</PathMap>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="DeterministicRazorGenerator.cs" />
+    <Reference Include="Microsoft.CodeAnalysis" HintPath="$(MSBuildToolsPath)/Roslyn/bincore/Microsoft.CodeAnalysis.dll" Private="false" />
+    <Reference Include="Microsoft.CodeAnalysis.CSharp" HintPath="$(MSBuildToolsPath)/Roslyn/bincore/Microsoft.CodeAnalysis.CSharp.dll" Private="false" />
+    <Reference Include="Microsoft.CodeAnalysis.Razor.Compiler" HintPath="$(MSBuildToolsPath)/Sdks/Microsoft.NET.Sdk.Razor/source-generators/Microsoft.CodeAnalysis.Razor.Compiler.dll" Private="true" />
+    <Reference Include="Microsoft.AspNetCore.Razor.Utilities.Shared" HintPath="$(MSBuildToolsPath)/Sdks/Microsoft.NET.Sdk.Razor/source-generators/Microsoft.AspNetCore.Razor.Utilities.Shared.dll" Private="true" />
+  </ItemGroup>
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+</Project>

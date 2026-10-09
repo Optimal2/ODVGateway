@@ -1,4 +1,34 @@
-<Project>
+<Project TreatAsLocalProperty="PathMap">
+
+  <!-- .NET 10 Razor uses physical AdditionalText paths in embedded source and
+       TagHelper IDs. The adapter feeds the SDK generator path-mapped inputs;
+       it does not replace the Razor compiler or change view identifiers.
+       IDE design-time builds retain the SDK generator for editor integration. -->
+
+  <PropertyGroup Condition="'$(UsingMicrosoftNETSdkRazor)' == 'true' and '$(UseRazorSourceGenerator)' != 'false' and '$(OmpDeterministicRazor)' != 'false' and '$(DesignTimeBuild)' != 'true'">
+    <PathMap Condition="'$(PathMap)' == ''">$(MSBuildProjectDirectory)=/_/$(MSBuildProjectName)/</PathMap>
+    <!-- Csc resolves /_/... in generated #line directives against the current
+         Windows drive before applying PathMap. Map that virtual root again so
+         a build on G: and a CI build on D: have the same PDB documents. -->
+    <PathMap Condition="$([MSBuild]::IsOSPlatform('Windows'))">$(PathMap),$([System.IO.Path]::GetPathRoot('$(MSBuildProjectDirectory)'))_\=/_/</PathMap>
+    <OmpRazorCompilerDirectory>$(MSBuildToolsPath)/Sdks/Microsoft.NET.Sdk.Razor/source-generators</OmpRazorCompilerDirectory>
+    <WarningsAsErrors>$(WarningsAsErrors);CS8784;CS8785</WarningsAsErrors>
+    <!-- The SDK Razor compiler retains state across server requests. Relocated
+         inputs deliberately share virtual paths; use a fresh compiler process
+         so repeated builds cannot reuse stale Razor parsing state. -->
+    <UseSharedCompilation>false</UseSharedCompilation>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(UsingMicrosoftNETSdkRazor)' == 'true' and '$(UseRazorSourceGenerator)' != 'false' and '$(OmpDeterministicRazor)' != 'false' and '$(DesignTimeBuild)' != 'true'">
+    <CompilerVisibleProperty Include="OmpRazorCompilerDirectory" />
+    <ProjectReference Include="$(MSBuildThisFileDirectory)DeterministicRazor/DeterministicRazor.csproj"
+                      OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+  <Target Name="OmpNormalizeRazorGenerator" AfterTargets="_PrepareRazorSourceGenerators"
+          Condition="'$(OmpDeterministicRazor)' != 'false' and '$(DesignTimeBuild)' != 'true'">
+    <ItemGroup>
+      <Analyzer Remove="@(_RazorAnalyzer)" />
+    </ItemGroup>
+  </Target>
 
   <!--
     Deterministic publish endpoints manifest for static web assets.
@@ -38,8 +68,9 @@
     WriteLinesToFile: WriteLinesToFile ends every line with a newline, so it
     appended a trailing line break the SDK manifest does not have, and routing
     the JSON through an MSBuild property exposes it to MSBuild escaping. The task
-    round-trips the bytes as UTF-8, changes nothing but the Last-Modified
-    values, and leaves the file untouched when there is nothing to change.
+    writes compact UTF-8 without a BOM, pins Last-Modified and sorts endpoints
+    and their set-valued metadata ordinally. Other values and ordered arrays
+    are preserved. It leaves an already normalized file untouched.
   -->
   <UsingTask TaskName="OmpPinStaticWebAssetsLastModified"
              TaskFactory="RoslynCodeTaskFactory"
@@ -49,15 +80,41 @@
       <FixedLastModified ParameterType="System.String" Required="true" />
     </ParameterGroup>
     <Task>
+      <Using Namespace="System.Linq" />
+      <Using Namespace="System.Xml.Linq" />
       <Code Type="Fragment" Language="cs"><![CDATA[
-// Decoded without BOM detection, so a BOM - if the SDK ever writes one -
-// survives the round trip as U+FEFF instead of being dropped.
 var encoding = new System.Text.UTF8Encoding(false);
-var original = encoding.GetString(System.IO.File.ReadAllBytes(ManifestPath));
-var pinned = System.Text.RegularExpressions.Regex.Replace(
-    original,
-    @"(""Name""\s*:\s*""Last-Modified""\s*,\s*""Value""\s*:\s*"")[^""]*("")",
-    match => match.Groups[1].Value + FixedLastModified + match.Groups[2].Value);
+var original = System.IO.File.ReadAllText(ManifestPath, encoding);
+// The BCL JSON/XML reader works in inline tasks on both MSBuild runtimes;
+// it needs neither a downloaded package nor SDK-private JSON assemblies.
+System.Xml.Linq.XElement manifest;
+using (var reader = System.Runtime.Serialization.Json.JsonReaderWriterFactory.CreateJsonReader(
+    encoding.GetBytes(original), System.Xml.XmlDictionaryReaderQuotas.Max))
+    manifest = System.Xml.Linq.XElement.Load(reader);
+var endpoints = manifest.Element("Endpoints");
+foreach (var endpoint in endpoints.Elements())
+{
+    foreach (var header in endpoint.Element("ResponseHeaders").Elements())
+        if ((string)header.Element("Name") == "Last-Modified") header.Element("Value").Value = FixedLastModified;
+
+    // These are sets in the SDK endpoint contract. Do not sort arbitrary JSON
+    // arrays: future SDK fields may have order-dependent semantics.
+    foreach (var key in new[] { "Selectors", "ResponseHeaders", "EndpointProperties" })
+    {
+        var values = endpoint.Element(key);
+        values.ReplaceNodes(values.Elements().OrderBy(
+            value => value.ToString(SaveOptions.DisableFormatting), System.StringComparer.Ordinal).ToArray());
+    }
+}
+endpoints.ReplaceNodes(endpoints.Elements().OrderBy(
+    endpoint => endpoint.ToString(SaveOptions.DisableFormatting), System.StringComparer.Ordinal).ToArray());
+string pinned;
+using (var stream = new System.IO.MemoryStream())
+{
+    using (var writer = System.Runtime.Serialization.Json.JsonReaderWriterFactory.CreateJsonWriter(stream, encoding, false))
+        manifest.WriteTo(writer);
+    pinned = encoding.GetString(stream.ToArray());
+}
 if (!string.Equals(original, pinned, System.StringComparison.Ordinal))
 {
     System.IO.File.WriteAllBytes(ManifestPath, encoding.GetBytes(pinned));
