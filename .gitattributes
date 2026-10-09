@@ -1,4 +1,13 @@
 * text=auto
+
+# The OMP manifests are rewritten as LF by scripts/omp/bump-version.ps1, and the
+# module definition is packaged byte-exact into the OMP module-definitions
+# output. Pin LF so a fresh checkout (core.autocrlf=true) produces the same
+# bytes as a tree right after a bump; OMP documents this contract in
+# docs/DETERMINISTIC_BUILDS.md ("as declared by .gitattributes").
+odvgateway.module-definition.json text eol=lf
+omp-components.json text eol=lf
+
 *.pdf binary
 *.tif binary
 *.tiff binary
