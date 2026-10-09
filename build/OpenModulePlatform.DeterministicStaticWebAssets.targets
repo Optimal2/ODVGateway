@@ -11,23 +11,62 @@
          Windows drive before applying PathMap. Map that virtual root again so
          a build on G: and a CI build on D: have the same PDB documents. -->
     <PathMap Condition="$([MSBuild]::IsOSPlatform('Windows'))">$(PathMap),$([System.IO.Path]::GetPathRoot('$(MSBuildProjectDirectory)'))_\=/_/</PathMap>
-    <OmpRazorCompilerDirectory>$(MSBuildToolsPath)/Sdks/Microsoft.NET.Sdk.Razor/source-generators</OmpRazorCompilerDirectory>
+    <!-- Resolve the SDK's Razor source generators from the .NET SDK actually in
+         use, not from $(MSBuildToolsPath): under Visual Studio's MSBuild.exe the
+         latter is the VS bin directory and holds neither Roslyn\bincore nor
+         Sdks\Microsoft.NET.Sdk.Razor. RoslynCoreAssembliesPath is the SDK's own
+         Roslyn\bincore (set by Microsoft.NET.Sdk on every build host); the
+         source generators sit two levels up under Sdks. -->
+    <OmpRazorCompilerDirectory>$([System.IO.Path]::GetFullPath('$(RoslynCoreAssembliesPath)\..\..\Sdks\Microsoft.NET.Sdk.Razor\source-generators'))</OmpRazorCompilerDirectory>
     <WarningsAsErrors>$(WarningsAsErrors);CS8784;CS8785</WarningsAsErrors>
     <!-- The SDK Razor compiler retains state across server requests. Relocated
          inputs deliberately share virtual paths; use a fresh compiler process
          so repeated builds cannot reuse stale Razor parsing state. -->
     <UseSharedCompilation>false</UseSharedCompilation>
   </PropertyGroup>
-  <ItemGroup Condition="'$(UsingMicrosoftNETSdkRazor)' == 'true' and '$(UseRazorSourceGenerator)' != 'false' and '$(OmpDeterministicRazor)' != 'false' and '$(DesignTimeBuild)' != 'true'">
+
+  <!--
+    The determinism wrapper loads the SDK's Razor source generators. When they
+    are not found (a partial or reorganized SDK), never silently publish a
+    non-deterministic package: skip the wrapper so interactive builds degrade to
+    the normal SDK generator, and fail the publish (see
+    OmpFailPublishWithoutDeterministicRazor).
+  -->
+  <PropertyGroup Condition="'$(UsingMicrosoftNETSdkRazor)' == 'true' and '$(UseRazorSourceGenerator)' != 'false' and '$(OmpDeterministicRazor)' != 'false' and '$(DesignTimeBuild)' != 'true'">
+    <_OmpRazorGeneratorAvailable Condition="Exists('$(OmpRazorCompilerDirectory)\Microsoft.CodeAnalysis.Razor.Compiler.dll')">true</_OmpRazorGeneratorAvailable>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(UsingMicrosoftNETSdkRazor)' == 'true' and '$(UseRazorSourceGenerator)' != 'false' and '$(OmpDeterministicRazor)' != 'false' and '$(DesignTimeBuild)' != 'true' and '$(_OmpRazorGeneratorAvailable)' == 'true'">
     <CompilerVisibleProperty Include="OmpRazorCompilerDirectory" />
     <ProjectReference Include="$(MSBuildThisFileDirectory)DeterministicRazor/DeterministicRazor.csproj"
                       OutputItemType="Analyzer" ReferenceOutputAssembly="false" />
   </ItemGroup>
   <Target Name="OmpNormalizeRazorGenerator" AfterTargets="_PrepareRazorSourceGenerators"
-          Condition="'$(OmpDeterministicRazor)' != 'false' and '$(DesignTimeBuild)' != 'true'">
+          Condition="'$(OmpDeterministicRazor)' != 'false' and '$(DesignTimeBuild)' != 'true' and '$(_OmpRazorGeneratorAvailable)' == 'true'">
     <ItemGroup>
       <Analyzer Remove="@(_RazorAnalyzer)" />
     </ItemGroup>
+  </Target>
+  <Target Name="OmpFailPublishWithoutDeterministicRazor"
+          BeforeTargets="GenerateStaticWebAssetsPublishManifest"
+          Condition="'$(UsingMicrosoftNETSdkRazor)' == 'true' and '$(UseRazorSourceGenerator)' != 'false' and '$(OmpDeterministicRazor)' != 'false' and '$(DesignTimeBuild)' != 'true' and '$(_OmpRazorGeneratorAvailable)' != 'true'">
+    <Error Code="OMPDETRAZOR001"
+           Text="Deterministic Razor compilation is required for packaging but the .NET SDK Razor source generators were not found at '$(OmpRazorCompilerDirectory)'. A published package built without them would embed physical paths and change bytes on every build host. Restore a complete .NET SDK, or set OmpDeterministicRazor=false only for builds whose output is never packaged." />
+  </Target>
+  <Target Name="OmpCheckRazorPathMapCoverage" BeforeTargets="CoreCompile"
+          Condition="'$(UsingMicrosoftNETSdkRazor)' == 'true' and '$(UseRazorSourceGenerator)' != 'false' and '$(OmpDeterministicRazor)' != 'false' and '$(DesignTimeBuild)' != 'true' and '$(_OmpRazorGeneratorAvailable)' == 'true'">
+    <OmpCheckPathMapCoverage ProjectDirectory="$(MSBuildProjectDirectory)" PathMap="$(PathMap)">
+      <Output TaskParameter="Covered" PropertyName="_OmpPathMapCoversProject" />
+    </OmpCheckPathMapCoverage>
+    <Warning Condition="'$(_OmpPathMapCoversProject)' != 'true'"
+             Code="OMPDETRAZOR002"
+             Text="The effective PathMap ('$(PathMap)') does not cover the project directory '$(MSBuildProjectDirectory)', so Razor-generated code will embed physical paths. Add a PathMap entry whose source covers this project directory, or pass -p:PathMap=&lt;project-root&gt;=&lt;virtual-root&gt;." />
+  </Target>
+  <Target Name="OmpFailPublishWithoutRazorPathMapCoverage"
+          BeforeTargets="GenerateStaticWebAssetsPublishManifest"
+          Condition="'$(UsingMicrosoftNETSdkRazor)' == 'true' and '$(UseRazorSourceGenerator)' != 'false' and '$(OmpDeterministicRazor)' != 'false' and '$(DesignTimeBuild)' != 'true' and '$(_OmpRazorGeneratorAvailable)' == 'true' and '$(_OmpPathMapCoversProject)' != 'true'">
+    <Error Code="OMPDETRAZOR003"
+           Text="The effective PathMap ('$(PathMap)') does not cover the project directory '$(MSBuildProjectDirectory)', so a published package would embed physical paths and change bytes on every build host. Add a PathMap entry whose source covers this project directory." />
   </Target>
 
   <!--
@@ -72,6 +111,63 @@
     and their set-valued metadata ordinally. Other values and ordered arrays
     are preserved. It leaves an already normalized file untouched.
   -->
+  <!--
+    True when the effective PathMap contains an entry whose source is the
+    project directory or an ancestor of it, so every AdditionalText path the
+    Razor generator maps resolves to a virtual path. Written as an inline task
+    because splitting and normalizing PathMap entries is not expressible as an
+    MSBuild property function, and it must run under both the dotnet CLI and
+    Visual Studio's (Full Framework) MSBuild.exe.
+  -->
+  <UsingTask TaskName="OmpCheckPathMapCoverage"
+             TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <ParameterGroup>
+      <ProjectDirectory ParameterType="System.String" Required="true" />
+      <PathMap ParameterType="System.String" />
+      <Covered ParameterType="System.Boolean" Output="true" />
+    </ParameterGroup>
+    <Task>
+      <Using Namespace="System" />
+      <Using Namespace="System.IO" />
+      <Using Namespace="System.Linq" />
+      <Code Type="Fragment" Language="cs"><![CDATA[
+Covered = false;
+if (string.IsNullOrEmpty(PathMap))
+    return true;
+var project = Path.GetFullPath(ProjectDirectory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+foreach (var entry in PathMap.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries))
+{
+    var equals = entry.IndexOf('=');
+    if (equals <= 0)
+        continue;
+    var source = Path.GetFullPath(entry.Substring(0, equals).Trim()).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+    if (source.Length == 0)
+        continue;
+    if (IsCoveredBy(source, project))
+    {
+        Covered = true;
+        return true;
+    }
+}
+
+static bool IsCoveredBy(string source, string project)
+{
+    // On Windows path comparison is case-insensitive; Path.DirectorySeparatorChar
+    // is '\\' there and '/' on Linux/macOS. No OperatingSystem API: the inline
+    // task also runs inside Visual Studio's Full Framework MSBuild.exe.
+    var comparison = Path.DirectorySeparatorChar == '\\' ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+    if (project.Equals(source, comparison))
+        return true;
+    if (!project.StartsWith(source, comparison))
+        return false;
+    return project.Length > source.Length &&
+        (project[source.Length] == Path.DirectorySeparatorChar || project[source.Length] == Path.AltDirectorySeparatorChar);
+}
+]]></Code>
+    </Task>
+  </UsingTask>
+
   <UsingTask TaskName="OmpPinStaticWebAssetsLastModified"
              TaskFactory="RoslynCodeTaskFactory"
              AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
@@ -91,23 +187,41 @@ System.Xml.Linq.XElement manifest;
 using (var reader = System.Runtime.Serialization.Json.JsonReaderWriterFactory.CreateJsonReader(
     encoding.GetBytes(original), System.Xml.XmlDictionaryReaderQuotas.Max))
     manifest = System.Xml.Linq.XElement.Load(reader);
+// Every field after "Route" is optional, and JsonReaderWriterFactory maps a
+// JSON null to an element with no children, so each member must be null-checked
+// before its children are read or replaced. Missing members are left exactly
+// as the SDK wrote them; ordering of the members that DO exist stays
+// deterministic.
 var endpoints = manifest.Element("Endpoints");
-foreach (var endpoint in endpoints.Elements())
+if (endpoints != null)
 {
-    foreach (var header in endpoint.Element("ResponseHeaders").Elements())
-        if ((string)header.Element("Name") == "Last-Modified") header.Element("Value").Value = FixedLastModified;
-
-    // These are sets in the SDK endpoint contract. Do not sort arbitrary JSON
-    // arrays: future SDK fields may have order-dependent semantics.
-    foreach (var key in new[] { "Selectors", "ResponseHeaders", "EndpointProperties" })
+    foreach (var endpoint in endpoints.Elements())
     {
-        var values = endpoint.Element(key);
-        values.ReplaceNodes(values.Elements().OrderBy(
-            value => value.ToString(SaveOptions.DisableFormatting), System.StringComparer.Ordinal).ToArray());
+        var responseHeaders = endpoint.Element("ResponseHeaders");
+        if (responseHeaders != null)
+        {
+            foreach (var header in responseHeaders.Elements())
+            {
+                var value = header.Element("Value");
+                if ((string)header.Element("Name") == "Last-Modified" && value != null)
+                    value.Value = FixedLastModified;
+            }
+        }
+
+        // These are sets in the SDK endpoint contract. Do not sort arbitrary JSON
+        // arrays: future SDK fields may have order-dependent semantics.
+        foreach (var key in new[] { "Selectors", "ResponseHeaders", "EndpointProperties" })
+        {
+            var values = endpoint.Element(key);
+            if (values != null)
+                values.ReplaceNodes(values.Elements().OrderBy(
+                    value => value.ToString(SaveOptions.DisableFormatting), System.StringComparer.Ordinal).ToArray());
+        }
     }
+
+    endpoints.ReplaceNodes(endpoints.Elements().OrderBy(
+        endpoint => endpoint.ToString(SaveOptions.DisableFormatting), System.StringComparer.Ordinal).ToArray());
 }
-endpoints.ReplaceNodes(endpoints.Elements().OrderBy(
-    endpoint => endpoint.ToString(SaveOptions.DisableFormatting), System.StringComparer.Ordinal).ToArray());
 string pinned;
 using (var stream = new System.IO.MemoryStream())
 {
