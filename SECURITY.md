@@ -10,7 +10,7 @@ Security issues should be reported privately before public disclosure.
 
 **ODVGateway v0.1.44** is the current supported release and the recommended
 deployment target. The OMP artifact version that ships the supported build is
-`0.1.61` (`odvgateway-web` in `omp-components.json`); the two lines are
+`0.1.70` (`odvgateway-web` in `omp-components.json`); the two lines are
 deliberately independent and are not forced to match. Read each version out of
 its source file — `Directory.Build.props` for the application version and
 `omp-components.json` for the OMP artifact.
@@ -39,14 +39,14 @@ test-standard and dependency updates listed below.
 
 ## Recent release context
 
-The most recent releases are listed below for operational context. Only v0.1.43
+The most recent releases are listed below for operational context. Only v0.1.44
 is supported.
 
 ### ODVGateway v0.1.44
 Changes since v0.1.43:
 
 - New `GET /signatures/{sessionKey}/{fileIndex}` validates PDF signatures server-side (integrity, trust with reason codes, signer, signing time, timestamps, whole-file coverage) in bounded memory and time, never persisting or caching document bytes. **Off by default** (`signatures.enabled: false` answers 404 and loads nothing). `revocationMode` selects `Online` (issuer CRLs through the gateway's own bounded transport: public addresses only, optional exact host allow-list, 1–30 s timeout, AIA and OS downloads disabled), `Offline` (CRL files only, no network) or `NoCheck` (verdict always `unknown`). Review-found gaps in integrity, trust and revocation handling were closed before release (detached CMS content handed to the verifier, strict ByteRange gap check, archived CRL selection, rejection of base CRLs advertising unsupported delta CRLs, asynchronous validation bounded by the file budget), and object references resolve exactly by (number, generation), so an appended higher-generation object cannot shadow a signed one (a missing exact entry falls back to the newest generation only with a `reference-generation-fallback` diagnostic).
-- Known limitation while validation is enabled: a pre-open page-tree check rejects the measured stack-overflow shapes for files with classic cross-reference tables (cyclic `/Pages`→`/Kids` chains, self-referencing nodes, malformed `/Kids` entries) with a named HTTP 422 failure before PdfPig opens the file. Files whose cross-reference is a stream (xref streams / object streams, i.e. most modern producers) pass through to PdfPig without the pre-check, and catalog `/Dests` and `/Names` trees are not pre-checked either — but with the default `signatures.isolateProcess: true` (campaign `odvgateway-signaturvalidering-i-separat-process`) each file is validated in a separate worker process with a wall-clock timeout and a memory cap, so one crafted file of those shapes can only cost its own request (a named HTTP 503), never the gateway process. The default `signatures.enabled: false` never opens a file at all. Only `signatures.isolateProcess: false` (documented as "only for trusted archives") still exposes the gateway process to an uncatchable stack overflow from a crafted file.
+- Known limitation while validation is enabled: a pre-open page-tree check rejects the measured stack-overflow shapes for files with classic cross-reference tables (cyclic `/Pages`→`/Kids` chains, self-referencing nodes, malformed `/Kids` entries) with a named HTTP 422 failure before PdfPig opens the file. Files whose cross-reference is a stream (xref streams / object streams, i.e. most modern producers) pass through to PdfPig without the pre-check, and catalog `/Dests` and `/Names` trees are not pre-checked either — but with the default `signatures.isolateProcess: true` each file is validated in a separate worker process with a wall-clock timeout and a memory cap, so one crafted file of those shapes can only cost its own request (a named HTTP 503), never the gateway process; worker write failures map to the same named 503, and a test-only worker mode without its environment gate or a worker memory cap below three times the file budget is refused at startup. The default `signatures.enabled: false` never opens a file at all. Only `signatures.isolateProcess: false` (documented as "only for trusted archives") still exposes the gateway process to an uncatchable stack overflow from a crafted file.
 - Status and error pages follow the shared OMP light/dark theme with hardened theme-cookie parsing; unknown-length proxy responses are validated; static web assets carry a pinned `Last-Modified` so the web artifact is reproducible. No known vulnerable packages (`dotnet list package --vulnerable --include-transitive`).
 
 ### ODVGateway v0.1.43

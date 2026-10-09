@@ -8,8 +8,25 @@ for its `0.1.x` release line.
 
 ## [Unreleased]
 
+## [0.1.44] - 2026-10-11
+
 ### Added
 
+- `GET /signatures/{sessionKey}/{fileIndex}` validates the signatures of a PDF in a prepared
+  session on the server and reports, per signature, integrity, trust with a reason code, signer
+  and issuer, signing time and its source, document timestamps and whole-file coverage. It reuses
+  the `/source` session lookup, index check and byte-source resolution, answers
+  `Cache-Control: no-store`, never persists or caches document bytes, and is disabled by default
+  (`signatures.enabled: false` answers 404 and loads nothing). `signatures.revocationMode` selects
+  `Online` (issuer CRLs through the gateway's own bounded transport: public addresses only,
+  optional exact host allow-list, 1–30 s timeout), `Offline` (CRL files from
+  `signatures.crlDirectory` only) or `NoCheck`. Review-found gaps were closed before release:
+  detached CMS content is handed to the verifier, ByteRange gaps are checked strictly, archived
+  CRL selection is fixed, base CRLs advertising unsupported delta CRLs are rejected, and
+  asynchronous validation is bounded by the file budget. See `docs/PDF-SIGNATURE-VALIDATION.md`.
+- Server-rendered status and error pages follow the shared OMP light/dark theme
+  (`OMP_THEME_PREFERENCE` cookie, theme contract version 1) without adding script or changing
+  the default Content-Security-Policy; malformed theme cookies fall back to the system palette.
 - `GET /signatures/...` validates each PDF in an isolated worker process by default
   (`signatures.isolateProcess: true`): the same assembly runs as
   `ODVGateway --signature-worker`, is fed the document bytes over stdin (never a temp file),
@@ -71,6 +88,16 @@ for its `0.1.x` release line.
   `ODVGATEWAY_SIGNATURE_WORKER_TEST=1` environment gate (which used to fail every validation),
   and a `signatures.workerMaxMemoryBytes` below three times the effective file budget (which
   could kill a healthy large file as `validation-worker-memory`).
+
+### Changed
+
+- A proxied `/source` response without `Content-Length` is read and checked against the size
+  limit in full before a success status is committed, instead of failing mid-stream.
+- Static web assets carry a pinned `Last-Modified`, so a rebuild of unchanged source produces
+  the same web artifact.
+- Local CI runs the canonical OMP Pester step and the strict shared-script check (Check 15)
+  through the shared platform resolver; the canonical component-version validator helpers are
+  synced from OpenModulePlatform; smoke-test stack-frame detection is fixed.
 
 ## [0.1.43] - 2026-09-27
 
