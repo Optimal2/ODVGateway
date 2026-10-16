@@ -46,11 +46,73 @@ public sealed class ContentTypeMapperTests
     }
 
     [Fact]
-    public void GetContentType_NormalizesWhitespacePaddedPdf()
+    public void GetContentType_ConfiguredExtensionKeyIsNormalized()
     {
-        var mapper = CreateMapper();
+        var mapper = CreateMapper(new Dictionary<string, string>
+        {
+            ["  .PDF "] = "application/x-padded-key"
+        });
 
-        Assert.Equal("application/pdf", mapper.GetContentType("  .PDF "));
+        Assert.Equal("application/x-padded-key", mapper.GetContentType("pdf"));
+        Assert.Equal("application/x-padded-key", mapper.GetContentType(".PDF"));
+        Assert.Equal("application/x-padded-key", mapper.GetContentType("  pdf  "));
+        // Non-overridden defaults still apply.
+        Assert.Equal("image/png", mapper.GetContentType("png"));
+    }
+
+    [Fact]
+    public void GetContentType_ConfiguredMimeValueIsTrimmed()
+    {
+        var mapper = CreateMapper(new Dictionary<string, string>
+        {
+            ["pdf"] = "  application/x-padded-value  "
+        });
+
+        Assert.Equal("application/x-padded-value", mapper.GetContentType("pdf"));
+        Assert.Equal("application/x-padded-value", mapper.GetContentType(".PDF"));
+    }
+
+    [Fact]
+    public void GetContentType_BlankConfiguredExtensionIsIgnored()
+    {
+        var mapper = CreateMapper(new Dictionary<string, string>
+        {
+            [""] = "application/x-evil",
+            ["   "] = "application/x-evil",
+            ["."] = "application/x-evil"
+        });
+
+        Assert.Equal("application/pdf", mapper.GetContentType("pdf"));
+        Assert.Equal("image/png", mapper.GetContentType("png"));
+    }
+
+    [Fact]
+    public void GetContentType_WhitespaceOnlyConfiguredValueIsIgnored()
+    {
+        var mapper = CreateMapper(new Dictionary<string, string>
+        {
+            ["pdf"] = "   ",
+            ["png"] = ""
+        });
+
+        Assert.Equal("application/pdf", mapper.GetContentType("pdf"));
+        Assert.Equal("image/png", mapper.GetContentType("png"));
+    }
+
+    [Fact]
+    public void GetContentType_ConfiguredOverrideIsCaseInsensitive()
+    {
+        var mapper = CreateMapper(new Dictionary<string, string>
+        {
+            ["PdF"] = "application/x-custom-pdf"
+        });
+
+        Assert.Equal("application/x-custom-pdf", mapper.GetContentType("pdf"));
+        Assert.Equal("application/x-custom-pdf", mapper.GetContentType("PDF"));
+        Assert.Equal("application/x-custom-pdf", mapper.GetContentType(".Pdf"));
+        // Non-overridden defaults still apply.
+        Assert.Equal("image/png", mapper.GetContentType("png"));
+        Assert.Equal("image/jpeg", mapper.GetContentType("jpg"));
     }
 
     [Theory]
