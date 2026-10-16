@@ -64,3 +64,28 @@ No mutation survives in the final tree.
 - `&&` inside a double-quoted Windows PowerShell string is literal; escaping
   it as `\&\&` breaks the match. A quoting probe wrote one marker byte to the
   source mid-run and it was restored immediately (hash re-verified).
+
+## Independent review and final conductor delta
+
+DeepSeek-flash independently reviewed worker commit
+`eee3f11f6ee3e47dff9f3285243f5e1cb2dd17fb`, returned schema GILTIG,
+GODKAND and VERDICT pass (native exit 0). It independently reproduced the
+three worker mutants with byte-identical hashes and real assertion failures,
+then restored the original production bytes. It additionally removed the
+blank-key half of the constructor guard (M6, SHA256
+`cbcc10d94e4342a0531a5794f59cb853fa600828b4d2a1428360e3d633efb6e4`):
+the new blank-extension test failed with ArgumentNullException, native exit 1.
+This additional receipt belongs to the independent reviewer, not the worker.
+
+The review identified thin marginal value in the fifth case-insensitive
+override Fact because the existing override test and the independently
+case-normalizing key/map mechanisms already cover that contract. The conductor
+removed that redundant Fact. Four useful new configuration contracts remain.
+The historical worker counts above remain accurate for its original candidate;
+the final candidate has 23 focused tests and 321 complete unit tests.
+
+Public evidence and the AO provenance trailer are retained because the operator
+explicitly requested provider, model and causal acceptance evidence. The review
+found no personal data, customer data or credentials. Existing dependency
+restore warnings are unchanged from the baseline; this test-only change does not
+publish a runtime artifact or alter the repository's family dependency pins.

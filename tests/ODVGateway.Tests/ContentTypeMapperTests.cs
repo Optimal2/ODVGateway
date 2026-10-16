@@ -99,22 +99,6 @@ public sealed class ContentTypeMapperTests
         Assert.Equal("image/png", mapper.GetContentType("png"));
     }
 
-    [Fact]
-    public void GetContentType_ConfiguredOverrideIsCaseInsensitive()
-    {
-        var mapper = CreateMapper(new Dictionary<string, string>
-        {
-            ["PdF"] = "application/x-custom-pdf"
-        });
-
-        Assert.Equal("application/x-custom-pdf", mapper.GetContentType("pdf"));
-        Assert.Equal("application/x-custom-pdf", mapper.GetContentType("PDF"));
-        Assert.Equal("application/x-custom-pdf", mapper.GetContentType(".Pdf"));
-        // Non-overridden defaults still apply.
-        Assert.Equal("image/png", mapper.GetContentType("png"));
-        Assert.Equal("image/jpeg", mapper.GetContentType("jpg"));
-    }
-
     [Theory]
     [InlineData("xyz")]
     [InlineData("")]
