@@ -316,7 +316,7 @@ store added before traffic can move between instances.
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| `useBundleUrlHandoff` | `true` | Redirect `?sessiondata=` to `?bundleUrl=`. Keep enabled for large batches; the inline HTML stays small and the bundle is fetched as one JSON request. |
+| `useBundleUrlHandoff` | `true` | Redirect `?sessiondata=` to `?bundleUrl=`. Keep enabled for large batches; the inline HTML stays small and the bundle is fetched as one JSON request. **Operational caveat:** `false` is not an equivalent mode when OpenDocViewer runs inside the WebClient page. Without a `?bundleUrl=`, OpenDocViewer's bootstrap prefers the same-origin parent (WebClient) payload over the gateway's inline bundle, so the viewer can bypass the prepared gateway session and its source-pack transport and fetch every source directly from WebClient. Startup logs a warning when this is disabled (with an explicit note when `webClientHandoff.allowedInitiatorUrls` is set). Only disable it for a standalone viewer with no parent payload. |
 | `sourceCacheControl` | `no-store` | Cache header for streamed source files. |
 | `webClientSourceFallback.enabled` | `true` | Enables WebClient ticket-stream fallback when direct files are not readable. |
 | `webClientSourceFallback.requireSameHost` | `true` | Reject fallback URLs whose host differs from the gateway request. |

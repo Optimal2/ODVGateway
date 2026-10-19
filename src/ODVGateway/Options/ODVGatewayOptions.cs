@@ -28,7 +28,40 @@ public sealed class ODVGatewayOptions
 
     public bool AllowOpenDocViewerFallbackWithoutSession { get; set; }
 
+    // Keep enabled in WebClient deployments: with it disabled the viewer page carries no
+    // ?bundleUrl=, OpenDocViewer's bootstrap then prefers the same-origin parent payload,
+    // and the prepared gateway session/source-pack transport is bypassed. See
+    // GetUseBundleUrlHandoffWarning and the README "Source transport" section.
     public bool UseBundleUrlHandoff { get; set; } = true;
+
+    /// <summary>
+    /// The startup warning for a disabled bundle-URL handoff, or null when the handoff is
+    /// enabled. Kept on the options type so the exact wording is unit-testable without
+    /// booting the host; Program logs the returned text at startup.
+    /// </summary>
+    public string? GetUseBundleUrlHandoffWarning()
+    {
+        if (UseBundleUrlHandoff)
+        {
+            return null;
+        }
+
+        var warning =
+            "ODVGateway is configured with useBundleUrlHandoff disabled. Without the ?bundleUrl= " +
+            "redirect, OpenDocViewer's bootstrap prefers the same-origin parent (WebClient) payload " +
+            "over the gateway's inline bundle, so the viewer can bypass the prepared gateway session " +
+            "and its source-pack transport and fetch sources directly from WebClient instead. " +
+            "Keep useBundleUrlHandoff enabled for WebClient iframe deployments.";
+
+        if (WebClientHandoff.AllowedInitiatorUrls.Any(url => !string.IsNullOrWhiteSpace(url)))
+        {
+            warning +=
+                " webClientHandoff.allowedInitiatorUrls is set, so this deployment is a WebClient " +
+                "handoff deployment and is affected by that bypass.";
+        }
+
+        return warning;
+    }
 
     public string SourceCacheControl { get; set; } = "no-store";
 

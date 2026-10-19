@@ -1748,6 +1748,11 @@ static IResult BuildSignatureSourceError(string? message) =>
 
 static void LogProductionCompatibilityWarnings(ILogger logger, ODVGatewayOptions options)
 {
+    if (options.GetUseBundleUrlHandoffWarning() is { } bundleUrlHandoffWarning)
+    {
+        logger.LogWarning("{BundleUrlHandoffWarning}", bundleUrlHandoffWarning);
+    }
+
     if (options.WebClientHandoff.AllowMissingInitiatorHeaders)
     {
         logger.LogWarning(
