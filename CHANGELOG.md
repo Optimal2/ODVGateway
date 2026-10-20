@@ -66,7 +66,8 @@ for its `0.1.x` release line.
   closed with a named `page-tree-cyclic` / `page-tree-too-deep` / `page-tree-malformed` failure
   (HTTP 422) instead (the malformed code was split out in the entry below).
   Shapes the pre-check cannot read are left to PdfPig as before; isolating validation in a
-  separate process is still pending (see `SECURITY.md`).
+  separate process followed in this same release (the `signatures.isolateProcess` entry
+  above; see `SECURITY.md`).
 
 - `GET /signatures/...` fails closed with a named `page-tree-cyclic` failure (HTTP 422) on any
   page-tree cycle, not just a self-edge: the pre-check now walks depth-first and treats any

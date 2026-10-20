@@ -97,7 +97,8 @@ than from whatever a developer had on disk. It refuses to publish if the tag doe
 not match `<Version>`, or if `release-notes/vX.Y.Z.md` is missing; that file is
 the release body.
 
-Write the release notes and update `CHANGELOG.md` and `SECURITY.md` **before**
+Write the release notes (create a new `release-notes/vX.Y.Z.md` for each
+release; earlier releases' files show the shape) and update `CHANGELOG.md` and `SECURITY.md` **before**
 running the helper, then commit and push those. The helper releases a commit; it
 does not create one from your working tree.
 
