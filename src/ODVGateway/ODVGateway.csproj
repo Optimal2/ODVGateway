@@ -12,12 +12,12 @@
     <PackageProjectUrl>https://github.com/Optimal2/ODVGateway</PackageProjectUrl>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="NLog.Web.AspNetCore" Version="6.2.1" />
+    <PackageReference Include="NLog.Web.AspNetCore" Version="6.2.2" />
     <!-- Signature validation: PDF object graph reader (Apache-2.0, pure managed, no native
          dependencies) plus the CMS/PKCS#7 and RFC 3161 types, which are not part of the
          ASP.NET Core shared framework's compile-time reference set. -->
     <PackageReference Include="pdfpig" Version="0.1.16" />
-    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.12" />
+    <PackageReference Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
   </ItemGroup>
   <ItemGroup>
     <!-- Lets tests/ODVGateway.Tests probe the top-level Program via WebApplicationFactory. -->
