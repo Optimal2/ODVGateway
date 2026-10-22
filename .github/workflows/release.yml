@@ -126,6 +126,8 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($tag) -or $tag -notmatch '^v[0-9]') { $tag = 'local' }
           dotnet tool install --tool-path .sbom-tool CycloneDX --version 6.3.1
           if ($LASTEXITCODE -ne 0) { throw "CycloneDX tool install failed ($LASTEXITCODE)" }
+          # --exclude-dev is marked deprecated in 6.3.1 but still filters; without it the
+          # SBOM gains development-only packages. Revisit when the pin is raised.
           ./.sbom-tool/dotnet-CycloneDX src/ODVGateway/ODVGateway.csproj --recursive --exclude-dev `
             --output-format Json --output . --filename "ODVGateway-sbom-$tag.cdx.json" `
             --set-name ODVGateway --set-version $tag.TrimStart('v')
