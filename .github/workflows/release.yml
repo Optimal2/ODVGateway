@@ -116,6 +116,21 @@ jobs:
           Compress-Archive -Path 'publish/ODVGateway/*' -DestinationPath "ODVGateway-$tag.zip" -Force
           Get-ChildItem "ODVGateway-$tag.zip" | ForEach-Object { Write-Host "$($_.Name)  $([math]::Round($_.Length/1MB,2)) MB" }
 
+      # Software bill of materials for the EU Cyber Resilience Act (Annex I,
+      # Part II(1)): the published project and its project references, test and
+      # development dependencies excluded, CycloneDX JSON, attached to the release.
+      - name: Generate SBOM (CycloneDX)
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          if ([string]::IsNullOrWhiteSpace($tag) -or $tag -notmatch '^v[0-9]') { $tag = 'local' }
+          dotnet tool install --tool-path .sbom-tool CycloneDX --version 6.3.1
+          if ($LASTEXITCODE -ne 0) { throw "CycloneDX tool install failed ($LASTEXITCODE)" }
+          ./.sbom-tool/dotnet-CycloneDX src/ODVGateway/ODVGateway.csproj --recursive --exclude-dev `
+            --output-format Json --output . --filename "ODVGateway-sbom-$tag.cdx.json" `
+            --set-name ODVGateway --set-version $tag.TrimStart('v')
+          if ($LASTEXITCODE -ne 0) { throw "SBOM generation failed ($LASTEXITCODE)" }
+
       - name: Verify release notes exist
         if: github.event_name == 'push'
         shell: pwsh
@@ -136,3 +151,4 @@ jobs:
           draft: false
           files: |
             ODVGateway-${{ github.ref_name }}.zip
+            ODVGateway-sbom-${{ github.ref_name }}.cdx.json
