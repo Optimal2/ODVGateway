@@ -101,6 +101,10 @@ jobs:
 
       - name: Validate component versions
         shell: pwsh
+        # The runner checks out this repository only, so Check 15 (shared-script drift against
+        # an OpenModulePlatform checkout) cannot run here; scripts/local-ci.ps1 runs it before push.
+        env:
+          OMP_ALLOW_MISSING_PLATFORM: '1'
         run: pwsh -File scripts/omp/validate-component-versions.ps1 -BaseCommit 'origin/main'
 
       # Framework-dependent: the target is IIS on a host that already has the
