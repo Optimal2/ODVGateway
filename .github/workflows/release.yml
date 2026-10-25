@@ -109,8 +109,10 @@ jobs:
 
       # Framework-dependent: the target is IIS on a host that already has the
       # ASP.NET Core hosting bundle, which is how the gateway is deployed today.
+      # Not --no-build: the deterministic Razor PathMap check runs during compilation,
+      # and publish fails with OMPDETRAZOR003 when compilation is skipped.
       - name: Publish application
-        run: dotnet publish src/ODVGateway/ODVGateway.csproj --configuration ${{ env.CONFIGURATION }} --no-build --output publish/ODVGateway
+        run: dotnet publish src/ODVGateway/ODVGateway.csproj --configuration ${{ env.CONFIGURATION }} --no-restore --output publish/ODVGateway
 
       - name: Package release archive
         shell: pwsh
