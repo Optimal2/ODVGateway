@@ -8,19 +8,22 @@ for its `0.1.x` release line.
 
 ## [Unreleased]
 
-## [0.1.44] - 2026-10-11
+## [0.1.44] - 2026-10-25
 
 ### Added
 
 - `GET /signatures/{sessionKey}/{fileIndex}` validates the signatures of a PDF in a prepared
   session on the server and reports, per signature, integrity, trust with a reason code, signer
   and issuer, signing time and its source, document timestamps and whole-file coverage. It reuses
-  the `/source` session lookup, index check and byte-source resolution, answers
-  `Cache-Control: no-store`, never persists or caches document bytes, and is disabled by default
+  the `/source` session lookup, index check and byte-source resolution and reads the bytes
+  through the `/source-pack` reader (a PDF above an explicitly set `signatures.maxFileBytes` below
+  `maxSourcePackFrameBytes` answers HTTP 413; a PDF above `maxSourcePackFrameBytes` answers
+  HTTP 404 with the source-pack size message), answers `Cache-Control: no-store`, never
+  persists or caches document bytes, and is disabled by default
   (`signatures.enabled: false` answers 404 and loads nothing). `signatures.revocationMode` selects
-  `Online` (issuer CRLs through the gateway's own bounded transport: public addresses only,
-  optional exact host allow-list, 1–30 s timeout), `Offline` (CRL files from
-  `signatures.crlDirectory` only) or `NoCheck`. Review-found gaps were closed before release:
+  `Online` (issuer CRLs through the gateway's own bounded transport: direct connections to public
+  addresses only, no HTTP proxy, optional exact host allow-list, 1–30 s timeout), `Offline`
+  (CRL files from `signatures.crlDirectory` only) or `NoCheck`. Review-found gaps were closed before release:
   detached CMS content is handed to the verifier, ByteRange gaps are checked strictly, archived
   CRL selection is fixed, base CRLs advertising unsupported delta CRLs are rejected, and
   asynchronous validation is bounded by the file budget. See `docs/PDF-SIGNATURE-VALIDATION.md`.
@@ -29,18 +32,30 @@ for its `0.1.x` release line.
   the default Content-Security-Policy; malformed theme cookies fall back to the system palette.
 - `GET /signatures/...` validates each PDF in an isolated worker process by default
   (`signatures.isolateProcess: true`): the same assembly runs as
-  `ODVGateway --signature-worker`, is fed the document bytes over stdin (never a temp file),
-  and answers one JSON envelope over stdout. Each run is supervised with a wall-clock timeout
-  (`signatures.workerTimeoutSeconds`, default 30 s) and a working-set cap
-  (`signatures.workerMaxMemoryBytes`, default 512 MiB) under the same concurrency limiter as
-  before. A worker that crashes — including an uncatchable stack overflow inside the PDF
-  library's eager open — times out, overruns memory or answers unparseably costs one request
-  (a named HTTP 503: `validation-worker-crashed`, `validation-worker-timeout`,
-  `validation-worker-memory`, no stack trace, no `Retry-After`) instead of the gateway process,
-  which keeps serving. A small warm pool (at most two idle workers, retired after 25 requests,
-  five idle minutes, or any failure) keeps the per-request cost near the in-process one; see
-  `docs/PDF-SIGNATURE-VALIDATION.md` for the measured numbers. `isolateProcess: false` keeps
-  the in-process path, documented as "only for trusted archives".
+  `ODVGateway --signature-worker`, is fed the document bytes over stdin (at most 256 MiB per
+  file, never a temp file), and answers one JSON envelope over stdout. Each run is supervised
+  with a wall-clock timeout (`signatures.workerTimeoutSeconds`, default 30 s) and a working-set cap
+  (`signatures.workerMaxMemoryBytes`, default 512 MiB) within the
+  `signatures.maxConcurrentValidations` limit. A worker that crashes — including an uncatchable
+  stack overflow inside the PDF library's eager open — times out, overruns memory or answers
+  unparseably costs one request (a named HTTP 503: `validation-worker-crashed`,
+  `validation-worker-timeout`, `validation-worker-memory`, no stack trace, no `Retry-After`)
+  instead of the gateway process, which keeps serving. A small warm pool (at most two idle
+  workers, retired after 25 requests or any failure, and not reused after five idle minutes) keeps the per-request
+  cost near the in-process one; see `docs/PDF-SIGNATURE-VALIDATION.md` for the measured numbers.
+  `isolateProcess: false` keeps the in-process path, documented as "only for trusted archives".
+- Startup logs a warning when `useBundleUrlHandoff` is `false`: without the `?bundleUrl=`
+  redirect, OpenDocViewer inside the WebClient page prefers the host page's own payload and can
+  bypass the prepared gateway session and its source-pack transport, fetching every source
+  directly from WebClient. When `webClientHandoff.allowedInitiatorUrls` is set, the warning adds
+  that the deployment is a WebClient handoff deployment and is affected. The README states the
+  caveat next to the setting.
+- The release workflow attaches `ODVGateway-sbom-vX.Y.Z.cdx.json` to each GitHub release,
+  starting with this one: a CycloneDX JSON SBOM generated with CycloneDX .NET 6.3.1 from the
+  published project and its project references, test and development dependencies excluded.
+  `SECURITY.md` has a new EU Cyber Resilience Act section: coordinated vulnerability disclosure
+  by e-mail or GitHub private vulnerability reporting, the SBOM, and the CRA reporting
+  obligations that apply from 11 September 2026.
 
 ### Fixed
 
@@ -56,6 +71,16 @@ for its `0.1.x` release line.
   cross-reference data falls back to the newest generation, and that is reported in the new
   document-level `diagnostics` array as `reference-generation-fallback` and logged.
 
+- `GET /signatures/...` no longer fails the whole file on, or silently skips, a reference it
+  cannot follow inside the field, widget and annotation walk (field and annotation arrays and
+  their elements, field `/Kids`, `/Parent` and `/V`). A dangling reference, a cyclic reference
+  chain, a direct value of the wrong type and a chain longer than the depth limit are skipped so
+  the remaining signatures are still validated, and the `diagnostics` array names each case once
+  (`dangling-reference-skipped`, `reference-cycle-skipped`, `unexpected-object-type-skipped`,
+  `reference-depth-exceeded`). Page-tree failures stay fatal (HTTP 422), and a cyclic
+  `/AcroForm` reference now fails the file (HTTP 422) instead of reading as absent, which had
+  hidden every signature.
+
 - `GET /signatures/...` proves the page tree acyclic before PdfPig opens the file. PdfPig builds
   the page tree eagerly inside `PdfDocument.Open` and resolves bare indirect references through
   unguarded recursion, so one cyclic `/Kids` or `/Type` chain killed the whole gateway process with
@@ -64,20 +89,25 @@ for its `0.1.x` release line.
   (number, generation) resolution with fallback diagnostics, visited set, depth bound 32, at most
   100,000 page-tree nodes); a proven cycle, depth overrun or malformed `/Kids` entry now fails
   closed with a named `page-tree-cyclic` / `page-tree-too-deep` / `page-tree-malformed` failure
-  (HTTP 422) instead (the malformed code was split out in the entry below).
+  (HTTP 422) instead (the malformed code was split out in the entry below). The code does not
+  reach the response: the body is the same generic 422 as for an unparseable PDF. With the
+  default `signatures.isolateProcess: true` the gateway log records only that the PDF could not
+  be parsed; with `isolateProcess: false` the logged exception detail names the code.
   Shapes the pre-check cannot read are left to PdfPig as before; isolating validation in a
   separate process followed in this same release (the `signatures.isolateProcess` entry
   above; see `SECURITY.md`).
 
-- `GET /signatures/...` fails closed with a named `page-tree-cyclic` failure (HTTP 422) on any
-  page-tree cycle, not just a self-edge: the pre-check now walks depth-first and treats any
-  revisit of a node on the current traversal path as a true cycle, while a node reached again
-  after its subtree finished (a DAG, legal in some producers) is counted once. A `/Kids` entry
-  that is not an array of indirect references gets its own code (`page-tree-malformed`, still
-  HTTP 422), and the pre-check runs inside the single document-open path so no caller can reach
-  `PdfDocument.Open` without it. The known-limitation notes now state the pre-check's actual
-  coverage: classic cross-reference tables only, with xref streams, object streams and catalog
-  `/Dests`/`/Names` trees still reaching the library until validation runs in a separate process.
+- `GET /signatures/...` fails closed with `page-tree-cyclic` (HTTP 422, the same generic body as
+  an unparseable PDF) on any page-tree cycle, not just a self-edge: the pre-check now walks
+  depth-first and treats any revisit of a node on the current traversal path as a true cycle,
+  while a node reached again after its subtree finished (a DAG, legal in some producers) is
+  counted once. A `/Kids` entry that is not an array of indirect references gets its own code
+  (`page-tree-malformed`, still HTTP 422), and the pre-check runs inside the single
+  document-open path so no caller can reach `PdfDocument.Open` without it. The known-limitation
+  notes state the pre-check's actual coverage: classic cross-reference tables only. Xref
+  streams, object streams, hybrid-reference files, encrypted files and catalog `/Dests`/`/Names`
+  trees still reach the library unchecked; with the default `signatures.isolateProcess: true`
+  (added in this same release) such a file costs only its own request.
 
 - `GET /signatures/...` maps every one-shot worker write/close failure to the named
   `validation-worker-crashed` failure (HTTP 503): closing stdin of a worker that died before
@@ -88,14 +118,32 @@ for its `0.1.x` release line.
   instead of failing per request: a test-only `signatures.workerTestMode` without the
   `ODVGATEWAY_SIGNATURE_WORKER_TEST=1` environment gate (which used to fail every validation),
   and a `signatures.workerMaxMemoryBytes` below three times the effective file budget (which
-  could kill a healthy large file as `validation-worker-memory`).
+  could kill a healthy large file as `validation-worker-memory`). The check runs even while
+  `signatures.enabled` is `false`, and the budget is the smaller of `signatures.maxFileBytes`
+  (when set) and `maxSourcePackFrameBytes`: with the default 512 MiB cap, a deployment that raised
+  `maxSourcePackFrameBytes` above about 170 MiB must set `signatures.maxFileBytes` or raise
+  `signatures.workerMaxMemoryBytes` before it starts.
 
 ### Changed
 
-- A proxied `/source` response without `Content-Length` is read and checked against the size
-  limit in full before a success status is committed, instead of failing mid-stream.
-- Static web assets carry a pinned `Last-Modified`, so a rebuild of unchanged source produces
-  the same web artifact.
+- A proxied `/source` response without `Content-Length` is read and checked against
+  `maxSourceProxyBytes` in full before a success status is committed, instead of failing
+  mid-stream: an oversized body returns HTTP 502. Bodies above 64 KiB are buffered in
+  `ASPNETCORE_TEMP` (or the process temp directory), which must be writable, and removed when
+  the request finishes; the first response byte waits for the check. A transfer that fails
+  after the response has started is logged and the client connection aborted, instead of
+  fetching the source from WebClient again.
+- The shared OMP deterministic-build files are synced from OpenModulePlatform: the build maps
+  the checkout directory out of the compiled output, so unchanged source built from another
+  checkout path produces the same OMP artifact.
+- NLog.Web.AspNetCore 6.2.2. Signature validation adds the runtime packages PdfPig 0.1.16 and
+  System.Security.Cryptography.Pkcs 10.0.13; 10.0.13 fixes CVE-2026-84008 (high, CPU
+  exhaustion in `SignedCms.CheckSignature`, which signature validation calls) and
+  CVE-2026-70162 (moderate, `EnvelopedCms` on Windows, not used by the gateway), both present
+  in the 10.0.12 that the interim OMP artifacts 0.1.57–0.1.72 carried. No known vulnerable
+  packages (`dotnet list package --vulnerable --include-transitive`).
+- Test infrastructure on Microsoft.NET.Test.Sdk 18.11.0, xunit.v3 4.0.2,
+  xunit.runner.visualstudio 4.0.1 and Microsoft.AspNetCore.Mvc.Testing 10.0.13; 321 unit tests.
 - Local CI runs the canonical OMP Pester step and the strict shared-script check (Check 15)
   through the shared platform resolver; the canonical component-version validator helpers are
   synced from OpenModulePlatform; smoke-test stack-frame detection is fixed.
