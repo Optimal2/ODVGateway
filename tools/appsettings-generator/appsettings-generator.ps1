@@ -318,7 +318,7 @@ function Split-ConfigPath([string]$Path) {
     if ([string]::IsNullOrWhiteSpace($Path)) { Stop-Generator 'A profile path is empty.' }
     $separator = if ($Path.Contains(':')) { ':' } else { '.' }
     $tokens = $Path.Split($separator)
-    if ($tokens | Where-Object { $_ -eq '' }) { Stop-Generator "The profile path '$Path' has an empty segment." }
+    if ($tokens -contains '') { Stop-Generator "The profile path '$Path' has an empty segment." }
     [pscustomobject]@{ Separator = $separator; Tokens = [string[]]$tokens }
 }
 
@@ -371,8 +371,8 @@ function Resolve-ConfigPath($Root, [string]$Path) {
 # Profile loading and secret refusal
 # ---------------------------------------------------------------------------
 
-$SecretKeyPattern = '(?i)(password|passwd|pwd|secret|token|api[-_]?key|access[-_]?key|private[-_]?key|account[-_]?key|credential|connection[-_]?string)'
-$SecretValuePattern = '(?i)(password\s*=|pwd\s*=|accountkey\s*=|sharedaccesssignature|-----BEGIN|bearer\s+[a-z0-9._-]{8,}|://[^/\s:@]+:[^/\s@]+@)'
+$SecretKeyPattern = '(?i)(password|passwd|pwd|secret|token|api[-_]?key|access[-_]?key|private[-_]?key|account[-_]?key|credential|connection[-_]?string|authorization)'
+$SecretValuePattern = '(?i)(password\s*=|pwd\s*=|accountkey\s*=|sharedaccesssignature|-----BEGIN|bearer\s+[a-z0-9._-]{8,}|basic\s+[A-Za-z0-9+/=]{12,}|://[^/\s:@]+:[^/\s@]+@)'
 $SecretAdvice = ('Set secrets on the server instead (user secrets or environment variables, ' +
     'for example ODVGateway__Section__Key), never in this generated file.')
 
@@ -476,9 +476,12 @@ function Invoke-Generation([string]$SampleText, $SiteProfile) {
             Stop-Generator ("The 'add' entry '$($entry.Path)' already exists in the sample. Remove it from " +
                 "'add' so it is treated as an ordinary 'set' (the sample now ships this key).")
         }
+        if (-not $resolved.Found -and $entry.Action -eq 'unset') {
+            Stop-Generator ("The profile path '$($entry.Path)' does not exist in the sample, so it cannot be unset. " +
+                "Fix the spelling, or drop it from 'unset' (the sample does not ship this key).")
+        }
         if (-not $resolved.Found -and -not $entry.Add) {
-            $verb = if ($entry.Action -eq 'unset') { 'unset' } else { 'set' }
-            Stop-Generator ("The profile path '$($entry.Path)' does not exist in the sample, so it cannot be $verb. " +
+            Stop-Generator ("The profile path '$($entry.Path)' does not exist in the sample, so it cannot be set. " +
                 "Fix the spelling, or list it in 'add' to insert it deliberately.")
         }
         $segments = [string[]]($resolved.Segments + $resolved.Missing)
@@ -690,6 +693,17 @@ function Get-SamplePath {
     [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../src/ODVGateway/appsettings.json'))
 }
 
+function Assert-NotSample([string]$OutPath) {
+    # Guards both the shipped sample and an explicit -Sample against every write.
+    $samples = @([System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../src/ODVGateway/appsettings.json')))
+    if ($Sample) { $samples += Resolve-UserPath $Sample }
+    foreach ($samplePath in $samples) {
+        if ([string]::Equals($OutPath, $samplePath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            Stop-Generator 'Refusing to overwrite the shipped sample. Write to another file.'
+        }
+    }
+}
+
 function Show-Header([string]$Name, [string]$SampleDisplay, [string]$ProfileDisplay, [string]$SiteName) {
     Write-Host "appsettings-generator: $Name"
     Write-Host "  sample : $SampleDisplay"
@@ -721,9 +735,7 @@ function Invoke-Generate {
     }
     $outPath = Resolve-UserPath $Out
     Assert-AllowedFile $outPath 'output'
-    if ([string]::Equals($outPath, $run.SamplePath, [System.StringComparison]::OrdinalIgnoreCase)) {
-        Stop-Generator 'Refusing to overwrite the shipped sample. Write the site configuration to another file.'
-    }
+    Assert-NotSample $outPath
     $directory = [System.IO.Path]::GetDirectoryName($outPath)
     if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
         Stop-Generator "The output directory does not exist: $directory"
@@ -754,6 +766,7 @@ function Invoke-NewProfile {
     if (-not $Out) { Stop-Generator 'The new-profile command needs -Out <file>.' }
     $outPath = Resolve-UserPath $Out
     Assert-AllowedFile $outPath 'output'
+    Assert-NotSample $outPath
     if ((Test-Path -LiteralPath $outPath) -and -not $Force) {
         Stop-Generator "The file already exists: $Out (use -Force to overwrite)."
     }

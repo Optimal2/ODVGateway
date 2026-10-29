@@ -118,10 +118,14 @@ Rules:
 - **No secrets.** The tool never reads or writes `appsettings.Development.json`
   or secret files (`secrets.json`, `.env`, certificate and key files). Profile
   entries whose key looks like a secret (password, secret, token, API key,
-  credential, connection string) or whose value carries credentials are
-  refused. Set those on the server with user secrets or environment variables
-  (for example `ODVGateway__Section__Key`).
-- It refuses to overwrite the sample itself.
+  credential, connection string, authorization) or whose value carries
+  credentials (for example a `Bearer` or `Basic` authorization value, or
+  `user:pass@` in a URL) are refused. Set those on the server with user
+  secrets or environment variables (for example `ODVGateway__Section__Key`).
+- **Sample protection.** Neither `generate` nor `new-profile` overwrites the
+  shipped sample or the file passed as `-Sample`.
+- These refusals match file names and paths, not link targets: a hard link or
+  junction under an innocent name is not followed or detected.
 
 ## Worked examples
 
