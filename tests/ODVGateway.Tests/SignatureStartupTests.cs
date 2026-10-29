@@ -54,7 +54,7 @@ public sealed class SignatureStartupTests
     /// </summary>
     private static async Task<BootResult> BootGatewayAsync(Dictionary<string, string?> environment)
     {
-        var process = new Process();
+        using var process = new Process();
         process.StartInfo.FileName = "dotnet";
         process.StartInfo.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "ODVGateway.dll"));
         process.StartInfo.ArgumentList.Add("--urls");

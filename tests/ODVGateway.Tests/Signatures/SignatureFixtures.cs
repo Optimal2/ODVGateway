@@ -418,7 +418,7 @@ public sealed class SignatureFixtures : IDisposable
                 + $" /ByteRange [{byteRangePlaceholder}] /Contents <{new string('0', ContentsHexChars)}> >>"
         };
 
-        var stream = new MemoryStream();
+        using var stream = new MemoryStream();
         stream.Write("%PDF-1.7\n%\xE2\xE3\xCF\xD3\n"u8);
         var offsets = new long[objects.Count];
         for (var index = 1; index < objects.Count; index++)
