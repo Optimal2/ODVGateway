@@ -47,9 +47,8 @@ is supported.
 ### ODVGateway v0.1.44
 Changes since v0.1.43:
 
-- New `GET /signatures/{sessionKey}/{fileIndex}` validates PDF signatures server-side (integrity, trust with reason codes, signer, signing time, timestamps, whole-file coverage) in bounded memory and time, never persisting or caching document bytes. **Off by default** (`signatures.enabled: false` answers 404 and loads nothing). `revocationMode` selects `Online` (issuer CRLs through the gateway's own bounded transport: direct connections to public addresses only, no HTTP proxy, optional exact host allow-list, 1–30 s timeout, AIA and OS downloads disabled), `Offline` (CRL files only, no network) or `NoCheck` (never `valid`: an otherwise valid signature reports `unknown` / `revocation-not-checked`, and broken signatures still report `invalid`). Review-found gaps in integrity, trust and revocation handling were closed before release (detached CMS content handed to the verifier, strict ByteRange gap check, archived CRL selection, rejection of base CRLs advertising unsupported delta CRLs, asynchronous validation bounded by the file budget), and object references resolve exactly by (number, generation), so an appended higher-generation object cannot shadow a signed one (a missing exact entry falls back to the newest generation only with a `reference-generation-fallback` diagnostic). A reference the field, widget and annotation walk cannot follow (dangling, cyclic, wrong type, deeper than the limit) is skipped only with a named diagnostic, never silently, and a cyclic `/AcroForm` reference fails the file instead of hiding its signatures.
-- Known limitation while validation is enabled: a pre-open page-tree check rejects the measured stack-overflow shapes for files with classic cross-reference tables (cyclic `/Pages`→`/Kids` and `/Type` chains, self-referencing nodes, malformed `/Kids` entries) with HTTP 422 before PdfPig opens the file. Files whose cross-reference is a stream (xref streams / object streams, i.e. most modern producers), hybrid-reference files and encrypted files pass through to PdfPig without the pre-check, and catalog `/Dests` and `/Names` trees are not pre-checked either — but with the default `signatures.isolateProcess: true` each file is validated in a separate worker process with a wall-clock timeout and a memory cap, so one crafted file of those shapes can only cost its own request (a named HTTP 503), never the gateway process; worker write failures map to the same named 503, and a test-only worker mode without its environment gate or a worker memory cap below three times the file budget is refused at startup, even while validation is disabled (a deployment that raised `maxSourcePackFrameBytes` above about 170 MiB must set `signatures.maxFileBytes` or raise `signatures.workerMaxMemoryBytes` before it starts). The default `signatures.enabled: false` never opens a file at all. Only `signatures.isolateProcess: false` (documented as "only for trusted archives") still exposes the gateway process to an uncatchable stack overflow from a crafted file.
-- System.Security.Cryptography.Pkcs 10.0.13, added with signature validation, fixes two .NET denial-of-service advisories in 10.0.12: CVE-2026-84008 (high; CPU exhaustion in `SignedCms.CheckSignature`, which signature validation calls on the PDF's signature data) and CVE-2026-70162 (moderate; `EnvelopedCms` on Windows, which the gateway does not use). v0.1.43 did not ship the package, but the interim OMP artifacts 0.1.57–0.1.72 built from main carried 10.0.12; deployments running one of them, in particular with `signatures.enabled: true`, should move to v0.1.44. PdfPig 0.1.16 is the other new runtime package; NLog.Web.AspNetCore 6.2.2.
+- v0.1.44 added server-side PDF signature validation. That feature has since been removed from the current gateway; OpenDocViewer checks PDF signature integrity in the browser instead. The current gateway has no `/signatures/...` endpoint and ignores a legacy `ODVGateway:signatures` configuration section.
+- v0.1.44 shipped PdfPig 0.1.16 and System.Security.Cryptography.Pkcs 10.0.13. The Pkcs update fixed CVE-2026-84008 and CVE-2026-70162 in 10.0.12, which interim OMP artifacts 0.1.57–0.1.72 carried. The current gateway ships neither PdfPig nor Pkcs. NLog.Web.AspNetCore 6.2.2 remains.
 - With `useBundleUrlHandoff: false` startup now logs a warning: without the `?bundleUrl=` redirect, OpenDocViewer inside the WebClient page prefers the host page's own payload and can bypass the prepared gateway session and its source-pack transport, fetching every source directly from WebClient. The warning adds a note when `webClientHandoff.allowedInitiatorUrls` is set, because that marks a WebClient handoff deployment.
 - Status and error pages follow the shared OMP light/dark theme with hardened theme-cookie parsing and no added script or Content-Security-Policy change. A proxied `/source` response without `Content-Length` is checked against `maxSourceProxyBytes` in full before a success status is sent (an oversized body returns 502); bodies above 64 KiB are buffered in `ASPNETCORE_TEMP` or the process temp directory and removed when the request ends. The build maps the checkout directory out of the compiled output, so the OMP artifact is reproducible across checkout paths. No known vulnerable packages (`dotnet list package --vulnerable --include-transitive`).
 - v0.1.44 is the first release with a CycloneDX SBOM attached (`ODVGateway-sbom-v0.1.44.cdx.json`); see "EU Cyber Resilience Act" below.
@@ -89,24 +88,10 @@ First official release. Changes since the 0.1.38 artifact:
 
 ## Known limitations
 
-PDF signature validation (`GET /signatures/...`, off by default) runs each file in a
-separate worker process by default (`signatures.isolateProcess: true`). A pre-open page-tree
-check remains the cheap first line: it rejects the measured stack-overflow shapes for files with
-classic cross-reference tables (cyclic `/Kids` and `/Type` reference chains, self-referencing
-page-tree nodes, malformed `/Kids` entries) with HTTP 422 (the same answer as an unparseable PDF)
-before the PDF library opens the file. Files whose cross-reference is a stream (xref streams /
-object streams, i.e. most modern producers), hybrid-reference files and encrypted files pass
-through to PdfPig without the pre-check, as do shapes outside the walked
-path that the library's eager open dereferences through the same unguarded recursion — catalog
-`/Dests` and `/Names` name trees in particular — but with isolation on, one crafted file of those
-shapes can only cost its own request: the worker is supervised with a wall-clock timeout (default
-30 s) and a memory cap (default 512 MiB), and a crash, timeout, overrun or unparseable answer
-becomes a named HTTP 503 (`validation-worker-crashed`, `validation-worker-timeout`,
-`validation-worker-memory`) while the gateway process keeps serving. Only
-`signatures.isolateProcess: false` — documented as "only for trusted archives" — still lets a
-crafted file overflow the stack inside `PdfDocument.Open` and terminate the gateway process.
-Deployments that do not need server-side signature verdicts should keep `signatures.enabled` at
-its default `false`.
+The current gateway does not perform server-side PDF signature validation.
+OpenDocViewer checks PDF signature integrity in the browser. The gateway has no
+`/signatures/...` endpoint and ignores a legacy `ODVGateway:signatures` section
+left in an upgraded site's configuration.
 
 ## Reporting a Vulnerability
 

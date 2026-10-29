@@ -8,6 +8,16 @@ for its `0.1.x` release line.
 
 ## [Unreleased]
 
+### Removed
+
+- Removed server-side PDF signature validation, its isolated worker mode, the
+  `/signatures/{sessionKey}/{fileIndex}` endpoint, and the PdfPig and
+  System.Security.Cryptography.Pkcs runtime dependencies. OpenDocViewer checks PDF
+  signature integrity in the browser. A legacy `ODVGateway:signatures` section in
+  `appsettings.json` is ignored, so upgrading an existing site does not fail startup.
+  Passing the retired `--signature-worker` argument now starts the normal web host;
+  no worker mode is entered.
+
 ## [0.1.44] - 2026-10-25
 
 ### Added

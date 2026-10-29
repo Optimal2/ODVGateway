@@ -279,7 +279,6 @@ Default URLs:
 | `GET /bundle/{sessionKey}` | One-shot JSON bundle (with diagnostics headers). |
 | `GET /source/{sessionKey}/{fileIndex:int}` | Single source file (range-supported when served from a trusted root). |
 | `GET /source-pack/{sessionKey}` | `application/vnd.opendocviewer.source-pack` (odvsp1) stream of all source files. |
-| `GET /signatures/{sessionKey}/{fileIndex:int}` | Server-side PDF signature validation verdicts (JSON, `Cache-Control: no-store`). Disabled by default. |
 
 Standalone IIS deployment: see [Standalone IIS Deployment](#standalone-iis-deployment).
 OMP deployment: see [OpenModulePlatform Packaging](#openmoduleplatform-packaging).
@@ -333,32 +332,6 @@ store added before traffic can move between instances.
 | `sourcePackStreamBufferBytes` | 128 KiB | Stream copy chunk size (clamped to 4 KiB – 1 MiB). |
 | `inlineSources.enabled` | `true` | Embed small raster sources directly into the bundle. |
 | `remoteInlineSources.*` | see `appsettings.json` | Server-side prefetch for small same-host raster WebClient URLs (sequential, retry-on-transient). |
-
-### Signature validation
-
-`GET /signatures/{sessionKey}/{fileIndex:int}` reports, per PDF signature
-dictionary, the byte-level `integrity` (`intact`, `digest-mismatch`, …) and
-the certificate-level `trust` (`valid`, `invalid`, `unknown`), evaluated with
-`System.Security.Cryptography.Pkcs` and `X509Chain` — no document content
-leaves the gateway. It is disabled by default and answered with `404` until
-`signatures.enabled` is set.
-
-| Setting | Default | Notes |
-| --- | --- | --- |
-| `signatures.enabled` | `false` | Master switch. `false` keeps the endpoint a `404`. |
-| `signatures.useWindowsTrustedRoots` | `true` | Seed the trust store with the Windows root stores. |
-| `signatures.extraAnchorsDirectory` | `""` | Optional PEM/CER trust anchors; resolved against the content root. |
-| `signatures.crlDirectory` | `""` | Optional offline CRL files (`.crl`/`.der`/`.pem`); enables revocation checks without outbound HTTP. |
-| `signatures.revocationMode` | `Online` | `Online` fetches CRLs through a bounded public-address HTTP transport. `Offline` uses configured CRLs only. `NoCheck` always reports `unknown`; OCSP-only evidence is unavailable. |
-| `signatures.revocationHostAllowList` | `[]` | Optional exact DNS hosts, in addition to mandatory public-address checks. |
-| `signatures.revocationTimeoutSeconds` | `15` | Bounds each CRL attempt, clamped to 1–30 seconds. |
-| `signatures.maxFileBytes` | `0` | Largest validated PDF. `0` follows the source transport limit (64 MiB); a positive value never raises it. |
-| `signatures.isolateProcess` | `true` | Validate each file in a separate worker process. `false` is in-process and only safe for trusted archives. |
-| `signatures.workerTimeoutSeconds` | `30` | Wall-clock budget per file (1–120 s); expiry kills the worker and answers `503 validation-worker-timeout`. |
-| `signatures.workerMaxMemoryBytes` | `536870912` | Working-set cap per worker (32 MiB–8 GiB, and at least 3x the file limit — startup refuses less); overrun kills the worker and answers `503 validation-worker-memory`. |
-
-The full contract, the trust/expiry/timestamp rules, and the PDF reading
-choice are in [docs/PDF-SIGNATURE-VALIDATION.md](docs/PDF-SIGNATURE-VALIDATION.md).
 
 ### Viewer and response hardening
 
@@ -431,11 +404,6 @@ oversight:
 - **No database-backed path lookup.** The session store and the direct
   source resolver read only from in-memory state. A database or catalogue
   source for client-supplied `filePath` values is out of scope.
-- **No bundled PDF signature validation beyond the signature dictionaries.**
-  `GET /signatures/...` reads signature dictionaries and verifies byte ranges,
-  CMS signatures, chains and RFC 3161 timestamp tokens; it does not interpret
-  PAdES long-term validation data or document-level timestamp chains. See
-  [docs/PDF-SIGNATURE-VALIDATION.md](docs/PDF-SIGNATURE-VALIDATION.md).
 - **Single shared allowlist for client `filePath`, not per-root
   authorization.** `trustedSourceRoots` is a flat allowlist: every
   configured root grants identical read access. Fine-grained access
@@ -616,7 +584,6 @@ reporting, and deployment hardening guidance.
 | [CHANGELOG.md](CHANGELOG.md) | Release history in Keep-a-Changelog format. |
 | [LICENSE](LICENSE) | MIT license (Copyright Optimal2). |
 | [docs/DEV-SETUP.md](docs/DEV-SETUP.md) | Local clone layout, dev-only settings, demo source files. |
-| [docs/PDF-SIGNATURE-VALIDATION.md](docs/PDF-SIGNATURE-VALIDATION.md) | `GET /signatures/...` endpoint contract, trust rules, options, and limits. |
 | [scripts/omp/README.md](scripts/omp/README.md) | OMP packaging and version-lockstep tooling. |
 | [tools/appsettings-generator/README.md](tools/appsettings-generator/README.md) | Generate and drift-check a site `appsettings.json` from the shipped sample plus a site profile (not packaged). |
 | [release-notes/](release-notes/) | Per-version release notes (v0.1.39 – v0.1.42). |
