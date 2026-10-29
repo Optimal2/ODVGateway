@@ -12,7 +12,8 @@ namespace ODVGateway.Tests;
 /// reaches the eager startup options bind in Program.cs (it only feeds request-time options, which
 /// <see cref="LegacySignatureConfigurationTests"/> covers), so this suite boots the real
 /// ODVGateway.dll in a child process whose content root holds the shipped appsettings.json plus the
-/// legacy block, and asserts the host stays up and answers HTTP. A strict startup bind
+/// legacy block, and asserts the host stays up and answers HTTP itself (it echoes the probe's
+/// correlation id, which another listener on the port would not). A strict startup bind
 /// (<c>ErrorOnUnknownConfiguration</c>) makes the child exit before Kestrel binds, failing here.
 /// </summary>
 public sealed class LegacySignatureStartupTests
@@ -33,6 +34,10 @@ public sealed class LegacySignatureStartupTests
             Assert.False(boot.TimedOut, "The gateway child neither started nor exited. Output:\n" + boot.Output);
             Assert.True(boot.Booted, $"The gateway exited during startup (exit code {boot.ExitCode}). Output:\n" + boot.Output);
             Assert.NotNull(boot.HealthStatus);
+            Assert.True(
+                boot.AnsweredByGateway,
+                $"Something answered /health with {boot.HealthStatus} but did not echo the probe's {CorrelationIdHeader}, "
+                + "so the answer did not come from the gateway child, which kept running. Output:\n" + boot.Output);
             Assert.True(boot.StillRunningAfterResponse, "The gateway exited after answering HTTP. Output:\n" + boot.Output);
         }
         finally
@@ -83,9 +88,22 @@ public sealed class LegacySignatureStartupTests
     }
 
     private sealed record BootResult(
-        int ExitCode, string Output, bool Booted, bool TimedOut, HttpStatusCode? HealthStatus, bool StillRunningAfterResponse);
+        int ExitCode, string Output, bool Booted, bool TimedOut, HttpStatusCode? HealthStatus, bool StillRunningAfterResponse,
+        bool AnsweredByGateway = false);
 
     private const int MaxPortAttempts = 3;
+
+    private const string CorrelationIdHeader = "X-Correlation-ID";
+
+    /// <summary>
+    /// The gateway's correlation middleware echoes a valid client-supplied <c>X-Correlation-ID</c>
+    /// on every response. A fresh per-probe value that comes back unchanged therefore proves the
+    /// gateway answered: an unrelated listener on the port neither sends that header nor can guess
+    /// the value, while a gateway-generated id alone would not tell the gateway from a lookalike.
+    /// </summary>
+    private static bool EchoesCorrelationId(HttpResponseMessage response, string marker)
+        => response.Headers.TryGetValues(CorrelationIdHeader, out var values)
+            && values.SequenceEqual([marker], StringComparer.Ordinal);
 
     /// <summary>
     /// Boots the child on a port that was free a moment ago. Another process can take the port
@@ -132,6 +150,7 @@ public sealed class LegacySignatureStartupTests
         process.StartInfo.Environment["ASPNETCORE_ENVIRONMENT"] = "Production";
         process.StartInfo.Environment.Remove("DOTNET_ENVIRONMENT");
 
+        var marker = "odvgateway-startup-test-" + Guid.NewGuid().ToString("N");
         var output = new StringBuilder();
         void Append(string? line)
         {
@@ -174,7 +193,9 @@ public sealed class LegacySignatureStartupTests
                     // process, and that exit must be reported rather than a probe timeout.
                     using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
                     using var probe = CancellationTokenSource.CreateLinkedTokenSource(linked.Token);
-                    var health = client.GetAsync($"http://127.0.0.1:{port}/health", probe.Token);
+                    using var request = new HttpRequestMessage(HttpMethod.Get, $"http://127.0.0.1:{port}/health");
+                    request.Headers.Add(CorrelationIdHeader, marker);
+                    var health = client.SendAsync(request, probe.Token);
                     var exited = process.WaitForExitAsync(linked.Token);
                     if (await Task.WhenAny(health, exited) == exited)
                     {
@@ -186,9 +207,20 @@ public sealed class LegacySignatureStartupTests
 
                     using var response = await health;
                     var stillRunning = !process.HasExited;
+                    var answeredByGateway = EchoesCorrelationId(response, marker);
+                    if (!answeredByGateway
+                        && await Task.WhenAny(exited, Task.Delay(TimeSpan.FromSeconds(10), linked.Token)) == exited)
+                    {
+                        // Another process answered, and the child died on its bind: report that exit
+                        // so a lost port race is classified and retried like any other.
+                        await exited;
+                        break;
+                    }
+
                     return new BootResult(
                         ExitCode: -1, Output: Snapshot(), Booted: true, TimedOut: false,
-                        HealthStatus: response.StatusCode, StillRunningAfterResponse: stillRunning);
+                        HealthStatus: response.StatusCode, StillRunningAfterResponse: stillRunning,
+                        AnsweredByGateway: answeredByGateway);
                 }
 
                 await Task.Delay(100, linked.Token);
