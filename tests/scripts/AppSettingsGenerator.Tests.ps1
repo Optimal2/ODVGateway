@@ -492,6 +492,31 @@ Describe 'appsettings-generator version gates and generate-all' {
         (Read-Loader $script:Out).GetProperty('ODVGateway').GetProperty('futureSetting').GetString() | Should -Be 'example'
     }
 
+    It 'Skips a since-gated unset for v0.1.43 and writes the file' {
+        $profilePath = New-ProfileFile 'p.json' '{ "unset": [ "ODVGateway.signatures.revocationMode" ], "since": { "ODVGateway.signatures.revocationMode": "0.1.44" } }'
+        $run = Invoke-Generator 'generate' @{ Profile = $profilePath; Out = $script:Out; Version = '0.1.43' }
+        $run.ExitCode | Should -Be 0
+        $run.Output | Should -Match '  skipped  ODVGateway\.signatures\.revocationMode: not in 0\.1\.43 \(since 0\.1\.44\)'
+        Test-Path $script:Out | Should -BeTrue
+    }
+
+    It 'Applies the same since-gated unset for v0.1.44' {
+        $profilePath = New-ProfileFile 'p.json' '{ "unset": [ "ODVGateway.signatures.revocationMode" ], "since": { "ODVGateway.signatures.revocationMode": "0.1.44" } }'
+        $run = Invoke-Generator 'generate' @{ Profile = $profilePath; Out = $script:Out; Version = '0.1.44' }
+        $run.ExitCode | Should -Be 0
+        $run.Output | Should -Match 'unset  ODVGateway\.signatures\.revocationMode'
+        $missing = [System.Text.Json.JsonElement]::new()
+        (Read-Loader $script:Out).GetProperty('ODVGateway').GetProperty('signatures').TryGetProperty('revocationMode', [ref]$missing) | Should -BeFalse
+    }
+
+    It 'Keeps the missing-path guard for an ungated unset absent from v0.1.43' {
+        $profilePath = New-ProfileFile 'p.json' '{ "unset": [ "ODVGateway.signatures.revocationMode" ] }'
+        $run = Invoke-Generator 'generate' @{ Profile = $profilePath; Out = $script:Out; Version = '0.1.43' }
+        $run.ExitCode | Should -Be 1
+        $run.Output | Should -Match "ODVGateway\.signatures\.revocationMode' does not exist in the sample, so it cannot be unset"
+        Test-Path $script:Out | Should -BeFalse
+    }
+
     It 'Generates both releases and checks each output against its own version' {
         $profilePath = New-ProfileFile 'p.json' '{ "name": "Example Hospital", "set": { "ODVGateway.signatures.enabled": true, "ODVGateway.sessionTtlMinutes": 45 }, "since": { "ODVGateway.signatures.enabled": "0.1.44" } }'
         $run = Invoke-Generator 'generate-all' @{ Profile = $profilePath; Versions = @('0.1.43', '0.1.44'); OutDir = $script:OutDir }
