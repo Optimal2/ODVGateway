@@ -8,9 +8,10 @@ This is a developer and operator tool. It is **not** part of the build output,
 the published release zip or the OMP artifact. It lives in its own folder and
 nothing in `src/` or the packaging scripts refers to it.
 
-Requirements: PowerShell 7 (`pwsh`). No other dependencies. The tool is
-PowerShell because all tooling in this repository is PowerShell, and its tests
-run in the Pester step of `scripts/local-ci.ps1`
+Requirements: PowerShell 7 (`pwsh`). File-based samples need no other
+dependencies; `-Version` also requires Git on PATH. The tool is PowerShell
+because all tooling in this repository is PowerShell, and its tests run in the
+Pester step of `scripts/local-ci.ps1`
 (`tests/scripts/AppSettingsGenerator.Tests.ps1`).
 
 ## Commands
@@ -24,20 +25,33 @@ pwsh -File tools/appsettings-generator/appsettings-generator.ps1 new-profile -Ou
 # Write the site configuration from the current sample plus the profile
 pwsh -File tools/appsettings-generator/appsettings-generator.ps1 generate -Profile site.profile.json -Out site.appsettings.json
 
+# Or read the sample from an annotated revision already in this checkout
+pwsh -File tools/appsettings-generator/appsettings-generator.ps1 generate -Profile site.profile.json -Version 0.1.43 -Out site.appsettings.json
+
 # After an upgrade: does the existing site file still match sample + profile?
 pwsh -File tools/appsettings-generator/appsettings-generator.ps1 check -Profile site.profile.json -Config site.appsettings.json
 ```
 
 | Command | Parameters | Result |
 | --- | --- | --- |
-| `generate` | `-Profile <file>` `[-Out <file>]` `[-Sample <file>]` | Writes the generated file to `-Out`. Without `-Out`, the JSON goes to the output stream as a preview (use `-Out` for a byte-exact file). |
-| `check` | `-Profile <file>` `-Config <file>` `[-Sample <file>]` | Regenerates in memory and compares with `-Config`. Exit 0 when byte-identical, exit 1 with a drift summary otherwise. |
+| `generate` | `-Profile <file>` `[-Out <file>]` `[-Sample <file> | -Version <x.y.z>]` | Writes the generated file to `-Out`. Without `-Out`, the JSON goes to the output stream as a preview (use `-Out` for a byte-exact file). |
+| `check` | `-Profile <file>` `-Config <file>` `[-Sample <file> | -Version <x.y.z>]` | Regenerates in memory and compares with `-Config`. Exit 0 when byte-identical, exit 1 with a drift summary otherwise. |
 | `new-profile` | `-Out <file>` `[-Force]` | Writes a commented example profile. Refuses to overwrite an existing file unless `-Force` is given. |
 
 `-Sample` defaults to `src/ODVGateway/appsettings.json` in this repository. Point
 it at the `appsettings.json` inside an extracted release zip to generate from
 that release instead. `src/ODVGateway/Packaging/appsettings.json` (the OMP
 artifact configuration baseline) works the same way.
+
+`-Version <x.y.z>` instead reads `src/ODVGateway/appsettings.json` from the
+annotated revision `v<x.y.z>` already present in this checkout's Git history.
+It uses local Git only: no separate checkout and no network fetch. The version
+must have exactly three numeric components. `-Sample` and `-Version` are
+mutually exclusive and the tool refuses their combination, because they are two
+different answers to which sample to use. An unknown tag, a missing sample path
+in that tag, or unavailable Git produces a readable error and exit 1. The
+`sample :` header identifies the selected tag, and an empty profile reproduces
+that tag's sample byte for byte, including its line endings and byte-order mark.
 
 Exit codes: `0` success, `1` drift (`check`) or a handled error with a readable
 message.

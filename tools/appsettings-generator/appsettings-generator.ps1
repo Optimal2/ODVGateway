@@ -5,11 +5,13 @@
 
 .DESCRIPTION
     Commands:
-      generate     -Profile <file> [-Out <file>] [-Sample <file>]
-      check        -Profile <file> -Config <file> [-Sample <file>]
+      generate     -Profile <file> [-Out <file>] [-Sample <file> | -Version <x.y.z>]
+      check        -Profile <file> -Config <file> [-Sample <file> | -Version <x.y.z>]
       new-profile  -Out <file> [-Force]
 
     The sample defaults to src/ODVGateway/appsettings.json in this repository.
+    -Version reads src/ODVGateway/appsettings.json from the annotated revision
+    v<x.y.z> in this checkout instead. -Sample and -Version cannot be combined.
     Edits are surgical and text-preserving: only the addressed values change, so
     comments, key order, indentation and line endings of the sample survive. An
     empty profile reproduces the sample byte for byte.
@@ -39,6 +41,8 @@ param(
     [string]$Config,
 
     [string]$Sample,
+
+    [string]$Version,
 
     [switch]$Force
 )
@@ -93,6 +97,63 @@ function Read-TextFile([string]$FullPath, [string]$Role) {
     }
     catch {
         Stop-Generator "The $Role file is not valid UTF-8: $FullPath"
+    }
+    [pscustomobject]@{ Text = $text; HasBom = $hasBom }
+}
+
+function Read-VersionSample([string]$Version) {
+    if ($Version -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
+        Stop-Generator "Invalid -Version '$Version'. Use exactly three numeric components: <x.y.z>."
+    }
+
+    $tag = "v$Version"
+    $samplePath = 'src/ODVGateway/appsettings.json'
+    $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = 'git'
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.CreateNoWindow = $true
+    foreach ($argument in @('-C', $repoRoot, 'show', "${tag}:$samplePath")) {
+        $startInfo.ArgumentList.Add($argument)
+    }
+
+    $process = [System.Diagnostics.Process]::new()
+    $process.StartInfo = $startInfo
+    $memory = [System.IO.MemoryStream]::new()
+    try {
+        try {
+            $null = $process.Start()
+        }
+        catch [System.ComponentModel.Win32Exception] {
+            Stop-Generator "Git is required to read sample tag '$tag' but could not be started. Put Git on PATH, or use -Sample instead."
+        }
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        # Copy the native stdout stream directly: PowerShell's pipeline would
+        # decode lines, normalise CRLF/LF and lose the final-newline distinction.
+        $process.StandardOutput.BaseStream.CopyTo($memory)
+        $process.WaitForExit()
+        $null = $stderrTask.GetAwaiter().GetResult()
+        if ($process.ExitCode -ne 0) {
+            Stop-Generator ("The sample '$samplePath' could not be read from tag '$tag'. " +
+                'Check that the annotated tag exists in this checkout and contains that path.')
+        }
+        $bytes = $memory.ToArray()
+    }
+    finally {
+        $memory.Dispose()
+        $process.Dispose()
+    }
+
+    $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+    $offset = if ($hasBom) { 3 } else { 0 }
+    $encoding = [System.Text.UTF8Encoding]::new($false, $true)
+    try {
+        $text = $encoding.GetString($bytes, $offset, $bytes.Length - $offset)
+    }
+    catch {
+        Stop-Generator "The sample '$samplePath' from tag '$tag' is not valid UTF-8."
     }
     [pscustomobject]@{ Text = $text; HasBom = $hasBom }
 }
@@ -713,10 +774,20 @@ function Show-Header([string]$Name, [string]$SampleDisplay, [string]$ProfileDisp
 
 function Invoke-FromProfile([string]$Name) {
     if (-not $ProfilePath) { Stop-Generator "The $Name command needs -Profile <file>." }
-    $samplePath = Get-SamplePath
-    $sampleFile = Read-TextFile $samplePath 'sample'
+    if ($Sample -and $Version) {
+        Stop-Generator 'The -Sample and -Version options cannot be combined: they select two different samples. Use exactly one.'
+    }
+    $samplePath = $null
+    if ($Version) {
+        $sampleFile = Read-VersionSample $Version
+        $sampleDisplay = "src/ODVGateway/appsettings.json@v$Version"
+    }
+    else {
+        $samplePath = Get-SamplePath
+        $sampleFile = Read-TextFile $samplePath 'sample'
+        $sampleDisplay = if ($Sample) { $Sample } else { 'src/ODVGateway/appsettings.json' }
+    }
     $siteProfile = Read-SiteProfile (Resolve-UserPath $ProfilePath)
-    $sampleDisplay = if ($Sample) { $Sample } else { 'src/ODVGateway/appsettings.json' }
     Show-Header $Name $sampleDisplay $ProfilePath $siteProfile.Name
     $result = Invoke-Generation $sampleFile.Text $siteProfile
     if ($result.Report.Count -eq 0) { Write-Host '  (profile changes nothing; output equals the sample)' }
@@ -780,8 +851,8 @@ function Invoke-NewProfile {
 
 $usage = @'
 Usage:
-  appsettings-generator.ps1 generate    -Profile <file> [-Out <file>] [-Sample <file>]
-  appsettings-generator.ps1 check       -Profile <file> -Config <file> [-Sample <file>]
+  appsettings-generator.ps1 generate    -Profile <file> [-Out <file>] [-Sample <file> | -Version <x.y.z>]
+  appsettings-generator.ps1 check       -Profile <file> -Config <file> [-Sample <file> | -Version <x.y.z>]
   appsettings-generator.ps1 new-profile -Out <file> [-Force]
 '@
 

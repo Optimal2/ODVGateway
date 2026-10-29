@@ -43,6 +43,34 @@ BeforeAll {
         [System.Text.Json.JsonDocument]::Parse([System.IO.File]::ReadAllText($Path), $options).RootElement
     }
 
+    function Get-TagSampleBytes([string]$Version) {
+        $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = 'git'
+        $startInfo.UseShellExecute = $false
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        foreach ($argument in @('-C', $root, 'show', "v${Version}:src/ODVGateway/appsettings.json")) {
+            $startInfo.ArgumentList.Add($argument)
+        }
+        $process = [System.Diagnostics.Process]::new()
+        $process.StartInfo = $startInfo
+        $memory = [System.IO.MemoryStream]::new()
+        try {
+            $null = $process.Start()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            $process.StandardOutput.BaseStream.CopyTo($memory)
+            $process.WaitForExit()
+            $stderr = $stderrTask.GetAwaiter().GetResult()
+            if ($process.ExitCode -ne 0) { throw "git show failed for v${Version}: $stderr" }
+            return , $memory.ToArray()
+        }
+        finally {
+            $memory.Dispose()
+            $process.Dispose()
+        }
+    }
+
     $script:CommentedSample = (@(
         '{',
         '  // Logging block.',
@@ -313,5 +341,83 @@ Describe 'appsettings-generator' {
         $run = Invoke-Generator 'frobnicate'
         $run.ExitCode | Should -Be 1
         $run.Output | Should -Match 'Usage:'
+    }
+}
+
+Describe 'appsettings-generator tagged samples' {
+    BeforeEach {
+        $script:Out = Join-Path $TestDrive 'tagged-site.appsettings.json'
+        if (Test-Path $script:Out) { Remove-Item $script:Out }
+    }
+
+    It 'Reproduces the v<Version> sample byte for byte from an empty profile' -ForEach @(
+        @{ Version = '0.1.43' }
+        @{ Version = '0.1.44' }
+    ) {
+        $profilePath = New-ProfileFile 'empty.json' '{}'
+        $run = Invoke-Generator 'generate' @{ Profile = $profilePath; Out = $script:Out; Version = $Version }
+        $run.ExitCode | Should -Be 0
+        $run.Output | Should -Match ([regex]::Escape("sample : src/ODVGateway/appsettings.json@v$Version"))
+        $expected = Get-TagSampleBytes $Version
+        [System.IO.File]::ReadAllBytes($script:Out) | Should -Be $expected
+    }
+
+    It 'Keeps the missing-path error for a profile entry absent from v0.1.43' {
+        $profilePath = New-ProfileFile 'p.json' '{ "set": { "ODVGateway.signatures.enabled": true } }'
+        $run = Invoke-Generator 'generate' @{ Profile = $profilePath; Out = $script:Out; Version = '0.1.43' }
+        $run.ExitCode | Should -Be 1
+        $run.Output | Should -Match "ODVGateway\.signatures\.enabled' does not exist in the sample"
+        Test-Path $script:Out | Should -BeFalse
+    }
+
+    It 'Reports an unknown tag readably and writes nothing' {
+        $profilePath = New-ProfileFile 'empty.json' '{}'
+        $run = Invoke-Generator 'generate' @{ Profile = $profilePath; Out = $script:Out; Version = '0.0.0' }
+        $run.ExitCode | Should -Be 1
+        $run.Output | Should -Match "could not be read from tag 'v0\.0\.0'"
+        $run.Output | Should -Not -Match 'UNEXPECTED ERROR'
+        Test-Path $script:Out | Should -BeFalse
+    }
+
+    It 'Rejects a malformed version before trying Git in a copy without history' {
+        $copy = New-GeneratorCopy
+        $profilePath = New-ProfileFile 'empty.json' '{}'
+        $run = Invoke-Generator 'generate' @{ Profile = $profilePath; Out = $script:Out; Version = '0.1.43;not-a-version' } $copy.Script
+        $run.ExitCode | Should -Be 1
+        $run.Output | Should -Match 'Invalid -Version'
+        $run.Output | Should -Not -Match 'could not be read from tag'
+        Test-Path $script:Out | Should -BeFalse
+    }
+
+    It 'Reports a missing Git history readably in a repository-shaped copy' {
+        $copy = New-GeneratorCopy
+        $profilePath = New-ProfileFile 'empty.json' '{}'
+        $run = Invoke-Generator 'generate' @{ Profile = $profilePath; Out = $script:Out; Version = '0.1.43' } $copy.Script
+        $run.ExitCode | Should -Be 1
+        $run.Output | Should -Match "could not be read from tag 'v0\.1\.43'"
+        $run.Output | Should -Not -Match 'UNEXPECTED ERROR'
+        Test-Path $script:Out | Should -BeFalse
+    }
+
+    It 'Checks a generated file against its own tag and detects drift against another tag' {
+        $profilePath = New-ProfileFile 'empty.json' '{}'
+        $generate = Invoke-Generator 'generate' @{ Profile = $profilePath; Out = $script:Out; Version = '0.1.43' }
+        $generate.ExitCode | Should -Be 0
+
+        $sameTag = Invoke-Generator 'check' @{ Profile = $profilePath; Config = $script:Out; Version = '0.1.43' }
+        $sameTag.ExitCode | Should -Be 0
+        $sameTag.Output | Should -Match 'up to date'
+
+        $otherTag = Invoke-Generator 'check' @{ Profile = $profilePath; Config = $script:Out; Version = '0.1.44' }
+        $otherTag.ExitCode | Should -Be 1
+        $otherTag.Output | Should -Match 'DRIFT'
+    }
+
+    It 'Refuses to combine -Version and -Sample' {
+        $profilePath = New-ProfileFile 'empty.json' '{}'
+        $run = Invoke-Generator 'generate' @{ Profile = $profilePath; Out = $script:Out; Version = '0.1.43'; Sample = $script:RepoSample }
+        $run.ExitCode | Should -Be 1
+        $run.Output | Should -Match '-Sample and -Version options cannot be combined'
+        Test-Path $script:Out | Should -BeFalse
     }
 }
