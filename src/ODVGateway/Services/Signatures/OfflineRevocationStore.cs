@@ -135,13 +135,9 @@ public sealed class OfflineRevocationStore
         {
             try
             {
-                foreach (var der in ReadDerBlobs(path))
-            {
-                    var parsed = Parse(der);
-                    if (parsed is not null)
-                    {
-                        cache.Add(parsed);
-                    }
+                foreach (var parsed in ReadDerBlobs(path).Select(Parse).OfType<ParsedCrl>())
+                {
+                    cache.Add(parsed);
                 }
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or FormatException)
