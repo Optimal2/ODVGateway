@@ -254,7 +254,7 @@ public sealed class SignatureWorkerClient : IDisposable
             // exit handling (crash mapping) or cancellation below.
             if (cancellationToken.IsCancellationRequested)
             {
-                Kill(process);
+                Kill(process, logger);
                 throw new OperationCanceledException(cancellationToken);
             }
         }
@@ -282,7 +282,7 @@ public sealed class SignatureWorkerClient : IDisposable
                 if (Stopwatch.GetElapsedTime(start) >= timeout)
                 {
                     killedForTimeout = true;
-                    Kill(process);
+                    Kill(process, logger);
                     break;
                 }
 
@@ -290,7 +290,7 @@ public sealed class SignatureWorkerClient : IDisposable
                 if (peakMemoryBytes > memoryCap)
                 {
                     killedForMemory = true;
-                    Kill(process);
+                    Kill(process, logger);
                     break;
                 }
 
@@ -301,7 +301,7 @@ public sealed class SignatureWorkerClient : IDisposable
         }
         catch (OperationCanceledException)
         {
-            Kill(process);
+            Kill(process, logger);
             throw;
         }
 
@@ -477,7 +477,7 @@ public sealed class SignatureWorkerClient : IDisposable
             throw new InvalidOperationException("The signature validation worker could not be started.", exception);
         }
 
-        var worker = new PooledWorker(process, WorkerJobObject.TryAssign(process));
+        var worker = new PooledWorker(process, WorkerJobObject.TryAssign(process), logger);
         Interlocked.Increment(ref spawnedWorkerCount);
         return worker;
     }
@@ -701,29 +701,75 @@ public sealed class SignatureWorkerClient : IDisposable
         }
     }
 
-    private static void Kill(Process process)
-    {
-        try
+    private static void Kill(Process process, ILogger logger) =>
+        Kill(logger, () =>
         {
             if (!process.HasExited)
             {
                 process.Kill(entireProcessTree: true);
             }
+        }, process.WaitForExit);
+
+    // Delegate seams keep failure injection inside the production cleanup control flow.
+    internal static void Kill(ILogger logger, Action terminate, Func<TimeSpan, bool> waitForExit)
+    {
+        try
+        {
+            terminate();
         }
         catch (Exception exception) when (exception is InvalidOperationException
             or System.ComponentModel.Win32Exception or NotSupportedException)
+        {
+            LogCleanupFailure(logger, "terminate", exception);
+        }
+
+        try
+        {
+            if (!waitForExit(TimeSpan.FromSeconds(5)))
+            {
+                logger.LogWarning(
+                    "Signature validation worker cleanup. Operation={Operation} Outcome={Outcome}",
+                    "post-kill-wait", "unconfirmed");
+            }
+        }
+        catch (Exception exception) when (exception is InvalidOperationException
+            or System.ComponentModel.Win32Exception)
+        {
+            LogCleanupFailure(logger, "post-kill-wait", exception);
+        }
+    }
+
+    internal static void RetireGracefully(ILogger logger, Action closeInput,
+        Func<TimeSpan, bool> waitForExit, Action kill, Action dispose)
+    {
+        try
+        {
+            closeInput();
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or IOException)
         {
         }
 
         try
         {
-            process.WaitForExit(TimeSpan.FromSeconds(5));
+            if (!waitForExit(TimeSpan.FromSeconds(5)))
+            {
+                kill();
+            }
         }
         catch (Exception exception) when (exception is InvalidOperationException
             or System.ComponentModel.Win32Exception)
         {
+            LogCleanupFailure(logger, "retirement-wait", exception);
         }
+
+        dispose();
     }
+
+    private static void LogCleanupFailure(ILogger logger, string operation, Exception exception) =>
+        logger.Log(exception is InvalidOperationException ? LogLevel.Debug : LogLevel.Warning,
+            "Signature validation worker cleanup failed. Operation={Operation} Exception={ExceptionType}",
+            operation, exception.GetType().Name);
 
     private void LogOutcome(string outcome, int exitCode, bool pooled, int workerUses, long startTimestamp,
         long peakMemoryBytes, int stdoutBytes, long stderrBytes)
@@ -752,10 +798,12 @@ public sealed class SignatureWorkerClient : IDisposable
     /// </summary>
     private sealed class PooledWorker : IDisposable
     {
+        private readonly ILogger logger;
         private int disposed;
 
-        public PooledWorker(Process process, WorkerJobObject? job)
+        public PooledWorker(Process process, WorkerJobObject? job, ILogger logger)
         {
+            this.logger = logger;
             Process = process;
             Job = job;
             StderrDrain = DrainStderrAsync(process);
@@ -776,7 +824,7 @@ public sealed class SignatureWorkerClient : IDisposable
         /// <summary>Kills the worker immediately. Used for failures and shutdown.</summary>
         public void Destroy()
         {
-            Kill(Process);
+            Kill(Process, logger);
             Dispose();
         }
 
@@ -784,30 +832,9 @@ public sealed class SignatureWorkerClient : IDisposable
         /// Lets a healthy worker exit cleanly: closing stdin reads as EOF in its request loop.
         /// Falls back to killing a worker that does not exit in time.
         /// </summary>
-        public void RetireGracefully()
-        {
-            try
-            {
-                Process.StandardInput.Close();
-            }
-            catch (Exception exception) when (exception is InvalidOperationException or IOException)
-            {
-            }
-
-            try
-            {
-                if (!Process.WaitForExit(TimeSpan.FromSeconds(5)))
-                {
-                    Kill(Process);
-                }
-            }
-            catch (Exception exception) when (exception is InvalidOperationException
-                or System.ComponentModel.Win32Exception)
-            {
-            }
-
-            Dispose();
-        }
+        public void RetireGracefully() =>
+            SignatureWorkerClient.RetireGracefully(logger, () => Process.StandardInput.Close(),
+                Process.WaitForExit, () => Kill(Process, logger), Dispose);
 
         public void Dispose()
         {

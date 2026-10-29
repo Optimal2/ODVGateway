@@ -34,6 +34,205 @@ public sealed class SignatureWorkerIsolationTests : IDisposable
     static SignatureWorkerIsolationTests() =>
         Environment.SetEnvironmentVariable("ODVGATEWAY_SIGNATURE_WORKER_TEST", "1");
 
+    private const string CleanupSentinel = "sensitive-path-payload-arguments-worker-stream";
+
+    [Theory]
+    [InlineData("InvalidOperationException", LogLevel.Debug)]
+    [InlineData("Win32Exception", LogLevel.Warning)]
+    [InlineData("NotSupportedException", LogLevel.Warning)]
+    public void Cleanup_EC06_TerminationFailure_LogsSafelyAndStillWaits(string type, LogLevel level)
+    {
+        var log = new CapturingLogger();
+        var calls = new List<string>();
+        SignatureWorkerClient.Kill(log, () =>
+        {
+            calls.Add("terminate");
+            throw CleanupException(type);
+        }, timeout =>
+        {
+            Assert.Equal(TimeSpan.FromSeconds(5), timeout);
+            calls.Add("wait");
+            return true;
+        });
+
+        Assert.Equal(["terminate", "wait"], calls);
+        AssertCleanupDiagnostic(log, "terminate", type, level);
+    }
+
+    [Theory]
+    [InlineData("InvalidOperationException", LogLevel.Debug)]
+    [InlineData("Win32Exception", LogLevel.Warning)]
+    public void Cleanup_EC07_PostKillWaitFailure_LogsSafely(string type, LogLevel level)
+    {
+        var log = new CapturingLogger();
+        var calls = new List<string>();
+        SignatureWorkerClient.Kill(log, () => calls.Add("terminate"), timeout =>
+        {
+            Assert.Equal(TimeSpan.FromSeconds(5), timeout);
+            calls.Add("wait");
+            throw CleanupException(type);
+        });
+
+        Assert.Equal(["terminate", "wait"], calls);
+        AssertCleanupDiagnostic(log, "post-kill-wait", type, level);
+    }
+
+    [Fact]
+    public void Cleanup_EC07_UnconfirmedPostKillWait_LogsWithoutRetry()
+    {
+        var log = new CapturingLogger();
+        var waits = 0;
+        SignatureWorkerClient.Kill(log, () => { }, timeout =>
+        {
+            Assert.Equal(TimeSpan.FromSeconds(5), timeout);
+            waits++;
+            return false;
+        });
+
+        Assert.Equal(1, waits);
+        var record = Assert.Single(log.Records);
+        Assert.Equal(LogLevel.Warning, record.Level);
+        Assert.Equal("post-kill-wait", record.StateValue("Operation"));
+        Assert.Equal("unconfirmed", record.StateValue("Outcome"));
+        Assert.Null(record.Exception);
+    }
+
+    [Theory]
+    [InlineData("InvalidOperationException", LogLevel.Debug)]
+    [InlineData("Win32Exception", LogLevel.Warning)]
+    public void Cleanup_EC09_RetirementWaitFailure_LogsSafelyAndDisposes(string type, LogLevel level)
+    {
+        var log = new CapturingLogger();
+        var calls = new List<string>();
+        SignatureWorkerClient.RetireGracefully(log, () => calls.Add("close"), timeout =>
+        {
+            Assert.Equal(TimeSpan.FromSeconds(5), timeout);
+            calls.Add("wait");
+            throw CleanupException(type);
+        }, () => calls.Add("kill"), () => calls.Add("dispose"));
+
+        // A wait exception has always skipped the normal false-return kill fallback.
+        Assert.Equal(["close", "wait", "dispose"], calls);
+        AssertCleanupDiagnostic(log, "retirement-wait", type, level);
+    }
+
+    [Fact]
+    public void Cleanup_Success_IsSilent()
+    {
+        var log = new CapturingLogger();
+        var calls = new List<string>();
+        SignatureWorkerClient.Kill(log, () => calls.Add("terminate"), _ =>
+        {
+            calls.Add("kill-wait");
+            return true;
+        });
+        SignatureWorkerClient.RetireGracefully(log, () => calls.Add("close"), _ =>
+        {
+            calls.Add("retirement-wait");
+            return true;
+        }, () => calls.Add("fallback"), () => calls.Add("dispose"));
+
+        Assert.Equal(["terminate", "kill-wait", "close", "retirement-wait", "dispose"], calls);
+        Assert.Empty(log.Records);
+    }
+
+    [Theory]
+    [InlineData("InvalidOperationException")]
+    [InlineData("IOException")]
+    public void Cleanup_CloseFailure_StillWaitsKillsAndDisposesInOrder(string type)
+    {
+        var log = new CapturingLogger();
+        var calls = new List<string>();
+        SignatureWorkerClient.RetireGracefully(log, () =>
+        {
+            calls.Add("close");
+            throw CleanupException(type);
+        }, timeout =>
+        {
+            Assert.Equal(TimeSpan.FromSeconds(5), timeout);
+            calls.Add("retirement-wait");
+            return false;
+        }, () => SignatureWorkerClient.Kill(log, () => calls.Add("terminate"), timeout =>
+        {
+            Assert.Equal(TimeSpan.FromSeconds(5), timeout);
+            calls.Add("kill-wait");
+            return true;
+        }), () => calls.Add("dispose"));
+
+        Assert.Equal(["close", "retirement-wait", "terminate", "kill-wait", "dispose"], calls);
+        Assert.Empty(log.Records);
+    }
+
+    [Theory]
+    [InlineData("terminate", "IOException")]
+    [InlineData("post-kill-wait", "IOException")]
+    [InlineData("post-kill-wait", "NotSupportedException")]
+    [InlineData("retirement-wait", "IOException")]
+    [InlineData("retirement-wait", "NotSupportedException")]
+    [InlineData("close", "Win32Exception")]
+    public void Cleanup_UnrelatedExceptions_StillEscape(string operation, string type)
+    {
+        var log = new CapturingLogger();
+        var expected = CleanupException(type);
+        var calls = new List<string>();
+        void Perform(string stage)
+        {
+            calls.Add(stage);
+            if (operation == stage)
+            {
+                throw expected;
+            }
+        }
+
+        var actual = Record.Exception(() =>
+        {
+            if (operation is "terminate" or "post-kill-wait")
+            {
+                SignatureWorkerClient.Kill(log, () => Perform("terminate"), _ =>
+                {
+                    Perform("post-kill-wait");
+                    return true;
+                });
+            }
+            else
+            {
+                SignatureWorkerClient.RetireGracefully(log, () => Perform("close"), _ =>
+                {
+                    Perform("retirement-wait");
+                    return true;
+                }, () => calls.Add("kill"), () => calls.Add("dispose"));
+            }
+        });
+
+        Assert.Same(expected, actual);
+        Assert.Equal(operation, calls[^1]);
+        Assert.Empty(log.Records);
+    }
+
+    private static Exception CleanupException(string type) => type switch
+    {
+        "InvalidOperationException" => new InvalidOperationException(CleanupSentinel),
+        "Win32Exception" => new System.ComponentModel.Win32Exception(5, CleanupSentinel),
+        "NotSupportedException" => new NotSupportedException(CleanupSentinel),
+        "IOException" => new IOException(CleanupSentinel),
+        _ => throw new ArgumentException("Unknown cleanup exception type.", nameof(type))
+    };
+
+    private static void AssertCleanupDiagnostic(CapturingLogger log, string operation,
+        string type, LogLevel level)
+    {
+        var record = Assert.Single(log.Records);
+        Assert.Equal(level, record.Level);
+        Assert.Equal(operation, record.StateValue("Operation"));
+        Assert.Equal(type, record.StateValue("ExceptionType"));
+        Assert.Null(record.Exception);
+        Assert.DoesNotContain(CleanupSentinel, record.Message, StringComparison.Ordinal);
+        Assert.All(record.State, pair =>
+            Assert.DoesNotContain(CleanupSentinel, pair.Value?.ToString() ?? string.Empty,
+                StringComparison.Ordinal));
+        Assert.All(record.State, pair => Assert.IsType<string>(pair.Value));
+    }
+
     [Fact]
     public async Task WorkerCrash_BareRefCycleWithBypassedPrecheck_ParentSurvivesWithNamedFailure()
     {
@@ -486,7 +685,7 @@ public sealed class SignatureWorkerIsolationTests : IDisposable
                 : new List<KeyValuePair<string, object?>>();
             lock (entries)
             {
-                entries.Add(new Entry(logLevel, formatter(state, exception), pairs));
+                entries.Add(new Entry(logLevel, formatter(state, exception), pairs, exception));
             }
         }
 
@@ -494,7 +693,8 @@ public sealed class SignatureWorkerIsolationTests : IDisposable
             where TState : notnull => NullScope.Instance;
 
         public sealed record Entry(
-            LogLevel Level, string Message, IReadOnlyList<KeyValuePair<string, object?>> State)
+            LogLevel Level, string Message, IReadOnlyList<KeyValuePair<string, object?>> State,
+            Exception? Exception)
         {
             public object? StateValue(string name) =>
                 State.First(pair => string.Equals(pair.Key, name, StringComparison.Ordinal)).Value;
