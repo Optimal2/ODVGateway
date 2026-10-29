@@ -28,7 +28,7 @@ public sealed class LegacySignatureStartupTests
         {
             await WriteUpgradedSiteAppSettingsAsync(contentRoot, enabled);
 
-            var boot = await BootGatewayAsync(contentRoot);
+            var boot = await BootGatewayOnFreeLoopbackPortAsync(contentRoot);
 
             Assert.False(boot.TimedOut, "The gateway child neither started nor exited. Output:\n" + boot.Output);
             Assert.True(boot.Booted, $"The gateway exited during startup (exit code {boot.ExitCode}). Output:\n" + boot.Output);
@@ -45,7 +45,8 @@ public sealed class LegacySignatureStartupTests
     /// Writes the appsettings.json an upgraded site keeps: the shipped file with the
     /// <c>signatures</c> block that pre-removal releases shipped, plus sub-keys the removed
     /// startup validation used to refuse (a worker test mode without its gate, a worker memory cap
-    /// below the file budget) and one key no release ever knew.
+    /// below the file budget) and one key no release ever knew. The two directory keys are written
+    /// as explicit JSON nulls, as a shipped file carries them, and read back to prove they are present.
     /// </summary>
     private static async Task WriteUpgradedSiteAppSettingsAsync(string contentRoot, bool enabled)
     {
@@ -69,16 +70,52 @@ public sealed class LegacySignatureStartupTests
             ["workerTestMode"] = "hang",
             ["unknownLegacyKey"] = "ignored"
         };
-        await File.WriteAllTextAsync(
-            Path.Join(contentRoot, "appsettings.json"), root.ToJsonString(), TestContext.Current.CancellationToken);
+        var path = Path.Join(contentRoot, "appsettings.json");
+        await File.WriteAllTextAsync(path, root.ToJsonString(), TestContext.Current.CancellationToken);
+
+        var written = JsonNode.Parse(await File.ReadAllTextAsync(path, TestContext.Current.CancellationToken))!;
+        var signatures = written["ODVGateway"]!["signatures"]!.AsObject();
+        foreach (var nullKey in new[] { "extraAnchorsDirectory", "crlDirectory" })
+        {
+            Assert.True(signatures.TryGetPropertyValue(nullKey, out var value), $"'{nullKey}' is missing from the written file.");
+            Assert.Null(value);
+        }
     }
 
     private sealed record BootResult(
         int ExitCode, string Output, bool Booted, bool TimedOut, HttpStatusCode? HealthStatus, bool StillRunningAfterResponse);
 
-    private static async Task<BootResult> BootGatewayAsync(string contentRoot)
+    private const int MaxPortAttempts = 3;
+
+    /// <summary>
+    /// Boots the child on a port that was free a moment ago. Another process can take the port
+    /// between <see cref="GetFreeLoopbackPort"/> and the child's bind; only that lost race, recognised
+    /// by Kestrel's address-in-use failure for exactly this port, is retried on a fresh port. Any other
+    /// result, including every other startup crash, is returned at once for the caller to assert on.
+    /// </summary>
+    private static async Task<BootResult> BootGatewayOnFreeLoopbackPortAsync(string contentRoot)
     {
-        var port = GetFreeLoopbackPort();
+        for (var attempt = 1; ; attempt++)
+        {
+            var port = GetFreeLoopbackPort();
+            var boot = await BootGatewayAsync(contentRoot, port);
+            if (attempt == MaxPortAttempts || !IsLostPortRace(boot, port))
+            {
+                return boot;
+            }
+        }
+    }
+
+    private static bool IsLostPortRace(BootResult boot, int port)
+        => !boot.Booted
+            && !boot.TimedOut
+            && boot.ExitCode != 0
+            && boot.Output.Contains(
+                $"Failed to bind to address http://127.0.0.1:{port}: address already in use.", StringComparison.Ordinal)
+            && boot.Output.Contains("AddressInUseException", StringComparison.Ordinal);
+
+    private static async Task<BootResult> BootGatewayAsync(string contentRoot, int port)
+    {
         using var process = new Process();
         process.StartInfo.FileName = "dotnet";
         process.StartInfo.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "ODVGateway.dll"));
@@ -132,8 +169,22 @@ public sealed class LegacySignatureStartupTests
                 // got past it. The HTTP answer then proves the host is serving, not just listening.
                 if (await TcpAcceptsAsync(port, linked.Token))
                 {
+                    // Race the probe against the child's exit: if another process took the port and
+                    // accepts on it, the child dies on its bind while the probe waits on the other
+                    // process, and that exit must be reported rather than a probe timeout.
                     using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
-                    using var response = await client.GetAsync($"http://127.0.0.1:{port}/health", linked.Token);
+                    using var probe = CancellationTokenSource.CreateLinkedTokenSource(linked.Token);
+                    var health = client.GetAsync($"http://127.0.0.1:{port}/health", probe.Token);
+                    var exited = process.WaitForExitAsync(linked.Token);
+                    if (await Task.WhenAny(health, exited) == exited)
+                    {
+                        await exited;
+                        await probe.CancelAsync();
+                        await ObserveAbandonedProbeAsync(health);
+                        break;
+                    }
+
+                    using var response = await health;
                     var stillRunning = !process.HasExited;
                     return new BootResult(
                         ExitCode: -1, Output: Snapshot(), Booted: true, TimedOut: false,
@@ -190,6 +241,17 @@ public sealed class LegacySignatureStartupTests
         catch (SocketException)
         {
             return false;
+        }
+    }
+
+    private static async Task ObserveAbandonedProbeAsync(Task<HttpResponseMessage> health)
+    {
+        try
+        {
+            (await health).Dispose();
+        }
+        catch (Exception exception) when (exception is OperationCanceledException or HttpRequestException)
+        {
         }
     }
 
