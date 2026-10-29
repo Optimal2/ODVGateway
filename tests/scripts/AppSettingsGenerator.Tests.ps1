@@ -421,3 +421,141 @@ Describe 'appsettings-generator tagged samples' {
         Test-Path $script:Out | Should -BeFalse
     }
 }
+
+Describe 'appsettings-generator version gates and generate-all' {
+    BeforeEach {
+        $script:Out = Join-Path $TestDrive 'gated-site.appsettings.json'
+        if (Test-Path $script:Out) { Remove-Item $script:Out }
+        $script:OutDir = Join-Path $TestDrive ('all-versions-' + [guid]::NewGuid().ToString('N'))
+        $null = New-Item -ItemType Directory -Path $script:OutDir
+    }
+
+    It 'Skips a since-gated signatures entry for v0.1.43 and reports the bound' {
+        $profilePath = New-ProfileFile 'p.json' '{ "set": { "ODVGateway.signatures.enabled": true }, "since": { "ODVGateway.signatures.enabled": "0.1.44" } }'
+        $run = Invoke-Generator 'generate' @{ Profile = $profilePath; Out = $script:Out; Version = '0.1.43' }
+        $run.ExitCode | Should -Be 0
+        $run.Output | Should -Match '  skipped  ODVGateway\.signatures\.enabled: not in 0\.1\.43 \(since 0\.1\.44\)'
+        $run.Output | Should -Match 'verified: 0 profile entries'
+        $missing = [System.Text.Json.JsonElement]::new()
+        (Read-Loader $script:Out).GetProperty('ODVGateway').TryGetProperty('signatures', [ref]$missing) | Should -BeFalse
+    }
+
+    It 'Applies the same since-gated signatures entry for v0.1.44 and verifies it' {
+        $profilePath = New-ProfileFile 'p.json' '{ "set": { "ODVGateway.signatures.enabled": true }, "since": { "ODVGateway.signatures.enabled": "0.1.44" } }'
+        $run = Invoke-Generator 'generate' @{ Profile = $profilePath; Out = $script:Out; Version = '0.1.44' }
+        $run.ExitCode | Should -Be 0
+        $run.Output | Should -Match 'set    ODVGateway\.signatures\.enabled: false -> true'
+        $run.Output | Should -Not -Match 'skipped  ODVGateway\.signatures\.enabled'
+        (Read-Loader $script:Out).GetProperty('ODVGateway').GetProperty('signatures').GetProperty('enabled').GetBoolean() | Should -BeTrue
+    }
+
+    It 'Applies an until-gated entry at its bound and skips it above the bound' {
+        $profilePath = New-ProfileFile 'p.json' '{ "set": { "ODVGateway.sessionTtlMinutes": 45 }, "until": { "ODVGateway.sessionTtlMinutes": "0.1.43" } }'
+        $atBound = Invoke-Generator 'generate' @{ Profile = $profilePath; Out = $script:Out; Version = '0.1.43' }
+        $atBound.ExitCode | Should -Be 0
+        (Read-Loader $script:Out).GetProperty('ODVGateway').GetProperty('sessionTtlMinutes').GetInt32() | Should -Be 45
+
+        $aboveBound = Invoke-Generator 'generate' @{ Profile = $profilePath; Out = $script:Out; Version = '0.1.44' }
+        $aboveBound.ExitCode | Should -Be 0
+        $aboveBound.Output | Should -Match '  skipped  ODVGateway\.sessionTtlMinutes: not in 0\.1\.44 \(until 0\.1\.43\)'
+        (Read-Loader $script:Out).GetProperty('ODVGateway').GetProperty('sessionTtlMinutes').GetInt32() | Should -Be 30
+    }
+
+    It 'Compares version gates numerically rather than lexically' {
+        $profilePath = New-ProfileFile 'p.json' '{ "set": { "ODVGateway.sessionTtlMinutes": 45 }, "since": { "ODVGateway.sessionTtlMinutes": "0.1.9" } }'
+        $run = Invoke-Generator 'generate' @{ Profile = $profilePath; Out = $script:Out; Version = '0.1.44' }
+        $run.ExitCode | Should -Be 0
+        $run.Output | Should -Match 'set    ODVGateway\.sessionTtlMinutes: 30 -> 45'
+        $run.Output | Should -Not -Match 'skipped  ODVGateway'
+        (Read-Loader $script:Out).GetProperty('ODVGateway').GetProperty('sessionTtlMinutes').GetInt32() | Should -Be 45
+    }
+
+    It 'Rejects a version gate without a matching set or unset entry' {
+        $profilePath = New-ProfileFile 'p.json' '{ "set": { "ODVGateway.sessionTtlMinutes": 45 }, "since": { "ODVGateway.signatures.enabled": "0.1.44" } }'
+        $run = Invoke-Generator 'generate' @{ Profile = $profilePath; Out = $script:Out; Version = '0.1.43' }
+        $run.ExitCode | Should -Be 1
+        $run.Output | Should -Match "The 'since' entry 'ODVGateway\.signatures\.enabled' has no corresponding 'set' or 'unset' entry"
+        Test-Path $script:Out | Should -BeFalse
+    }
+
+    It 'Skips and applies a gated add entry without weakening the sample-path guards' {
+        $profilePath = New-ProfileFile 'p.json' '{ "set": { "ODVGateway.futureSetting": "example" }, "add": [ "ODVGateway.futureSetting" ], "since": { "ODVGateway.futureSetting": "0.1.44" } }'
+        $skipped = Invoke-Generator 'generate' @{ Profile = $profilePath; Out = $script:Out; Version = '0.1.43' }
+        $skipped.ExitCode | Should -Be 0
+        $skipped.Output | Should -Match '  skipped  ODVGateway\.futureSetting: not in 0\.1\.43 \(since 0\.1\.44\)'
+        $missing = [System.Text.Json.JsonElement]::new()
+        (Read-Loader $script:Out).GetProperty('ODVGateway').TryGetProperty('futureSetting', [ref]$missing) | Should -BeFalse
+
+        $applied = Invoke-Generator 'generate' @{ Profile = $profilePath; Out = $script:Out; Version = '0.1.44' }
+        $applied.ExitCode | Should -Be 0
+        $applied.Output | Should -Match 'add    ODVGateway\.futureSetting'
+        (Read-Loader $script:Out).GetProperty('ODVGateway').GetProperty('futureSetting').GetString() | Should -Be 'example'
+    }
+
+    It 'Generates both releases and checks each output against its own version' {
+        $profilePath = New-ProfileFile 'p.json' '{ "name": "Example Hospital", "set": { "ODVGateway.signatures.enabled": true, "ODVGateway.sessionTtlMinutes": 45 }, "since": { "ODVGateway.signatures.enabled": "0.1.44" } }'
+        $run = Invoke-Generator 'generate-all' @{ Profile = $profilePath; Versions = @('0.1.43', '0.1.44'); OutDir = $script:OutDir }
+        $run.ExitCode | Should -Be 0
+        $run.Output | Should -Match 'generate-all \[0\.1\.43\]'
+        $run.Output | Should -Match 'generate-all \[0\.1\.44\]'
+        $run.Output | Should -Match '  skipped  ODVGateway\.signatures\.enabled: not in 0\.1\.43 \(since 0\.1\.44\)'
+        $old = Join-Path $script:OutDir '0.1.43/appsettings.json'
+        $new = Join-Path $script:OutDir '0.1.44/appsettings.json'
+        Test-Path $old | Should -BeTrue
+        Test-Path $new | Should -BeTrue
+
+        $oldCheck = Invoke-Generator 'check' @{ Profile = $profilePath; Config = $old; Version = '0.1.43' }
+        $oldCheck.ExitCode | Should -Be 0
+        $newCheck = Invoke-Generator 'check' @{ Profile = $profilePath; Config = $new; Version = '0.1.44' }
+        $newCheck.ExitCode | Should -Be 0
+        $missing = [System.Text.Json.JsonElement]::new()
+        (Read-Loader $old).GetProperty('ODVGateway').TryGetProperty('signatures', [ref]$missing) | Should -BeFalse
+        (Read-Loader $new).GetProperty('ODVGateway').GetProperty('signatures').GetProperty('enabled').GetBoolean() | Should -BeTrue
+    }
+
+    It 'Stops generate-all on the first failing version and writes no later version' {
+        $profilePath = New-ProfileFile 'p.json' '{ "set": { "ODVGateway.signatures.enabled": true } }'
+        $run = Invoke-Generator 'generate-all' @{ Profile = $profilePath; Versions = @('0.1.43', '0.1.44'); OutDir = $script:OutDir }
+        $run.ExitCode | Should -Be 1
+        $run.Output | Should -Match "generate-all failed for version '0\.1\.43'"
+        $run.Output | Should -Not -Match 'generate-all \[0\.1\.44\]'
+        Test-Path (Join-Path $script:OutDir '0.1.43/appsettings.json') | Should -BeFalse
+        Test-Path (Join-Path $script:OutDir '0.1.44/appsettings.json') | Should -BeFalse
+    }
+
+    It 'Uses -Name for every generate-all output file' {
+        $profilePath = New-ProfileFile 'empty.json' '{}'
+        $run = Invoke-Generator 'generate-all' @{ Profile = $profilePath; Versions = @('0.1.43'); OutDir = $script:OutDir; Name = 'site.json' }
+        $run.ExitCode | Should -Be 0
+        Test-Path (Join-Path $script:OutDir '0.1.43/site.json') | Should -BeTrue
+        Test-Path (Join-Path $script:OutDir '0.1.43/appsettings.json') | Should -BeFalse
+    }
+
+    It 'Refuses a gated profile on an ungated run so no value is silently dropped' {
+        $profilePath = New-ProfileFile 'p.json' '{ "set": { "ODVGateway.sessionTtlMinutes": 45 }, "since": { "ODVGateway.sessionTtlMinutes": "0.1.44" } }'
+        $run = Invoke-Generator 'generate' @{ Profile = $profilePath; Out = $script:Out }
+        $run.ExitCode | Should -Be 1
+        $run.Output | Should -Match "requires a known sample version"
+        Test-Path $script:Out | Should -BeFalse
+    }
+
+    It 'Rejects duplicate and empty generate-all versions before writing anything: <Versions>' -ForEach @(
+        @{ Versions = @('0.1.43', '0.1.43'); Message = 'duplicate version' }
+        @{ Versions = @('0.1.43,,0.1.44'); Message = 'empty entry' }
+    ) {
+        $profilePath = New-ProfileFile 'empty.json' '{}'
+        $run = Invoke-Generator 'generate-all' @{ Profile = $profilePath; Versions = $Versions; OutDir = $script:OutDir }
+        $run.ExitCode | Should -Be 1
+        $run.Output | Should -Match $Message
+        Test-Path (Join-Path $script:OutDir '0.1.43/appsettings.json') | Should -BeFalse
+        Test-Path (Join-Path $script:OutDir '0.1.44/appsettings.json') | Should -BeFalse
+    }
+
+    It 'Refuses to combine generate-all with -Sample' {
+        $profilePath = New-ProfileFile 'empty.json' '{}'
+        $run = Invoke-Generator 'generate-all' @{ Profile = $profilePath; Versions = @('0.1.43'); OutDir = $script:OutDir; Sample = $script:RepoSample }
+        $run.ExitCode | Should -Be 1
+        $run.Output | Should -Match '-Sample option cannot be combined with generate-all'
+        Test-Path (Join-Path $script:OutDir '0.1.43/appsettings.json') | Should -BeFalse
+    }
+}

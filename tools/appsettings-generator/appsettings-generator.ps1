@@ -7,14 +7,17 @@
     Commands:
       generate     -Profile <file> [-Out <file>] [-Sample <file> | -Version <x.y.z>]
       check        -Profile <file> -Config <file> [-Sample <file> | -Version <x.y.z>]
+      generate-all -Profile <file> -Versions <a,b,...> -OutDir <dir> [-Name <file>]
       new-profile  -Out <file> [-Force]
 
     The sample defaults to src/ODVGateway/appsettings.json in this repository.
     -Version reads src/ODVGateway/appsettings.json from the annotated revision
     v<x.y.z> in this checkout instead. -Sample and -Version cannot be combined.
-    Edits are surgical and text-preserving: only the addressed values change, so
-    comments, key order, indentation and line endings of the sample survive. An
-    empty profile reproduces the sample byte for byte.
+    Profile entries can be bounded with since/until version maps; those maps
+    require a version-driven run. Edits are surgical and text-preserving: only
+    the addressed values change, so comments, key order, indentation and line
+    endings of the sample survive. An empty profile reproduces the sample byte
+    for byte.
 
     After every generation the result is read back with System.Text.Json using
     the same options as Microsoft.Extensions.Configuration.Json (comments
@@ -43,6 +46,12 @@ param(
     [string]$Sample,
 
     [string]$Version,
+
+    [string[]]$Versions,
+
+    [string]$OutDir,
+
+    [string]$Name = 'appsettings.json',
 
     [switch]$Force
 )
@@ -101,10 +110,39 @@ function Read-TextFile([string]$FullPath, [string]$Role) {
     [pscustomobject]@{ Text = $text; HasBom = $hasBom }
 }
 
-function Read-VersionSample([string]$Version) {
+function Assert-VersionShape([string]$Version, [string]$Label = '-Version') {
     if ($Version -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
-        Stop-Generator "Invalid -Version '$Version'. Use exactly three numeric components: <x.y.z>."
+        Stop-Generator "Invalid $Label '$Version'. Use exactly three numeric components: <x.y.z>."
     }
+}
+
+function Get-VersionParts([string]$Version) {
+    $components = $Version.Split('.')
+    $parts = [System.Numerics.BigInteger[]]::new(3)
+    for ($i = 0; $i -lt 3; $i++) {
+        $parts[$i] = [System.Numerics.BigInteger]::Parse(
+            $components[$i], [System.Globalization.NumberStyles]::None,
+            [System.Globalization.CultureInfo]::InvariantCulture)
+    }
+    $parts
+}
+
+function Get-NormalizedVersion([string]$Version) {
+    (Get-VersionParts $Version | ForEach-Object { $_.ToString([System.Globalization.CultureInfo]::InvariantCulture) }) -join '.'
+}
+
+function Compare-Version([string]$Left, [string]$Right) {
+    $leftParts = @(Get-VersionParts $Left)
+    $rightParts = @(Get-VersionParts $Right)
+    for ($i = 0; $i -lt 3; $i++) {
+        $comparison = $leftParts[$i].CompareTo($rightParts[$i])
+        if ($comparison -ne 0) { return $comparison }
+    }
+    0
+}
+
+function Read-VersionSample([string]$Version) {
+    Assert-VersionShape $Version
 
     $tag = "v$Version"
     $samplePath = 'src/ODVGateway/appsettings.json'
@@ -461,7 +499,7 @@ function Read-SiteProfile([string]$FullPath) {
     $root = $doc.RootElement
     if ($root.ValueKind.ToString() -ne 'Object') { Stop-Generator 'The profile must be a JSON object.' }
 
-    $known = 'name', 'description', 'set', 'add', 'unset'
+    $known = 'name', 'description', 'set', 'add', 'unset', 'since', 'until'
     foreach ($prop in $root.EnumerateObject()) {
         if ($prop.Name -cnotin $known) {
             Stop-Generator "Unknown profile property '$($prop.Name)'. Allowed: $($known -join ', ')."
@@ -501,8 +539,35 @@ function Read-SiteProfile([string]$FullPath) {
         }
     }
 
+    $gates = @{}
+    foreach ($gateName in 'since', 'until') {
+        $versions = [System.Collections.Generic.Dictionary[string, string]]::new([System.StringComparer]::Ordinal)
+        if ($root.TryGetProperty($gateName, [ref]$element)) {
+            if ($element.ValueKind.ToString() -ne 'Object') { Stop-Generator "The profile '$gateName' must be an object of path -> version." }
+            foreach ($prop in $element.EnumerateObject()) {
+                if ($prop.Value.ValueKind.ToString() -ne 'String') {
+                    Stop-Generator "Every '$gateName' value must be a version string for path '$($prop.Name)'."
+                }
+                $version = $prop.Value.GetString()
+                Assert-VersionShape $version "$gateName['$($prop.Name)']"
+                $versions[$prop.Name] = $version
+            }
+        }
+        $gates[$gateName] = $versions
+    }
+
+    $entryPaths = @($set | ForEach-Object { $_.Path }) + @($lists['unset'])
+    foreach ($gateName in 'since', 'until') {
+        foreach ($path in $gates[$gateName].Keys) {
+            if ($entryPaths -cnotcontains $path) {
+                Stop-Generator "The '$gateName' entry '$path' has no corresponding 'set' or 'unset' entry."
+            }
+        }
+    }
+
     [pscustomobject]@{
-        Name = $profileName; Set = $set; Add = $lists['add']; Unset = $lists['unset']; Document = $doc
+        Name = $profileName; Set = $set; Add = $lists['add']; Unset = $lists['unset']
+        Since = $gates['since']; Until = $gates['until']; Document = $doc
     }
 }
 
@@ -516,22 +581,44 @@ function Test-PathPrefix([string[]]$Left, [string[]]$Right) {
     $true
 }
 
-function Invoke-Generation([string]$SampleText, $SiteProfile) {
+function Get-SkipReason($SiteProfile, [string]$Path, [string]$TargetVersion) {
+    $since = $null
+    if ($SiteProfile.Since.TryGetValue($Path, [ref]$since) -and (Compare-Version $TargetVersion $since) -lt 0) {
+        return "not in $TargetVersion (since $since)"
+    }
+    $until = $null
+    if ($SiteProfile.Until.TryGetValue($Path, [ref]$until) -and (Compare-Version $TargetVersion $until) -gt 0) {
+        return "not in $TargetVersion (until $until)"
+    }
+    $null
+}
+
+function Invoke-Generation([string]$SampleText, $SiteProfile, [string]$TargetVersion = '') {
     $null = ConvertTo-JsonDocument $SampleText 'sample'
     $text = $SampleText
     $root = Read-JsonNode $text 0
     $layout = Get-Layout $text $root
 
-    # Plan every entry against the original sample first so conflicts and
-    # missing paths are reported before anything is edited.
+    # Plan every applicable entry against the original sample first so conflicts
+    # and missing paths are reported before anything is edited. An out-of-range
+    # entry is deliberately skipped before any sample-path guard is evaluated.
     $entries = [System.Collections.Generic.List[object]]::new()
     foreach ($item in $SiteProfile.Set) {
-        $entries.Add([pscustomobject]@{ Action = 'set'; Path = $item.Path; Value = $item.Value; Add = ($SiteProfile.Add -ccontains $item.Path) })
+        $skipReason = if ($TargetVersion) { Get-SkipReason $SiteProfile $item.Path $TargetVersion } else { $null }
+        $entries.Add([pscustomobject]@{
+            Action = 'set'; Path = $item.Path; Value = $item.Value; Add = ($SiteProfile.Add -ccontains $item.Path)
+            Skipped = [bool]$skipReason; SkipReason = $skipReason
+        })
     }
     foreach ($path in $SiteProfile.Unset) {
-        $entries.Add([pscustomobject]@{ Action = 'unset'; Path = $path; Value = $null; Add = $false })
+        $skipReason = if ($TargetVersion) { Get-SkipReason $SiteProfile $path $TargetVersion } else { $null }
+        $entries.Add([pscustomobject]@{
+            Action = 'unset'; Path = $path; Value = $null; Add = $false
+            Skipped = [bool]$skipReason; SkipReason = $skipReason
+        })
     }
     foreach ($entry in $entries) {
+        if ($entry.Skipped) { continue }
         $resolved = Resolve-ConfigPath $root $entry.Path
         if ($resolved.Found -and $entry.Add) {
             Stop-Generator ("The 'add' entry '$($entry.Path)' already exists in the sample. Remove it from " +
@@ -549,7 +636,9 @@ function Invoke-Generation([string]$SampleText, $SiteProfile) {
         $entry | Add-Member -NotePropertyName Segments -NotePropertyValue $segments
     }
     for ($a = 0; $a -lt $entries.Count; $a++) {
+        if ($entries[$a].Skipped) { continue }
         for ($b = $a + 1; $b -lt $entries.Count; $b++) {
+            if ($entries[$b].Skipped) { continue }
             if (Test-PathPrefix $entries[$a].Segments $entries[$b].Segments) {
                 Stop-Generator "The profile entries '$($entries[$a].Path)' and '$($entries[$b].Path)' overlap. Address each value once."
             }
@@ -559,6 +648,10 @@ function Invoke-Generation([string]$SampleText, $SiteProfile) {
     # Apply one edit at a time on freshly scanned text, so offsets never go stale.
     $report = [System.Collections.Generic.List[string]]::new()
     foreach ($entry in $entries) {
+        if ($entry.Skipped) {
+            $report.Add("  skipped  $($entry.Path): $($entry.SkipReason)")
+            continue
+        }
         $root = Read-JsonNode $text 0
         $resolved = Resolve-ConfigPath $root $entry.Path
         $label = $entry.Segments -join '.'
@@ -625,8 +718,9 @@ function Invoke-Generation([string]$SampleText, $SiteProfile) {
         $report.Add("  add    ${label}: (absent) -> $(Format-Short (Format-JsonValue $entry.Value '' $layout))")
     }
 
-    Assert-Generated $text $entries
-    [pscustomobject]@{ Text = $text; Report = $report; Entries = $entries }
+    $activeEntries = @($entries | Where-Object { -not $_.Skipped })
+    Assert-Generated $text $activeEntries
+    [pscustomobject]@{ Text = $text; Report = $report; Entries = $activeEntries }
 }
 
 function Assert-Generated([string]$Text, $Entries) {
@@ -772,15 +866,15 @@ function Show-Header([string]$Name, [string]$SampleDisplay, [string]$ProfileDisp
     Write-Host "  profile: $ProfileDisplay$suffix"
 }
 
-function Invoke-FromProfile([string]$Name) {
-    if (-not $ProfilePath) { Stop-Generator "The $Name command needs -Profile <file>." }
-    if ($Sample -and $Version) {
+function Invoke-FromProfile([string]$CommandName, [string]$SelectedVersion = $Version) {
+    if (-not $ProfilePath) { Stop-Generator "The $CommandName command needs -Profile <file>." }
+    if ($Sample -and $SelectedVersion) {
         Stop-Generator 'The -Sample and -Version options cannot be combined: they select two different samples. Use exactly one.'
     }
     $samplePath = $null
-    if ($Version) {
-        $sampleFile = Read-VersionSample $Version
-        $sampleDisplay = "src/ODVGateway/appsettings.json@v$Version"
+    if ($SelectedVersion) {
+        $sampleFile = Read-VersionSample $SelectedVersion
+        $sampleDisplay = "src/ODVGateway/appsettings.json@v$SelectedVersion"
     }
     else {
         $samplePath = Get-SamplePath
@@ -788,12 +882,74 @@ function Invoke-FromProfile([string]$Name) {
         $sampleDisplay = if ($Sample) { $Sample } else { 'src/ODVGateway/appsettings.json' }
     }
     $siteProfile = Read-SiteProfile (Resolve-UserPath $ProfilePath)
-    Show-Header $Name $sampleDisplay $ProfilePath $siteProfile.Name
-    $result = Invoke-Generation $sampleFile.Text $siteProfile
+    if (-not $SelectedVersion -and ($siteProfile.Since.Count -gt 0 -or $siteProfile.Until.Count -gt 0)) {
+        Stop-Generator ("The profile uses 'since' or 'until', which requires a known sample version. " +
+            'Run with -Version <x.y.z> or generate-all so no gated value is silently applied or dropped.')
+    }
+    Show-Header $CommandName $sampleDisplay $ProfilePath $siteProfile.Name
+    $result = Invoke-Generation $sampleFile.Text $siteProfile $SelectedVersion
     if ($result.Report.Count -eq 0) { Write-Host '  (profile changes nothing; output equals the sample)' }
     foreach ($line in $result.Report) { Write-Host $line }
     Write-Host "  verified: $($result.Entries.Count) profile entries read back with System.Text.Json (comments skipped, trailing commas allowed)"
     [pscustomobject]@{ SamplePath = $samplePath; Sample = $sampleFile; Result = $result }
+}
+
+function Invoke-GenerateAll {
+    if (-not $ProfilePath) { Stop-Generator 'The generate-all command needs -Profile <file>.' }
+    if ($Sample) {
+        Stop-Generator 'The -Sample option cannot be combined with generate-all: the -Versions list selects every sample. Use generate for an explicit sample.'
+    }
+    if ($Version) {
+        Stop-Generator 'The -Version option cannot be combined with generate-all. Use -Versions <a,b,...> instead.'
+    }
+    if (-not $OutDir) { Stop-Generator 'The generate-all command needs -OutDir <dir>.' }
+    if (@($Versions).Count -eq 0) { Stop-Generator 'The generate-all command needs -Versions <a,b,...>.' }
+    if ([string]::IsNullOrWhiteSpace($Name) -or [System.IO.Path]::IsPathRooted($Name) -or
+        $Name -cne [System.IO.Path]::GetFileName($Name)) {
+        Stop-Generator "The -Name value must be a file name without directory components: '$Name'."
+    }
+
+    $outRoot = Resolve-UserPath $OutDir
+    if (-not (Test-Path -LiteralPath $outRoot -PathType Container)) {
+        Stop-Generator "The output directory does not exist: $outRoot"
+    }
+    Assert-AllowedFile (Join-Path $outRoot $Name) 'output'
+
+    $versionList = [System.Collections.Generic.List[string]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($raw in @($Versions)) {
+        if ($null -eq $raw) { Stop-Generator 'The -Versions list contains an empty entry.' }
+        foreach ($piece in ([string]$raw).Split(',')) {
+            $version = $piece.Trim()
+            if (-not $version) { Stop-Generator 'The -Versions list contains an empty entry.' }
+            Assert-VersionShape $version '-Versions'
+            $normalized = Get-NormalizedVersion $version
+            if (-not $seen.Add($normalized)) {
+                Stop-Generator "The -Versions list contains duplicate version '$version'."
+            }
+            $versionList.Add($version)
+        }
+    }
+
+    foreach ($version in $versionList) {
+        try {
+            $run = Invoke-FromProfile "generate-all [$version]" $version
+            $versionDirectory = Join-Path $outRoot $version
+            $outPath = Join-Path $versionDirectory $Name
+            Assert-AllowedFile $outPath 'output'
+            Assert-NotSample $outPath
+            if (-not (Test-Path -LiteralPath $versionDirectory -PathType Container)) {
+                $null = New-Item -ItemType Directory -Path $versionDirectory
+            }
+            $bytes = Get-OutputBytes $run.Result.Text $run.Sample.HasBom
+            [System.IO.File]::WriteAllBytes($outPath, $bytes)
+            Write-Host "  wrote  : $version/$Name"
+        }
+        catch {
+            Stop-Generator "generate-all failed for version '$version': $($_.Exception.Message)"
+        }
+    }
+    0
 }
 
 function Invoke-Generate {
@@ -851,9 +1007,10 @@ function Invoke-NewProfile {
 
 $usage = @'
 Usage:
-  appsettings-generator.ps1 generate    -Profile <file> [-Out <file>] [-Sample <file> | -Version <x.y.z>]
-  appsettings-generator.ps1 check       -Profile <file> -Config <file> [-Sample <file> | -Version <x.y.z>]
-  appsettings-generator.ps1 new-profile -Out <file> [-Force]
+  appsettings-generator.ps1 generate     -Profile <file> [-Out <file>] [-Sample <file> | -Version <x.y.z>]
+  appsettings-generator.ps1 check        -Profile <file> -Config <file> [-Sample <file> | -Version <x.y.z>]
+  appsettings-generator.ps1 generate-all -Profile <file> -Versions <a,b,...> -OutDir <dir> [-Name <file>]
+  appsettings-generator.ps1 new-profile  -Out <file> [-Force]
 '@
 
 $exitCode = 1
@@ -862,6 +1019,7 @@ try {
     switch ($Command) {
         'generate' { $exitCode = Invoke-Generate }
         'check' { $exitCode = Invoke-Check }
+        'generate-all' { $exitCode = Invoke-GenerateAll }
         'new-profile' { $exitCode = Invoke-NewProfile }
         default {
             if ($Command) { Write-Host "Unknown command '$Command'." }

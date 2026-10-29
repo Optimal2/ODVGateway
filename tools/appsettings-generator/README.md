@@ -9,9 +9,9 @@ the published release zip or the OMP artifact. It lives in its own folder and
 nothing in `src/` or the packaging scripts refers to it.
 
 Requirements: PowerShell 7 (`pwsh`). File-based samples need no other
-dependencies; `-Version` also requires Git on PATH. The tool is PowerShell
-because all tooling in this repository is PowerShell, and its tests run in the
-Pester step of `scripts/local-ci.ps1`
+dependencies; `-Version` and `generate-all` also require Git on PATH. The tool
+is PowerShell because all tooling in this repository is PowerShell, and its
+tests run in the Pester step of `scripts/local-ci.ps1`
 (`tests/scripts/AppSettingsGenerator.Tests.ps1`).
 
 ## Commands
@@ -28,6 +28,9 @@ pwsh -File tools/appsettings-generator/appsettings-generator.ps1 generate -Profi
 # Or read the sample from an annotated revision already in this checkout
 pwsh -File tools/appsettings-generator/appsettings-generator.ps1 generate -Profile site.profile.json -Version 0.1.43 -Out site.appsettings.json
 
+# Generate one file per release into an existing output directory
+pwsh -File tools/appsettings-generator/appsettings-generator.ps1 generate-all -Profile site.profile.json -Versions 0.1.43,0.1.44 -OutDir generated
+
 # After an upgrade: does the existing site file still match sample + profile?
 pwsh -File tools/appsettings-generator/appsettings-generator.ps1 check -Profile site.profile.json -Config site.appsettings.json
 ```
@@ -36,6 +39,7 @@ pwsh -File tools/appsettings-generator/appsettings-generator.ps1 check -Profile 
 | --- | --- | --- |
 | `generate` | `-Profile <file>` `[-Out <file>]` `[-Sample <file> | -Version <x.y.z>]` | Writes the generated file to `-Out`. Without `-Out`, the JSON goes to the output stream as a preview (use `-Out` for a byte-exact file). |
 | `check` | `-Profile <file>` `-Config <file>` `[-Sample <file> | -Version <x.y.z>]` | Regenerates in memory and compares with `-Config`. Exit 0 when byte-identical, exit 1 with a drift summary otherwise. |
+| `generate-all` | `-Profile <file>` `-Versions <a,b,...>` `-OutDir <dir>` `[-Name <file>]` | Writes `<OutDir>/<version>/<Name>` for each version. `-Name` defaults to `appsettings.json`. |
 | `new-profile` | `-Out <file>` `[-Force]` | Writes a commented example profile. Refuses to overwrite an existing file unless `-Force` is given. |
 
 `-Sample` defaults to `src/ODVGateway/appsettings.json` in this repository. Point
@@ -70,6 +74,58 @@ message.
 4. Run `generate` with `-Out`, review the printed `old -> new` list, and
    deploy the file.
 
+## Several releases
+
+Keep **one** profile when sites run different releases. Gate values that only
+exist in a bounded release window, then generate for the version a site runs
+today and for its next version. For example, the immutable `v0.1.43` sample has
+no `signatures` block, while `v0.1.44` has one. This profile therefore sets the
+value only for 0.1.44 and later:
+
+```json
+{
+  "name": "Example Hospital",
+  "set": {
+    "ODVGateway.signatures.enabled": true,
+    "ODVGateway.sessionTtlMinutes": 45
+  },
+  "since": { "ODVGateway.signatures.enabled": "0.1.44" }
+}
+```
+
+`-OutDir` must already exist; the per-version directories are created. Every
+version uses the normal generation path, JSON read-back verification and file
+guards. `-Sample` cannot be combined with `generate-all`. Empty, malformed or
+duplicate versions are rejected before anything is written. The command stops
+at the first failing version, names it in the error, and writes no later files.
+
+An actual run of the profile above:
+
+```text
+> pwsh -File tools/appsettings-generator/appsettings-generator.ps1 generate-all -Profile gate-smoke.profile.json -Versions 0.1.43,0.1.44 -OutDir generated
+appsettings-generator: generate-all [0.1.43]
+  sample : src/ODVGateway/appsettings.json@v0.1.43
+  profile: gate-smoke.profile.json (Example Hospital)
+  skipped  ODVGateway.signatures.enabled: not in 0.1.43 (since 0.1.44)
+  set    ODVGateway.sessionTtlMinutes: 30 -> 45
+  verified: 1 profile entries read back with System.Text.Json (comments skipped, trailing commas allowed)
+  wrote  : 0.1.43/appsettings.json
+appsettings-generator: generate-all [0.1.44]
+  sample : src/ODVGateway/appsettings.json@v0.1.44
+  profile: gate-smoke.profile.json (Example Hospital)
+  set    ODVGateway.signatures.enabled: false -> true
+  set    ODVGateway.sessionTtlMinutes: 30 -> 45
+  verified: 2 profile entries read back with System.Text.Json (comments skipped, trailing commas allowed)
+  wrote  : 0.1.44/appsettings.json
+```
+
+Check each result against its own release, not against the current sample:
+
+```powershell
+pwsh -File tools/appsettings-generator/appsettings-generator.ps1 check -Profile gate-smoke.profile.json -Config generated/0.1.43/appsettings.json -Version 0.1.43
+pwsh -File tools/appsettings-generator/appsettings-generator.ps1 check -Profile gate-smoke.profile.json -Config generated/0.1.44/appsettings.json -Version 0.1.44
+```
+
 ## Profile format
 
 ```json
@@ -81,7 +137,9 @@ message.
     "Logging.LogLevel.ODVGateway": "Information"
   },
   "add": [ "Logging.LogLevel.ODVGateway" ],
-  "unset": [ "ODVGateway.contentSecurityPolicy" ]
+  "unset": [ "ODVGateway.contentSecurityPolicy" ],
+  "since": { "ODVGateway.sessionTtlMinutes": "0.1.9" },
+  "until": { "ODVGateway.contentSecurityPolicy": "0.1.44" }
 }
 ```
 
@@ -91,6 +149,8 @@ message.
 | `set` | Object of *path -> JSON value*. The value replaces the sample value; any JSON type is allowed (objects and arrays replace the whole sample value). |
 | `add` | Array of paths from `set` that do **not** exist in the sample and are inserted on purpose. This is the per-key add marker. |
 | `unset` | Array of paths removed from the file, so the product default applies. |
+| `since` | Object of *profile path -> version*. The matching entry applies from that version and up, including the bound. |
+| `until` | Object of *profile path -> version*. The matching entry applies up to and including that version. `since` and `until` together bound a window. |
 
 Any other top-level property is an error. The profile itself may contain
 `//` and `/* */` comments and trailing commas, like `appsettings.json`.
@@ -109,13 +169,26 @@ Paths:
 
 Rules:
 
-- A `set` or `unset` path that does not exist in the sample is an error,
-  unless the path is listed in `add`. An `add` path that already exists is
-  also an error, so a sample change never goes unnoticed.
+- For an applicable entry, a `set` or `unset` path that does not exist in the
+  sample is an error, unless the path is listed in `add`. An `add` path that
+  already exists is also an error, so a sample change never goes unnoticed.
+  Gating is therefore a deliberate version declaration, not a general ignore-
+  missing-paths option.
+- `since` and `until` apply uniformly to `set`, `add` and `unset`. An out-of-
+  range entry is skipped before the sample-path and `add` guards are evaluated.
+- Versions have exactly three numeric components and are compared numerically
+  per component: `0.1.9` is earlier than `0.1.44`, never lexically.
+- A `since` or `until` key without the same path in `set` or `unset` is an
+  error, so a stale gate cannot go unnoticed.
+- Gated profiles require `-Version` or `generate-all`. A run against the current
+  sample or an explicit `-Sample` refuses such a profile rather than guessing
+  whether to apply or drop a value.
+- Every skipped entry is printed on its own `skipped` line with the target
+  version and the bound that excluded it. Nothing is silently ignored.
 - An `add` path is inserted at the end of the deepest existing block; missing
   intermediate objects are created.
-- Two entries that overlap (one path inside the other) are an error.
-- Every entry is printed as `old -> new`. Nothing is silently ignored.
+- Two applicable entries that overlap (one path inside the other) are an error.
+- Every applicable entry is printed as `old -> new`.
 
 ## Guarantees
 
@@ -127,8 +200,9 @@ Rules:
 - **Loader read-back.** After every generation the result is parsed with
   `System.Text.Json` using the options of
   `Microsoft.Extensions.Configuration.Json` (comments skipped, trailing commas
-  allowed). Every `set` value must read back equal and every `unset` key must
-  be gone, otherwise the run fails and nothing is written.
+  allowed). Every applicable `set` value must read back equal and every
+  applicable `unset` key must be gone, otherwise the run fails and nothing is
+  written.
 - **No secrets.** The tool never reads or writes `appsettings.Development.json`
   or secret files (`secrets.json`, `.env`, certificate and key files). Profile
   entries whose key looks like a secret (password, secret, token, API key,
@@ -136,8 +210,8 @@ Rules:
   credentials (for example a `Bearer` or `Basic` authorization value, or
   `user:pass@` in a URL) are refused. Set those on the server with user
   secrets or environment variables (for example `ODVGateway__Section__Key`).
-- **Sample protection.** Neither `generate` nor `new-profile` overwrites the
-  shipped sample or the file passed as `-Sample`.
+- **Sample protection.** Neither `generate`, `generate-all` nor `new-profile`
+  overwrites the shipped sample or the file passed as `-Sample`.
 - These refusals match file names and paths, not link targets: a hard link or
   junction under an innocent name is not followed or detected.
 
