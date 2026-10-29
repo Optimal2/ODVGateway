@@ -55,8 +55,8 @@ public sealed class PdfSignatureLocator
     /// Collects every signature dictionary reachable from the document, de-duplicated by object
     /// reference so a field listed both in the AcroForm and in a page annotation is reported once.
     /// </summary>
-    public IReadOnlyList<SignatureDictionary> Locate(byte[] fileBytes, CancellationToken cancellationToken = default) =>
-        LocateDocument(fileBytes, cancellationToken).Signatures;
+    public IReadOnlyList<SignatureDictionary> Locate(byte[] pdfBytes, CancellationToken cancellationToken = default) =>
+        LocateDocument(pdfBytes, cancellationToken).Signatures;
 
     /// <summary>
     /// The signature dictionaries of one document plus document-level diagnostics such as
@@ -67,8 +67,8 @@ public sealed class PdfSignatureLocator
     /// <summary>
     /// <see cref="Locate"/> plus the diagnostics collected while walking the object graph.
     /// </summary>
-    public LocatedSignatures LocateDocument(byte[] fileBytes, CancellationToken cancellationToken = default) =>
-        new PdfSignatureLocator { fileBytes = fileBytes, cancellationToken = cancellationToken }.LocateCore();
+    public LocatedSignatures LocateDocument(byte[] pdfBytes, CancellationToken cancellationToken = default) =>
+        new PdfSignatureLocator { fileBytes = pdfBytes, cancellationToken = cancellationToken }.LocateCore();
 
     private LocatedSignatures LocateCore()
     {
