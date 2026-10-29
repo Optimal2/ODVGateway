@@ -1,11 +1,11 @@
 {
   "manifestVersion": 1,
   "repositoryKey": "odvgateway",
-  "repositoryVersion": "0.1.78",
+  "repositoryVersion": "0.1.79",
   "moduleDefinitions": [
     {
       "moduleKey": "odvgateway",
-      "definitionVersion": "0.1.48",
+      "definitionVersion": "0.1.49",
       "path": "odvgateway.module-definition.json"
     }
   ],
@@ -17,7 +17,7 @@
       "appKey": "odvgateway_webapp",
       "packageType": "web-app",
       "targetName": "odvgateway",
-      "version": "0.1.78",
+      "version": "0.1.79",
       "projectPath": "src/ODVGateway",
       "artifactConfigurationFiles": [
         {
