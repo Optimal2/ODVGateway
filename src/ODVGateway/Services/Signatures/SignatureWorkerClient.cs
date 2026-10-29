@@ -636,9 +636,7 @@ public sealed class SignatureWorkerClient : IDisposable
                 }
 
                 // Drain the rest so the child never blocks on a full pipe, then report truncation.
-                while (await stream.ReadAsync(buffer) > 0)
-                {
-                }
+                await stream.CopyToAsync(Stream.Null);
 
                 return (collected.ToArray(), (int)collected.Length, true);
             }
