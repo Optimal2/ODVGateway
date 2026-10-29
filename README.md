@@ -291,6 +291,12 @@ variables under the `ODVGateway` section. ASP.NET Core host filtering
 uses the top-level `AllowedHosts` setting. The shipped defaults are
 generic; override them per deployment.
 
+To turn the shipped `src/ODVGateway/appsettings.json` sample plus a small
+site profile into a site configuration file, and to check that file for
+drift after an upgrade, use
+[tools/appsettings-generator](tools/appsettings-generator/README.md). The
+tool is not part of the build output or any package.
+
 ### Session store
 
 | Setting | Default | Notes |
@@ -527,7 +533,9 @@ defaults) as an artifact configuration file:
 writes it to the site at deploy time and deep-merges its built-in
 web-app sections underneath. Site-specific values (dist paths, trusted
 roots, aliases) belong in host-specific config overlays or deployment
-files, never in this repository. Packaging scripts warn when ignored
+files, never in this repository
+([tools/appsettings-generator](tools/appsettings-generator/README.md) can
+derive such a file from either sample). Packaging scripts warn when ignored
 standalone publish `appsettings*.json` files remain under
 `artifacts/publish`, because those files are easy to confuse with
 package input but are excluded from OMP artifact payloads.
@@ -610,6 +618,7 @@ reporting, and deployment hardening guidance.
 | [docs/DEV-SETUP.md](docs/DEV-SETUP.md) | Local clone layout, dev-only settings, demo source files. |
 | [docs/PDF-SIGNATURE-VALIDATION.md](docs/PDF-SIGNATURE-VALIDATION.md) | `GET /signatures/...` endpoint contract, trust rules, options, and limits. |
 | [scripts/omp/README.md](scripts/omp/README.md) | OMP packaging and version-lockstep tooling. |
+| [tools/appsettings-generator/README.md](tools/appsettings-generator/README.md) | Generate and drift-check a site `appsettings.json` from the shipped sample plus a site profile (not packaged). |
 | [release-notes/](release-notes/) | Per-version release notes (v0.1.39 – v0.1.42). |
 
 ### Published release vs OMP artifact

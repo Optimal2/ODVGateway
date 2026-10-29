@@ -1,0 +1,20 @@
+{
+  "name": "Example Hospital",
+  "description": "Fictional example site profile for the EXAMPLE-TEST environment. Replace every value with your own.",
+  "set": {
+    "AllowedHosts": "viewer.example.org",
+    "ODVGateway.sessionTtlMinutes": 45,
+    "ODVGateway.openDocViewerDistPath": "D:\\Sites\\viewer.example.org\\dist",
+    "ODVGateway.trustedSourceRoots": [ "D:\\DocumentArchive\\EXAMPLE-TEST" ],
+    "ODVGateway.inlineSources.maxFileBytes": 4194304,
+    "Logging.LogLevel.Default": "Warning",
+    "Logging.LogLevel.Microsoft.AspNetCore": "Error",
+    "Logging.LogLevel.ODVGateway": "Information"
+  },
+  "add": [
+    "Logging.LogLevel.ODVGateway"
+  ],
+  "unset": [
+    "ODVGateway.contentSecurityPolicy"
+  ]
+}

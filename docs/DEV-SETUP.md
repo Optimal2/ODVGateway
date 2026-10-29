@@ -32,6 +32,7 @@ ODVGateway/
 │   ├── smoke-test.ps1                    # smoke test (build, start, verify /health + headers)
 │   ├── release.ps1                       # release approval gate
 │   └── omp/                              # OMP packaging and version-lockstep tooling
+├── tools/appsettings-generator/          # site appsettings.json from the sample + a profile (not packaged)
 ├── demo/                                 # synthetic demo source files (safe to view)
 │   ├── sample.pdf
 │   └── sample.tif
