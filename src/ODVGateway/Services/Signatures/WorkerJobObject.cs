@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 
 namespace ODVGateway.Services.Signatures;
 
@@ -14,9 +15,9 @@ namespace ODVGateway.Services.Signatures;
 /// </summary>
 internal sealed class WorkerJobObject : IDisposable
 {
-    private IntPtr handle;
+    private JobObjectHandle? handle;
 
-    private WorkerJobObject(IntPtr handle) => this.handle = handle;
+    private WorkerJobObject(JobObjectHandle handle) => this.handle = handle;
 
     /// <summary>
     /// Creates a kill-on-close job and assigns the process to it. Returns null when jobs are
@@ -24,6 +25,7 @@ internal sealed class WorkerJobObject : IDisposable
     /// </summary>
     public static WorkerJobObject? TryAssign(System.Diagnostics.Process process)
     {
+        ArgumentNullException.ThrowIfNull(process);
         if (!OperatingSystem.IsWindows())
         {
             return null;
@@ -31,9 +33,23 @@ internal sealed class WorkerJobObject : IDisposable
 
         try
         {
-            var handle = CreateJobObject(IntPtr.Zero, null);
-            if (handle == IntPtr.Zero)
+            // Read the process handle before creating the job: a process with no usable
+            // handle (never started, already exited) throws InvalidOperationException,
+            // which maps to the monitor-only fallback without leaking a job object.
+            IntPtr processHandle;
+            try
             {
+                processHandle = process.Handle;
+            }
+            catch (InvalidOperationException)
+            {
+                return null;
+            }
+
+            var handle = CreateJobObject(IntPtr.Zero, null);
+            if (handle.IsInvalid)
+            {
+                handle.Dispose();
                 return null;
             }
 
@@ -47,7 +63,7 @@ internal sealed class WorkerJobObject : IDisposable
             };
             if (!SetInformationJobObject(handle, JobObjectInfoClass.ExtendedLimitInformation,
                     ref limits, Marshal.SizeOf<JobObjectExtendedLimitInformation>()) ||
-                !AssignProcessToJobObject(handle, process.Handle))
+                !AssignProcessToJobObject(handle, processHandle))
             {
                 job.Dispose();
                 return null;
@@ -64,11 +80,26 @@ internal sealed class WorkerJobObject : IDisposable
 
     public void Dispose()
     {
-        var current = Interlocked.Exchange(ref handle, IntPtr.Zero);
-        if (current != IntPtr.Zero)
+        Interlocked.Exchange(ref handle, null)?.Dispose();
+    }
+
+    /// <summary>
+    /// Owns the job-object handle. A SafeHandle is safe here despite
+    /// <c>KILL_ON_JOB_CLOSE</c>: its finalizer can only run once this object is
+    /// unreachable, which implies the sole owner -- held for the whole worker lifetime
+    /// and disposed deterministically -- is unreachable too. At that point the worker
+    /// is an orphan no supervision path can reach, so kill-on-close reaping it is the
+    /// desired outcome, not a premature kill of a live worker.
+    /// </summary>
+    private sealed class JobObjectHandle : SafeHandleZeroOrMinusOneIsInvalid
+    {
+        // Instantiated by the P/Invoke marshaller.
+        private JobObjectHandle()
+            : base(ownsHandle: true)
         {
-            CloseHandle(current);
         }
+
+        protected override bool ReleaseHandle() => CloseHandle(handle);
     }
 
     [Flags]
@@ -118,19 +149,19 @@ internal sealed class WorkerJobObject : IDisposable
         public UIntPtr PeakJobMemoryUsed;
     }
 
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr CreateJobObject(IntPtr attributes, string? name);
+    [DllImport("kernel32.dll", EntryPoint = "CreateJobObjectW", ExactSpelling = true, CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern JobObjectHandle CreateJobObject(IntPtr attributes, string? name);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
+    [DllImport("kernel32.dll", EntryPoint = "SetInformationJobObject", ExactSpelling = true, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetInformationJobObject(IntPtr job, JobObjectInfoClass infoClass,
+    private static extern bool SetInformationJobObject(JobObjectHandle job, JobObjectInfoClass infoClass,
         ref JobObjectExtendedLimitInformation info, int size);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
+    [DllImport("kernel32.dll", EntryPoint = "AssignProcessToJobObject", ExactSpelling = true, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+    private static extern bool AssignProcessToJobObject(JobObjectHandle job, IntPtr process);
 
-    [DllImport("kernel32.dll", SetLastError = true)]
+    [DllImport("kernel32.dll", EntryPoint = "CloseHandle", ExactSpelling = true, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CloseHandle(IntPtr handle);
 }
