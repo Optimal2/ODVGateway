@@ -1,4 +1,10 @@
-* text=auto
+# Compiler/PDB source checksums and packaged configuration depend on exact
+# checkout bytes. Pin text to LF, independent of core.autocrlf/core.eol.
+* text=auto eol=lf
+
+# Windows command launchers retain their native line endings.
+*.cmd text eol=crlf
+*.bat text eol=crlf
 
 # The OMP manifests are rewritten as LF by scripts/omp/bump-version.ps1, and the
 # module definition is packaged byte-exact into the OMP module-definitions
