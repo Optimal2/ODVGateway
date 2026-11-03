@@ -194,6 +194,8 @@ public sealed class GatewayHttpStatusTests
         Assert.True(response.Headers.TryGetValues("Content-Security-Policy", out var values));
         var csp = Assert.Single(values);
         Assert.Contains("script-src 'self' 'unsafe-inline'", csp);
+        Assert.Contains("'wasm-unsafe-eval'", csp);
+        Assert.DoesNotContain("'unsafe-eval'", csp);
         Assert.Contains("style-src 'self' 'unsafe-inline'", csp);
         Assert.Contains("frame-src 'self' blob:", csp);
         Assert.Contains("connect-src 'self' blob:", csp);

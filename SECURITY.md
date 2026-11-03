@@ -6,6 +6,16 @@ OpenModulePlatform artifact.
 
 Security issues should be reported privately before public disclosure.
 
+## Unreleased artifact policy update (2026-11-03)
+
+The default CSP, used when `contentSecurityPolicy` is `null`, now includes
+`'wasm-unsafe-eval'` for OpenDocViewer's opt-in OCR and pdf.js decoders. It permits
+WebAssembly compilation without enabling JavaScript `eval`/`new Function` or adding
+script origins. Existing bootstrap/style permissions remain unchanged. Explicit
+site policies still override the entire default and must include this token if OCR
+is enabled; the viewer's own HTML meta CSP must permit WebAssembly as well.
+This OMP artifact update is not an official release.
+
 ## Supported Versions
 
 **ODVGateway v0.1.44** is the current supported release and the recommended

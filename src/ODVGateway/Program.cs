@@ -16,6 +16,8 @@ using ODVGateway.Services;
 // OpenDocViewerIndexRenderer, the inline styles used by GatewayHtml.StatusPage,
 // and the same-origin OpenDocViewer dist files. Deployments can override the
 // entire policy via ODVGateway:contentSecurityPolicy in appsettings.json.
+// WebAssembly compilation enables the viewer's opt-in OCR and pdf.js decoders;
+// wasm-unsafe-eval does not enable JavaScript eval/new Function.
 //
 // blob: is required in frame-src and connect-src by the viewer's PDF print
 // path. frame-src: printPdfBlob loads the generated PDF blob in a hidden
@@ -31,7 +33,7 @@ using ODVGateway.Services;
 // slower prints). The generated PDF blob itself is never fetched.
 const string DefaultContentSecurityPolicy =
     "default-src 'self'; " +
-    "script-src 'self' 'unsafe-inline'; " +
+    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; " +
     "style-src 'self' 'unsafe-inline'; " +
     "img-src 'self' data: blob:; " +
     "connect-src 'self' blob:; " +

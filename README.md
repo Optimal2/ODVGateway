@@ -340,7 +340,7 @@ store added before traffic can move between instances.
 | `openDocViewerDistPath` | `""` | Absolute path to the OpenDocViewer `dist/` folder. Empty triggers sibling probe. |
 | `requireExplicitOpenDocViewerDistPath` | `false` | Set to `true` in production to disable the sibling probe. |
 | `exposeOpenDocViewerDistPathInHealth` | `false` | When `true`, `/health` includes the resolved filesystem path. Keep disabled in production. |
-| `contentSecurityPolicy` | `null` (uses `DefaultContentSecurityPolicy`) | Optional override for the `Content-Security-Policy` response header. When omitted, the gateway emits a restrictive default that allows same-origin dist files, the inline `odvgateway-bootstrap` script, inline status-page styles, `blob:`/`data:` images, and same-origin API calls. |
+| `contentSecurityPolicy` | `null` (uses `DefaultContentSecurityPolicy`) | Optional override for the `Content-Security-Policy` response header. When omitted, the gateway emits a restrictive default that allows same-origin dist files, the inline `odvgateway-bootstrap` script, inline status-page styles, `blob:`/`data:` images, same-origin API calls, and WebAssembly compilation (`'wasm-unsafe-eval'`) for OpenDocViewer's opt-in OCR and pdf.js decoders. JavaScript `eval` remains prohibited. Custom overrides must keep this token when OCR is enabled; the viewer's HTML meta policy is enforced independently. |
 | `metadataAliases` | `{}` | Optional alias mapping copied into the neutral ODV bundle so print templates such as `{{metadata.patientId}}` keep working. Deployments own these mappings in private config; the public repo ships an empty alias map. |
 | `contentTypes` | pdf/tif/jpg/png/bmp/gif/webp | Extension-to-content-type mapping for source files. |
 
