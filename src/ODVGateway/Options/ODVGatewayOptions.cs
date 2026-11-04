@@ -28,6 +28,13 @@ public sealed class ODVGatewayOptions
 
     public bool AllowOpenDocViewerFallbackWithoutSession { get; set; }
 
+    // WebClient posts /prep and points the browser at ?sessiondata= at the same time, so the
+    // viewer request can arrive while its /prep is still being stored (measured on a customer test
+    // host 2026-11-04: the miss and the matching prep logged in the same millisecond). The
+    // viewer waits up to this long for the matching session before it reports "not found".
+    // 0 disables the wait.
+    public int PrepHandoffWaitMilliseconds { get; set; } = 5000;
+
     // Keep enabled in WebClient deployments: with it disabled the viewer page carries no
     // ?bundleUrl=, OpenDocViewer's bootstrap then prefers the same-origin parent payload,
     // and the prepared gateway session/source-pack transport is bypassed. See

@@ -133,6 +133,37 @@ public sealed class GatewaySessionStore
         }
     }
 
+    /// <summary>
+    /// Looks up a session by handoff key and, when it is missing, polls until it appears or
+    /// <paramref name="timeout"/> passes. Covers a viewer request that races its own /prep.
+    /// </summary>
+    public async Task<GatewaySession?> WaitForHandoffLookupKeyAsync(
+        string handoffLookupKey,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (true)
+        {
+            if (TryGetByHandoffLookupKey(handoffLookupKey, out var session))
+            {
+                return session;
+            }
+
+            var remaining = deadline - DateTimeOffset.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+            {
+                return null;
+            }
+
+            await Task.Delay(
+                remaining < HandoffPollInterval ? remaining : HandoffPollInterval,
+                cancellationToken);
+        }
+    }
+
+    private static readonly TimeSpan HandoffPollInterval = TimeSpan.FromMilliseconds(50);
+
     private void PruneExpiredCore(DateTimeOffset now)
     {
         // Caller must hold _sessionMutationGate so session and handoff lookup indexes stay in sync.

@@ -507,9 +507,22 @@ static async Task<IResult> RenderViewerAsync(
     }
 
     var handoffLookupKey = SessionKeyFactory.CreateHandoffLookupKey(sessionData);
-    if (!sessions.TryGetByHandoffLookupKey(handoffLookupKey, out var session))
+    var prepWait = TimeSpan.FromMilliseconds(Math.Clamp(options.Value.PrepHandoffWaitMilliseconds, 0, 30000));
+    var waitStarted = DateTimeOffset.UtcNow;
+    var session = await sessions.WaitForHandoffLookupKeyAsync(handoffLookupKey, prepWait, cancellationToken);
+    var waitedMs = (int)(DateTimeOffset.UtcNow - waitStarted).TotalMilliseconds;
+    if (session is not null && waitedMs >= 50)
     {
-        logger.LogWarning("No prepared gateway session found for decoded WebClient sessiondata.");
+        logger.LogInformation(
+            "Viewer request waited for its prepared gateway session. WaitedMs={WaitedMs}",
+            waitedMs);
+    }
+
+    if (session is null)
+    {
+        logger.LogWarning(
+            "No prepared gateway session found for decoded WebClient sessiondata. WaitedMs={WaitedMs}",
+            waitedMs);
         return GatewayHtml.StatusPage(
             "Prepared ODVGateway session was not found",
             "The viewer was opened without a matching /prep call, or the in-memory gateway session has expired. Open the document from WebClient again.",

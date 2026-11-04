@@ -38,6 +38,49 @@ public sealed class GatewaySessionStoreTests
     }
 
     [Fact]
+    public async Task WaitForHandoffLookupKeyAsync_PrepArrivesDuringWait_ReturnsSession()
+    {
+        var store = CreateStore();
+        var prep = CreatePrep();
+        var key = SessionKeyFactory.CreateHandoffLookupKey(prep);
+
+        var wait = store.WaitForHandoffLookupKeyAsync(key, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        await Task.Delay(200, TestContext.Current.CancellationToken);
+        Assert.False(wait.IsCompleted);
+        store.Store(prep);
+
+        var session = await wait;
+        Assert.NotNull(session);
+        Assert.Equal(key, session.HandoffLookupKey);
+    }
+
+    [Fact]
+    public async Task WaitForHandoffLookupKeyAsync_NoPrep_ReturnsNullAfterTimeout()
+    {
+        var store = CreateStore();
+        var key = SessionKeyFactory.CreateHandoffLookupKey(CreatePrep());
+
+        var started = DateTimeOffset.UtcNow;
+        var session = await store.WaitForHandoffLookupKeyAsync(key, TimeSpan.FromMilliseconds(300), TestContext.Current.CancellationToken);
+
+        Assert.Null(session);
+        Assert.True(DateTimeOffset.UtcNow - started >= TimeSpan.FromMilliseconds(250));
+    }
+
+    [Fact]
+    public async Task WaitForHandoffLookupKeyAsync_ZeroTimeout_ChecksOnce()
+    {
+        var store = CreateStore();
+        var prep = CreatePrep();
+        store.Store(prep);
+
+        var session = await store.WaitForHandoffLookupKeyAsync(
+            SessionKeyFactory.CreateHandoffLookupKey(prep), TimeSpan.Zero, TestContext.Current.CancellationToken);
+
+        Assert.NotNull(session);
+    }
+
+    [Fact]
     public void Store_OnEmptyStore_StoresSessionAndUpdatesCount()
     {
         var store = CreateStore();
