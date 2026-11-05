@@ -46,6 +46,27 @@ public sealed class SourceProxyHttpTests
         Assert.Equal(1, factory.Handler.RequestCount);
     }
 
+    [Fact]
+    public async Task EscapingHandlerResponse_RemainsUsableUntilConsumerDisposesIt()
+    {
+        using var handler = new StubHandler(64);
+        var client = new HttpClient(handler, disposeHandler: false);
+        using var response = await client.GetAsync("http://unit.test/source", HttpCompletionOption.ResponseHeadersRead, TestContext.Current.CancellationToken);
+
+        client.Dispose();
+
+        var tracked = Assert.IsType<TrackingHttpResponseMessage>(response);
+        Assert.Same(handler.LastResponse, tracked);
+        Assert.False(tracked.IsDisposed);
+        Assert.Equal(new byte[64], await response.Content.ReadAsByteArrayAsync(TestContext.Current.CancellationToken));
+        Assert.False(tracked.IsDisposed);
+
+        response.Dispose();
+
+        Assert.True(tracked.IsDisposed);
+        Assert.True(handler.LastStream!.IsDisposed);
+    }
+
     private sealed class ProxyFactory(int length) : WebApplicationFactory<Program>
     {
         public StubHandler Handler { get; } = new(length);
@@ -70,25 +91,62 @@ public sealed class SourceProxyHttpTests
     {
         public int RequestCount { get; private set; }
 
+        public TrackingHttpResponseMessage? LastResponse { get; private set; }
+
+        public UnknownLengthStream? LastStream { get; private set; }
+
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             RequestCount++;
             return Task.FromResult(CreateResponse());
         }
 
-        // Returning the response transfers ownership to HttpClient; do not dispose it here.
-        private HttpResponseMessage CreateResponse() => new(HttpStatusCode.OK)
+        // The consuming caller owns and disposes the response; HttpClient does not. The handler
+        // must not dispose a response that it returns.
+        private HttpResponseMessage CreateResponse()
         {
-            Content = new StreamContent(new UnknownLengthStream(new byte[length]))
-        };
+            LastStream = new UnknownLengthStream(new byte[length]);
+            LastResponse = new TrackingHttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StreamContent(LastStream)
+            };
+            return LastResponse;
+        }
+    }
+
+    private sealed class TrackingHttpResponseMessage(HttpStatusCode statusCode) : HttpResponseMessage(statusCode)
+    {
+        public bool IsDisposed { get; private set; }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                IsDisposed = true;
+            }
+
+            base.Dispose(disposing);
+        }
     }
 
     // Multiple reads and no Content-Length reproduce a chunked upstream response.
     private sealed class UnknownLengthStream(byte[] bytes) : MemoryStream(bytes)
     {
+        public bool IsDisposed { get; private set; }
+
         public override bool CanSeek => false;
 
         public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
             => base.ReadAsync(buffer[..Math.Min(buffer.Length, 16 * 1024)], cancellationToken);
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                IsDisposed = true;
+            }
+
+            base.Dispose(disposing);
+        }
     }
 }

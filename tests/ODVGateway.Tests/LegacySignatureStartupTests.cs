@@ -24,7 +24,7 @@ namespace ODVGateway.Tests;
 /// parallel run of this suite in the window between port pick and bind) cannot produce it, and
 /// /health must still carry it, with the child still running, after the scenario's requests.
 /// </remarks>
-public sealed class LegacySignatureStartupTests
+public sealed partial class LegacySignatureStartupTests
 {
     [Theory]
     [InlineData(true)]
@@ -70,8 +70,7 @@ public sealed class LegacySignatureStartupTests
                     }
                 }
             };
-            using var prepContent = new StringContent(prep.ToJsonString(), Encoding.UTF8, "application/json");
-            using var prepResponse = await client.PostAsync("/prep", prepContent, cancellationToken);
+            using var prepResponse = await PostPrepAsync(client, prep, cancellationToken);
             prepStatus = prepResponse.StatusCode;
             if (prepResponse.StatusCode != HttpStatusCode.OK)
             {
@@ -457,8 +456,13 @@ public sealed class LegacySignatureStartupTests
     /// produce: the gateway's echo of that id, and the per-test identity marker it was configured
     /// with. A different gateway echoes the id too, but reports its own <c>maxSourceProxyBytes</c>.
     /// </summary>
-    private static async Task<HealthProbe> ProbeHealthAsync(
+    private static Task<HealthProbe> ProbeHealthAsync(
         HttpClient client, TestSite site, CancellationToken cancellationToken)
+        => ProbeHealthAsync(client, site.IdentityMarker, cancellationToken);
+
+    private static async Task<HealthProbe> ProbeHealthAsync(
+        HttpClient client, long identityMarker, CancellationToken cancellationToken,
+        Action<string>? diagnostic = null)
     {
         var marker = "odvgateway-startup-test-" + Guid.NewGuid().ToString("N");
         using var request = new HttpRequestMessage(HttpMethod.Get, "/health");
@@ -477,10 +481,10 @@ public sealed class LegacySignatureStartupTests
         }
         catch (JsonException exception)
         {
-            TestContext.Current.SendDiagnosticMessage("Ignored malformed /health JSON: " + exception.Message);
+            SendDiagnostic(diagnostic, "Ignored malformed /health JSON: " + exception.Message);
         }
 
-        return new HealthProbe(response.StatusCode, statusValue, FromChild: echoed && reportedMarker == site.IdentityMarker);
+        return new HealthProbe(response.StatusCode, statusValue, FromChild: echoed && reportedMarker == identityMarker);
     }
 
     private static int GetFreeLoopbackPort()
@@ -510,7 +514,8 @@ public sealed class LegacySignatureStartupTests
         }
     }
 
-    private static async Task ObserveAbandonedProbeAsync(Task<HealthProbe> health)
+    private static async Task ObserveAbandonedProbeAsync(
+        Task<HealthProbe> health, Action<string>? diagnostic = null)
     {
         try
         {
@@ -518,7 +523,8 @@ public sealed class LegacySignatureStartupTests
         }
         catch (Exception exception) when (exception is OperationCanceledException or HttpRequestException)
         {
-            TestContext.Current.SendDiagnosticMessage(
+            SendDiagnostic(
+                diagnostic,
                 "The abandoned /health probe ended after its gateway child exited: " + exception.Message);
         }
     }
@@ -528,7 +534,7 @@ public sealed class LegacySignatureStartupTests
     /// asynchronous stdout/stderr readers; once it succeeds, the parameterless wait does, so the
     /// captured output is complete before anyone reads it.
     /// </summary>
-    private static void KillAndDrain(Process process)
+    private static void KillAndDrain(Process process, Action<string>? diagnostic = null)
     {
         try
         {
@@ -540,7 +546,7 @@ public sealed class LegacySignatureStartupTests
         catch (Exception exception) when (exception is InvalidOperationException
             or System.ComponentModel.Win32Exception or NotSupportedException)
         {
-            TestContext.Current.SendDiagnosticMessage("Could not kill the gateway child during cleanup: " + exception.Message);
+            SendDiagnostic(diagnostic, "Could not kill the gateway child during cleanup: " + exception.Message);
         }
 
         try
@@ -552,7 +558,19 @@ public sealed class LegacySignatureStartupTests
         }
         catch (InvalidOperationException exception)
         {
-            TestContext.Current.SendDiagnosticMessage("Could not wait for the gateway child during cleanup: " + exception.Message);
+            SendDiagnostic(diagnostic, "Could not wait for the gateway child during cleanup: " + exception.Message);
+        }
+    }
+
+    private static void SendDiagnostic(Action<string>? diagnostic, string message)
+    {
+        if (diagnostic is null)
+        {
+            TestContext.Current.SendDiagnosticMessage(message);
+        }
+        else
+        {
+            diagnostic(message);
         }
     }
 }

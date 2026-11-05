@@ -27,60 +27,73 @@ the tool deliberately did not download one. This was not interpreted as zero fin
 
 ## Per-finding dispositions
 
-Line numbers in the result-location column refer to the edited source before subsequent
-version-only commits.
+Result locations below name the final method and its line in this revision. The scanned locations
+are retained to identify the original findings.
 
-| Rule | Scanned location | Result location | Disposition and reason |
+| Rule | Scanned location | Final result location | Disposition and reason |
 | --- | --- | --- | --- |
-| `cs/local-not-disposed` | `tests/ODVGateway.Tests/LegacySignatureStartupTests.cs:74` | `:73` | **Fixed.** The transient `/prep` `StringContent` now has a `using` declaration and remains alive for the request. |
-| `cs/local-not-disposed` | `tests/ODVGateway.Tests/LegacySignatureStartupTests.cs:487` | `:488` | **Fixed.** `TcpListener` now has a `using` declaration; disposal still occurs immediately after the ephemeral port is obtained. |
-| `cs/local-not-disposed` | `tests/ODVGateway.Tests/SourceProxyHttpTests.cs:76` | `:80` | **Rewritten with ownership preserved.** Response creation escapes through `CreateResponse()`. Returning a handler response transfers ownership to `HttpClient`, so disposing it in the stub would be incorrect. The existing three HTTP tests prove the response and stream remain usable. |
-| `cs/path-combine` | `tests/ODVGateway.Tests/LegacySignatureStartupTests.cs:323` | `:323` | **Fixed.** The gateway assembly path uses `Path.Join`. |
-| `cs/path-combine` | `build/DeterministicRazor/DeterministicRazorGenerator.cs:27` | unchanged `:27` | **Deferred; not silently resolved.** The `Path.Join` rewrite passed its regression but was withdrawn because Check 15 requires this shared file to remain byte-identical to the canonical OpenModulePlatform copy. An ODVGateway-only change makes mandatory local CI fail. The canonical copy must change first, followed by an identical copy here. |
-| `cs/path-combine` | `build/DeterministicRazor/DeterministicRazorGenerator.cs:28` | unchanged `:28` | **Deferred for the same shared-file reason as line 27.** No suppression or dismissal was used. |
-| `cs/empty-catch-block` | `tests/ODVGateway.Tests/LegacySignatureStartupTests.cs:478` | `:478` | **Fixed.** Malformed health JSON is still classified as not belonging to the child, but the expected parse failure now emits a diagnostic instead of being silent. |
-| `cs/empty-catch-block` | `tests/ODVGateway.Tests/LegacySignatureStartupTests.cs:525` | `:519` | **Fixed.** The abandoned probe still observes only cancellation/HTTP failures after its child exits; the observation now emits a diagnostic. |
-| `cs/empty-catch-block` | `tests/ODVGateway.Tests/LegacySignatureStartupTests.cs:544` | `:540` | **Fixed.** The existing best-effort child-kill exception filter and cleanup behavior remain, with diagnostics added. |
-| `cs/empty-catch-block` | `tests/ODVGateway.Tests/LegacySignatureStartupTests.cs:556` | `:552` | **Fixed.** The existing best-effort process-wait behavior remains, with diagnostics added. |
+| `cs/local-not-disposed` | `tests/ODVGateway.Tests/LegacySignatureStartupTests.cs:74` | `LegacySignatureStartupBehaviorTests.cs:132`, `PostPrepAsync` | **Fixed and behavior-tested.** The transient `/prep` `StringContent` remains alive for the request and is disposed when the post completes. `PrepRequestContent_IsDisposedAfterPost` observes the content captured by a controlled handler and proves that reading it afterward throws `ObjectDisposedException`. |
+| `cs/local-not-disposed` | `tests/ODVGateway.Tests/LegacySignatureStartupTests.cs:487` | `LegacySignatureStartupTests.cs:492`, `GetFreeLoopbackPort` | **Fixed and behavior-tested.** `FreeLoopbackPort_CanBeReboundAfterProbe` exclusively rebinds the returned port, proving that the temporary listener no longer owns it. |
+| `cs/local-not-disposed` | `tests/ODVGateway.Tests/SourceProxyHttpTests.cs:76` | `SourceProxyHttpTests.cs:106`, `CreateResponse` | **Rewritten with ownership preserved and corrected rationale.** The consuming caller owns and disposes the response; `HttpClient` does not dispose it. `EscapingHandlerResponse_RemainsUsableUntilConsumerDisposesIt` disposes the client, reads the still-live response, then disposes the response and observes both response and stream disposal. |
+| `cs/path-combine` | `tests/ODVGateway.Tests/LegacySignatureStartupTests.cs:323` | `LegacySignatureStartupTests.cs:322`, `BootGatewayAsync` | **Fixed.** The gateway assembly path uses `Path.Join`. The three preserved process-boot tests exercise this path by starting the built gateway. |
+| `cs/path-combine` | `build/DeterministicRazor/DeterministicRazorGenerator.cs:27` | unchanged `:27` | **Rejected as no-value churn; correct by design.** The second operand is a constant relative DLL filename beneath the trusted compiler directory, so it cannot be rooted and `Path.Combine` cannot discard the base. `Path.Join` adds no clarity here. A local rewrite would also create shared-file byte-identity churn under Check 15 for other consumers. No rewrite, suppression, dismissal, or follow-up is warranted. |
+| `cs/path-combine` | `build/DeterministicRazor/DeterministicRazorGenerator.cs:28` | unchanged `:28` | **Rejected for the same value reason as line 27.** The file remains byte-identical by design, not deferred work. |
+| `cs/empty-catch-block` | `tests/ODVGateway.Tests/LegacySignatureStartupTests.cs:478` | `LegacySignatureStartupTests.cs:482`, `ProbeHealthAsync` | **Fixed and behavior-tested.** Malformed health JSON is classified as not belonging to the child and emits a diagnostic. `MalformedHealthJson_IsDiagnosticAndNotChild` supplies invalid JSON through a controlled handler and asserts both outcomes. |
+| `cs/empty-catch-block` | `tests/ODVGateway.Tests/LegacySignatureStartupTests.cs:525` | `LegacySignatureStartupTests.cs:524`, `ObserveAbandonedProbeAsync` | **Fixed and behavior-tested.** Controlled cancellation and HTTP tasks produce diagnostics; an unexpected `InvalidOperationException` still propagates without a diagnostic. |
+| `cs/empty-catch-block` | `tests/ODVGateway.Tests/LegacySignatureStartupTests.cs:544` | `LegacySignatureStartupTests.cs:546`, `KillAndDrain` kill boundary | **Fixed and behavior-tested.** An unstarted, owned, harmless `Process` produces the filtered `InvalidOperationException`; the test observes the kill diagnostic without starting or targeting any external process. |
+| `cs/empty-catch-block` | `tests/ODVGateway.Tests/LegacySignatureStartupTests.cs:556` | `LegacySignatureStartupTests.cs:559`, `KillAndDrain` wait boundary | **Fixed and behavior-tested.** The same unstarted owned process reaches the wait boundary and produces its diagnostic. |
 
-`tests/ODVGateway.Tests/GitHubQualityWP5Tests.cs` retains three source-level regressions
-covering the eight fixed test-code locations. These complement, rather than replace, the six
-existing process/HTTP behavior tests. The generator assertion was removed together with the
-shared-file edit; it must return when the canonical file is synchronized.
+The three source-string mirrors in `GitHubQualityWP5Tests.cs` were removed. Seven focused
+startup-fixture cases and one response-ownership case now test behavior directly alongside the
+six preserved process/HTTP behavior tests. No source parser or new dependency was added. The
+withdrawn generator source assertion is not part of final coverage.
 
 ## RED/GREEN evidence
 
-Before the fixes, the existing six targeted behavior tests passed:
+The original WP5 run measured the six pre-existing behavior tests green, then four source-level
+assertions red on the original source, then nine targeted tests green. Those source assertions
+are historical evidence only: three were brittle mirrors and the fourth was the withdrawn
+shared-generator assertion. None is claimed as final coverage.
+
+For this follow-up, each property was mutated independently. The test command for each row was:
 
 ```bash
-dotnet test tests/ODVGateway.Tests/ODVGateway.Tests.csproj --filter 'FullyQualifiedName~LegacySignatureStartupTests|FullyQualifiedName~SourceProxyHttpTests' --logger 'console;verbosity=normal'
+GIT_TERMINAL_PROMPT=0 dotnet test tests/ODVGateway.Tests/ODVGateway.Tests.csproj -c Release --no-restore --filter '<fully-qualified-test-from-the-row>' --logger 'console;verbosity=minimal'
 ```
 
-Native exit code **0**; **6 passed, 0 failed**.
+Every mutation produced a real test failure with native exit code **1**, after which the original
+file bytes were restored. A byte comparison returned native exit code **0** after every row.
+No mutation was committed.
 
-After adding only `GitHubQualityWP5Tests.cs`, before changing the finding locations:
+| Temporary mutation | Fully qualified test filter suffix | RED observation |
+| --- | --- | --- |
+| Removed the malformed-JSON diagnostic | `ODVGateway.Tests.LegacySignatureStartupTests.MalformedHealthJson_IsDiagnosticAndNotChild` | 1 failed: `Assert.Single`, diagnostic collection empty |
+| Removed the filtered abandoned-probe diagnostic | `ODVGateway.Tests.LegacySignatureStartupTests.AbandonedProbeExpectedFailures_AreDiagnostic` | 2 failed (HTTP and cancellation): `Assert.Single`, diagnostic collection empty |
+| Removed the abandoned-probe exception filter | `ODVGateway.Tests.LegacySignatureStartupTests.AbandonedProbeUnexpectedFailure_Propagates` | 1 failed: `Assert.Throws`, no `InvalidOperationException` escaped |
+| Removed the filtered kill diagnostic | `ODVGateway.Tests.LegacySignatureStartupTests.UnstartedOwnedProcess_CleanupReportsKillAndWaitErrors` | 1 failed: expected 2 diagnostics, actual 1 |
+| Removed the unfiltered wait diagnostic | `ODVGateway.Tests.LegacySignatureStartupTests.UnstartedOwnedProcess_CleanupReportsKillAndWaitErrors` | 1 failed: expected 2 diagnostics, actual 1 |
+| Removed `/prep` content disposal | `ODVGateway.Tests.LegacySignatureStartupTests.PrepRequestContent_IsDisposedAfterPost` | 1 failed: `Assert.Throws`, no `ObjectDisposedException` |
+| Removed temporary listener disposal | `ODVGateway.Tests.LegacySignatureStartupTests.FreeLoopbackPort_CanBeReboundAfterProbe` | 1 failed: `Assert.Null` observed socket error 10048 on exclusive rebind |
+| Disposed the handler response before returning it | `ODVGateway.Tests.SourceProxyHttpTests.EscapingHandlerResponse_RemainsUsableUntilConsumerDisposesIt` | 1 failed: `Assert.False`, response was already disposed |
+
+The restored files had these SHA-256 hashes:
+
+```text
+957161a914ef021896d7ec6881bb60158412ff5b62073fafdeab019a65d7f4ce  LegacySignatureStartupTests.cs
+9ddc28f6da5f87302925dc6db88e3afa672a06aca38e593a0d4c279be9a81cbf  LegacySignatureStartupBehaviorTests.cs
+0e288e354ae54fdd8316a46e0226c1d4ec3eb8da42f5d693fc5bdab2fad436d3  SourceProxyHttpTests.cs
+```
+
+The final targeted command was:
 
 ```bash
-GIT_TERMINAL_PROMPT=0 dotnet test tests/ODVGateway.Tests/ODVGateway.Tests.csproj --filter 'FullyQualifiedName~GitHubQualityWP5Tests' --logger 'console;verbosity=normal'
+GIT_TERMINAL_PROMPT=0 dotnet test tests/ODVGateway.Tests/ODVGateway.Tests.csproj -c Release --no-restore --filter 'FullyQualifiedName~LegacySignatureStartupTests|FullyQualifiedName~SourceProxyHttpTests' --logger 'console;verbosity=minimal'
 ```
 
-Native exit code **1**; **4 failed, 0 passed**. Every new regression failed on the original
-source. Three of those four regressions remain in the final suite; the withdrawn fourth was
-the shared-generator assertion described above.
-
-The first fixed run, including the then-present generator rewrite, returned native exit code
-**0** with **10 passed, 0 failed**. After withdrawing only that shared-file rewrite and its
-assertion, the final targeted command was rerun:
-
-```bash
-GIT_TERMINAL_PROMPT=0 dotnet test tests/ODVGateway.Tests/ODVGateway.Tests.csproj --filter 'FullyQualifiedName~GitHubQualityWP5Tests|FullyQualifiedName~LegacySignatureStartupTests|FullyQualifiedName~SourceProxyHttpTests' --logger 'console;verbosity=normal'
-```
-
-Final native exit code **0**; **9 passed, 0 failed**. This includes all three retained new
-regressions and all six existing behavior tests.
-
-`git diff --check` also returned native exit code **0**. All owned pre-existing files retained
-LF line endings; the new test and this document use LF.
+Final native exit code **0**; **14 passed, 0 failed, 0 skipped**. This includes the six
+preserved behavior tests and eight new behavioral cases. `git diff --check` returned native
+exit code **0**. All owned pre-existing files retained LF line endings; the new test and this
+document use LF.
 
 ## Full local CI
 
@@ -96,7 +109,9 @@ warnings / 0 errors**, **149 unit tests**, **10/10 smoke checks**, and **96 Pest
 That measured failure caused the generator rewrite to be withdrawn; no failing shared-file
 drift was committed or published.
 
-The final run after the withdrawal returned native exit code **0**: Release build with **0
-warnings / 0 errors**, **148 unit tests passed**, **10/10 smoke checks passed** (one expected
-warning for the intentionally unresolved viewer dist), component/version and shared-script
-validation passed, and **96 Pester tests passed**. The final output was `LOCAL CI PASSED`.
+The original WP5 run after the generator withdrawal returned native exit code **0** with **148
+unit tests passed**. After this follow-up replaced the source mirrors, the same full local CI
+command returned native exit code **0**: Release build with **0 warnings / 0 errors**, **153
+unit tests passed**, **10/10 smoke checks passed** (one expected warning for the intentionally
+unresolved viewer dist), component/version and strict shared-script validation passed, and
+**96 Pester tests passed**. The final output was `LOCAL CI PASSED`.
