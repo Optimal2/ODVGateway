@@ -70,8 +70,8 @@ public sealed class LegacySignatureStartupTests
                     }
                 }
             };
-            using var prepResponse = await client.PostAsync(
-                "/prep", new StringContent(prep.ToJsonString(), Encoding.UTF8, "application/json"), cancellationToken);
+            using var prepContent = new StringContent(prep.ToJsonString(), Encoding.UTF8, "application/json");
+            using var prepResponse = await client.PostAsync("/prep", prepContent, cancellationToken);
             prepStatus = prepResponse.StatusCode;
             if (prepResponse.StatusCode != HttpStatusCode.OK)
             {
@@ -320,7 +320,7 @@ public sealed class LegacySignatureStartupTests
     {
         using var process = new Process();
         process.StartInfo.FileName = "dotnet";
-        process.StartInfo.ArgumentList.Add(Path.Combine(AppContext.BaseDirectory, "ODVGateway.dll"));
+        process.StartInfo.ArgumentList.Add(Path.Join(AppContext.BaseDirectory, "ODVGateway.dll"));
         process.StartInfo.ArgumentList.Add("--urls");
         process.StartInfo.ArgumentList.Add($"http://127.0.0.1:{port}");
         process.StartInfo.ArgumentList.Add("--contentRoot");
@@ -475,8 +475,9 @@ public sealed class LegacySignatureStartupTests
             statusValue = (payload?["status"] as JsonValue)?.TryGetValue<string>(out var status) == true ? status : null;
             reportedMarker = (payload?["maxSourceProxyBytes"] as JsonValue)?.TryGetValue<long>(out var value) == true ? value : null;
         }
-        catch (JsonException)
+        catch (JsonException exception)
         {
+            TestContext.Current.SendDiagnosticMessage("Ignored malformed /health JSON: " + exception.Message);
         }
 
         return new HealthProbe(response.StatusCode, statusValue, FromChild: echoed && reportedMarker == site.IdentityMarker);
@@ -484,16 +485,9 @@ public sealed class LegacySignatureStartupTests
 
     private static int GetFreeLoopbackPort()
     {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
-        try
-        {
-            return ((IPEndPoint)listener.LocalEndpoint).Port;
-        }
-        finally
-        {
-            listener.Stop();
-        }
+        return ((IPEndPoint)listener.LocalEndpoint).Port;
     }
 
     private static async Task<bool> TcpAcceptsAsync(int port, CancellationToken parentToken)
@@ -524,6 +518,8 @@ public sealed class LegacySignatureStartupTests
         }
         catch (Exception exception) when (exception is OperationCanceledException or HttpRequestException)
         {
+            TestContext.Current.SendDiagnosticMessage(
+                "The abandoned /health probe ended after its gateway child exited: " + exception.Message);
         }
     }
 
@@ -544,6 +540,7 @@ public sealed class LegacySignatureStartupTests
         catch (Exception exception) when (exception is InvalidOperationException
             or System.ComponentModel.Win32Exception or NotSupportedException)
         {
+            TestContext.Current.SendDiagnosticMessage("Could not kill the gateway child during cleanup: " + exception.Message);
         }
 
         try
@@ -553,8 +550,9 @@ public sealed class LegacySignatureStartupTests
                 process.WaitForExit();
             }
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException exception)
         {
+            TestContext.Current.SendDiagnosticMessage("Could not wait for the gateway child during cleanup: " + exception.Message);
         }
     }
 }

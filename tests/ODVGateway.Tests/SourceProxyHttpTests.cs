@@ -73,11 +73,14 @@ public sealed class SourceProxyHttpTests
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             RequestCount++;
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StreamContent(new UnknownLengthStream(new byte[length]))
-            });
+            return Task.FromResult(CreateResponse());
         }
+
+        // Returning the response transfers ownership to HttpClient; do not dispose it here.
+        private HttpResponseMessage CreateResponse() => new(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(new UnknownLengthStream(new byte[length]))
+        };
     }
 
     // Multiple reads and no Content-Length reproduce a chunked upstream response.
