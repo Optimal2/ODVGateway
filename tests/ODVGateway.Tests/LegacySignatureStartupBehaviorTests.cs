@@ -17,22 +17,31 @@ public sealed partial class LegacySignatureStartupTests
     public async Task PrepRequestContent_IsDisposedAfterPost()
     {
         HttpContent? sentContent = null;
+        TrackingHttpResponseMessage? handlerResponse = null;
         using var handler = new DelegateHttpHandler((request, _) =>
         {
             sentContent = request.Content;
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("{}", Encoding.UTF8, "application/json")
-            });
+            handlerResponse = CreateControlledResponse("{}");
+            return Task.FromResult<HttpResponseMessage>(handlerResponse);
         });
-        using var client = new HttpClient(handler) { BaseAddress = new Uri("http://unit.test") };
+        var client = new HttpClient(handler) { BaseAddress = new Uri("http://unit.test") };
 
-        using var response = await PostPrepAsync(
+        var response = await PostPrepAsync(
             client, new JsonObject { ["sessionId"] = "owned-content" }, TestContext.Current.CancellationToken);
 
         Assert.NotNull(sentContent);
         await Assert.ThrowsAsync<ObjectDisposedException>(
             async () => await sentContent.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        var trackedResponse = Assert.IsType<TrackingHttpResponseMessage>(response);
+        Assert.Same(handlerResponse, trackedResponse);
+        Assert.False(trackedResponse.IsDisposed);
+
+        client.Dispose();
+
+        Assert.False(trackedResponse.IsDisposed);
+        Assert.Equal("{}", await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken));
+        response.Dispose();
+        Assert.True(trackedResponse.IsDisposed);
     }
 
     [Fact]
@@ -49,18 +58,13 @@ public sealed partial class LegacySignatureStartupTests
     [Fact]
     public async Task MalformedHealthJson_IsDiagnosticAndNotChild()
     {
+        TrackingHttpResponseMessage? handlerResponse = null;
         using var handler = new DelegateHttpHandler((request, _) =>
         {
-            var response = new HttpResponseMessage(HttpStatusCode.OK)
-            {
-                Content = new StringContent("not-json", Encoding.UTF8, "application/json")
-            };
-            if (request.Headers.TryGetValues(CorrelationIdHeader, out var markers))
-            {
-                response.Headers.Add(CorrelationIdHeader, markers);
-            }
-
-            return Task.FromResult(response);
+            handlerResponse = CreateControlledResponse(
+                "not-json",
+                request.Headers.TryGetValues(CorrelationIdHeader, out var markers) ? markers : null);
+            return Task.FromResult<HttpResponseMessage>(handlerResponse);
         });
         using var client = new HttpClient(handler) { BaseAddress = new Uri("http://unit.test") };
         var diagnostics = new List<string>();
@@ -73,6 +77,8 @@ public sealed partial class LegacySignatureStartupTests
         Assert.False(probe.FromChild);
         var diagnostic = Assert.Single(diagnostics);
         Assert.StartsWith("Ignored malformed /health JSON: ", diagnostic, StringComparison.Ordinal);
+        Assert.NotNull(handlerResponse);
+        Assert.True(handlerResponse.IsDisposed);
     }
 
     [Theory]
@@ -133,10 +139,43 @@ public sealed partial class LegacySignatureStartupTests
         return await client.PostAsync("/prep", prepContent, cancellationToken);
     }
 
+    private static TrackingHttpResponseMessage CreateControlledResponse(
+        string body, IEnumerable<string>? correlationMarkers = null)
+    {
+        // The handler transfers response ownership to its caller: PostPrepAsync returns it to the
+        // test, while ProbeHealthAsync consumes and disposes it. Neither the factory nor the handler
+        // may dispose a response that escapes through the handler.
+        var response = new TrackingHttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json")
+        };
+        if (correlationMarkers is not null)
+        {
+            response.Headers.Add(CorrelationIdHeader, correlationMarkers);
+        }
+
+        return response;
+    }
+
     private sealed class DelegateHttpHandler(
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken) => handler(request, cancellationToken);
+    }
+
+    private sealed class TrackingHttpResponseMessage(HttpStatusCode statusCode) : HttpResponseMessage(statusCode)
+    {
+        public bool IsDisposed { get; private set; }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                IsDisposed = true;
+            }
+
+            base.Dispose(disposing);
+        }
     }
 }
