@@ -68,6 +68,20 @@ public sealed class GatewaySessionStoreTests
     }
 
     [Fact]
+    public async Task WaitForHandoffLookupKeyAsync_CancelledWhileWaiting_ThrowsOperationCanceledException()
+    {
+        var store = CreateStore();
+        var key = SessionKeyFactory.CreateHandoffLookupKey(CreatePrep());
+
+        using var cancellation = new CancellationTokenSource();
+        var wait = store.WaitForHandoffLookupKeyAsync(key, TimeSpan.FromSeconds(30), cancellation.Token);
+        await Task.Delay(200, TestContext.Current.CancellationToken);
+        await cancellation.CancelAsync();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => wait);
+    }
+
+    [Fact]
     public async Task WaitForHandoffLookupKeyAsync_ZeroTimeout_ChecksOnce()
     {
         var store = CreateStore();

@@ -3,8 +3,11 @@
 Base: `e274825107e476867b4f78c1b12976a5d0a32be8`.
 
 Scope: `cs/local-not-disposed`, `cs/empty-catch-block`, and `cs/path-combine` only.
-No finding was dismissed and no analyzer suppression was added. The production request,
-configuration, authentication, and trusted-source paths were not changed.
+No finding was dismissed in the scanner and no analyzer suppression was added. Two
+shared-file `cs/path-combine` rows were evaluated and intentionally retained unchanged
+by design, with the rationale recorded in the dispositions below; that evaluation is
+not a scanner dismissal. The production request, configuration, authentication, and
+trusted-source paths were not changed.
 
 ## Before counts
 
@@ -40,8 +43,8 @@ preserve the original WP5 dispositions.
 | `cs/local-not-disposed` | `tests/ODVGateway.Tests/LegacySignatureStartupTests.cs:487` | `LegacySignatureStartupTests.cs:492`, `GetFreeLoopbackPort` | **Fixed and behavior-tested.** `FreeLoopbackPort_CanBeReboundAfterProbe` exclusively rebinds the returned port, proving that the temporary listener no longer owns it. |
 | `cs/local-not-disposed` | `tests/ODVGateway.Tests/SourceProxyHttpTests.cs:76` | `SourceProxyHttpTests.cs:106`, `CreateResponse` | **Rewritten with ownership preserved and corrected rationale.** The consuming caller owns and disposes the response; `HttpClient` does not dispose it. `EscapingHandlerResponse_RemainsUsableUntilConsumerDisposesIt` disposes the client, reads the still-live response, then disposes the response and observes both response and stream disposal. This file is unchanged by the recovery. |
 | `cs/path-combine` | `tests/ODVGateway.Tests/LegacySignatureStartupTests.cs:323` | `LegacySignatureStartupTests.cs:322`, `BootGatewayAsync` | **Fixed.** The gateway assembly path uses `Path.Join`. The three preserved process-boot tests exercise this path by starting the built gateway. |
-| `cs/path-combine` | `build/DeterministicRazor/DeterministicRazorGenerator.cs:27` | unchanged `:27` | **Rejected as no-value churn; correct by design.** The second operand is a constant relative DLL filename beneath the trusted compiler directory, so it cannot be rooted and `Path.Combine` cannot discard the base. `Path.Join` adds no clarity here. A local rewrite would also create shared-file byte-identity churn under Check 15 for other consumers. No rewrite, suppression, dismissal, or follow-up is warranted. |
-| `cs/path-combine` | `build/DeterministicRazor/DeterministicRazorGenerator.cs:28` | unchanged `:28` | **Rejected for the same value reason as line 27.** The file remains byte-identical by design, not deferred work. |
+| `cs/path-combine` | `build/DeterministicRazor/DeterministicRazorGenerator.cs:27` | unchanged `:27` | **Retained unchanged by design; correct by design, not a scanner dismissal.** The second operand is a constant relative DLL filename beneath the trusted compiler directory, so it cannot be rooted and `Path.Combine` cannot discard the base. `Path.Join` adds no clarity here. A local rewrite would also break byte-identity with the canonical OpenModulePlatform copy (measured Check 15 drift failure). No rewrite, suppression, or follow-up is warranted. |
+| `cs/path-combine` | `build/DeterministicRazor/DeterministicRazorGenerator.cs:28` | unchanged `:28` | **Retained unchanged for the same reason as line 27; not a scanner dismissal.** The file remains byte-identical by design, not deferred work. |
 | `cs/empty-catch-block` | `tests/ODVGateway.Tests/LegacySignatureStartupTests.cs:478` | `LegacySignatureStartupTests.cs:482`, `ProbeHealthAsync` | **Fixed and behavior-tested.** Malformed health JSON is classified as not belonging to the child and emits a diagnostic. `MalformedHealthJson_IsDiagnosticAndNotChild` supplies invalid JSON through a controlled handler and asserts both outcomes. |
 | `cs/empty-catch-block` | `tests/ODVGateway.Tests/LegacySignatureStartupTests.cs:525` | `LegacySignatureStartupTests.cs:524`, `ObserveAbandonedProbeAsync` | **Fixed and behavior-tested.** Controlled cancellation and HTTP tasks produce diagnostics; an unexpected `InvalidOperationException` still propagates without a diagnostic. |
 | `cs/empty-catch-block` | `tests/ODVGateway.Tests/LegacySignatureStartupTests.cs:544` | `LegacySignatureStartupTests.cs:546`, `KillAndDrain` kill boundary | **Fixed and behavior-tested.** An unstarted, owned, harmless `Process` produces the filtered `InvalidOperationException`; the test observes the kill diagnostic without starting or targeting any external process. |
