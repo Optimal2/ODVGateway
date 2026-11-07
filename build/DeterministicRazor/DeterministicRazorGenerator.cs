@@ -24,6 +24,9 @@ public sealed class DeterministicRazorGenerator : ISourceGenerator
         if (!context.AnalyzerConfigOptions.GlobalOptions.TryGetValue("build_property.OmpRazorCompilerDirectory", out var directory))
             throw new InvalidOperationException("The OMP Razor compiler directory was not provided.");
         var loader = AssemblyLoadContext.GetLoadContext(typeof(DeterministicRazorGenerator).Assembly)!;
+        // The second operand of each combination is a fixed relative compiler DLL
+        // name, so it cannot replace the compiler directory it is combined with:
+        // the combined path stays inside that directory.
         loader.LoadFromAssemblyPath(Path.Combine(directory, "Microsoft.AspNetCore.Razor.Utilities.Shared.dll"));
         loader.LoadFromAssemblyPath(Path.Combine(directory, "Microsoft.CodeAnalysis.Razor.Compiler.dll"));
         Generate(context);
