@@ -8,6 +8,24 @@ for its `0.1.x` release line.
 
 ## [Unreleased]
 
+## [0.1.45] - 2026-11-09
+
+### Added
+
+- `prepHandoffWaitMilliseconds` (default 5000, capped at 30000, `0` disables): a viewer
+  request that arrives before its own `/prep` has been stored waits for it instead of
+  reporting "Prepared ODVGateway session was not found"; `WaitedMs` is logged on both outcomes.
+- `tools/appsettings-generator`: builds a site `appsettings.json` from the shipped sample and a
+  site profile, checks a site file for drift after an upgrade, and reads samples from release tags.
+
+### Changed
+
+- The default Content-Security-Policy (used when `contentSecurityPolicy` is `null`) allows
+  `'wasm-unsafe-eval'` for OpenDocViewer's opt-in OCR and pdf.js decoders, without JavaScript
+  `eval` or new script origins.
+- Checkout line endings are pinned so the OMP artifact is reproducible; test dependency
+  Microsoft.AspNetCore.Mvc.Testing 10.0.14; OMP helpers synced with OpenModulePlatform.
+
 ### Removed
 
 - Removed server-side PDF signature validation, its isolated worker mode, the

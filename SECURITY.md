@@ -6,19 +6,9 @@ OpenModulePlatform artifact.
 
 Security issues should be reported privately before public disclosure.
 
-## Unreleased artifact policy update (2026-11-03)
-
-The default CSP, used when `contentSecurityPolicy` is `null`, now includes
-`'wasm-unsafe-eval'` for OpenDocViewer's opt-in OCR and pdf.js decoders. It permits
-WebAssembly compilation without enabling JavaScript `eval`/`new Function` or adding
-script origins. Existing bootstrap/style permissions remain unchanged. Explicit
-site policies still override the entire default and must include this token if OCR
-is enabled; the viewer's own HTML meta CSP must permit WebAssembly as well.
-This OMP artifact update is not an official release.
-
 ## Supported Versions
 
-**ODVGateway v0.1.44** is the current supported release and the recommended
+**ODVGateway v0.1.45** is the current supported release and the recommended
 deployment target. The OMP artifact version that ships the supported build is
 `0.1.74` (`odvgateway-web` in `omp-components.json`, bumped after the v0.1.44
 release commit as `scripts/release.ps1` instructs; `0.1.73` holds the same
@@ -40,7 +30,8 @@ test-standard and dependency updates listed below.
 
 | Version | Security support | Notes |
 | --- | --- | --- |
-| 0.1.44 | :white_check_mark: | Current recommended release and only supported baseline |
+| 0.1.45 | :white_check_mark: | Current recommended release and only supported baseline |
+| 0.1.44 | :x: | Superseded by v0.1.45: server-side signature validation and its worker removed (the viewer checks signatures itself), default CSP permits `'wasm-unsafe-eval'` for the viewer's opt-in OCR, a viewer request racing its `/prep` waits for it |
 | 0.1.43 | :x: | Superseded by v0.1.44: server-side PDF signature validation (off by default, isolated worker process), startup warning for a disabled bundle handoff, release SBOM, themed status pages, build output reproducible across checkout paths |
 | 0.1.42 | :x: | Superseded by v0.1.43: the default Content-Security-Policy no longer blocks the viewer's PDF print path or its PDF worker |
 | 0.1.41 | :x: | Superseded by v0.1.42: the handoff redirect keeps the WebClient initiator visible, so `allowedInitiatorUrls` works with the default bundle handoff |
@@ -51,8 +42,16 @@ test-standard and dependency updates listed below.
 
 ## Recent release context
 
-The most recent releases are listed below for operational context. Only v0.1.44
+The most recent releases are listed below for operational context. Only v0.1.45
 is supported.
+
+### ODVGateway v0.1.45
+Changes since v0.1.44:
+
+- Server-side PDF signature validation, the `/signatures/{sessionKey}/{fileIndex}` endpoint, its isolated worker process and the PdfPig and System.Security.Cryptography.Pkcs runtime dependencies are removed, which removes their attack surface; OpenDocViewer v2.12.0 checks signature integrity in the browser and makes no signature request. A legacy `signatures` section is ignored and the retired `--signature-worker` argument starts the normal web host.
+- The default Content-Security-Policy (when `contentSecurityPolicy` is `null`) allows `'wasm-unsafe-eval'` in `script-src` for the viewer's opt-in OCR and pdf.js decoders. It permits WebAssembly compilation only: JavaScript `eval`/`new Function` stay blocked and no script origin is added; the bootstrap and style permissions are unchanged. Explicit site policies override the whole default and must include the token if OCR is enabled; the viewer's own HTML meta CSP must permit WebAssembly as well.
+- A viewer request that arrives before its `/prep` has been stored waits up to `prepHandoffWaitMilliseconds` (default 5000, capped at 30000) for it; the session lookup and its authorization are unchanged.
+- CodeQL findings were resolved (disposal of locals, exact P/Invoke entry points, shadowed parameters, a drained truncated stream), checkout line endings are pinned for reproducible artifacts, and the release still carries a CycloneDX SBOM.
 
 ### ODVGateway v0.1.44
 Changes since v0.1.43:
