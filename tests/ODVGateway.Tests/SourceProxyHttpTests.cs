@@ -13,6 +13,33 @@ public sealed class SourceProxyHttpTests
     private const int Limit = 128 * 1024;
 
     [Theory]
+    [InlineData("jxl", "image/jxl")]
+    [InlineData("avif", "image/avif")]
+    public async Task Source_NewImageFormats_ReturnsMappedMimeAndUnchangedBytes(string extension, string contentType)
+    {
+        using var factory = new ProxyFactory(64);
+        using var client = factory.CreateClient();
+        var session = factory.Services.GetRequiredService<GatewaySessionStore>().Store(new WebClientPrepRequest
+        {
+            UserId = "test-user",
+            SessionId = "test-session",
+            PortableDocuments = [new WebClientPortableDocument
+            {
+                DocumentId = "document-1",
+                FileData = [$"file-1|{extension}|"]
+            }]
+        }).Session!;
+
+        using var response = await client.GetAsync($"/source/{session.SessionKey}/0", TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(contentType, response.Content.Headers.ContentType?.MediaType);
+        // Transport-only test data: the gateway must stream bytes without decoding them.
+        Assert.Equal(new byte[64], await response.Content.ReadAsByteArrayAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(1, factory.Handler.RequestCount);
+    }
+
+    [Theory]
     [InlineData(Limit - 1, HttpStatusCode.OK)]
     [InlineData(Limit, HttpStatusCode.OK)]
     [InlineData(Limit + 1, HttpStatusCode.BadGateway)]

@@ -8,6 +8,12 @@ for its `0.1.x` release line.
 
 ## [Unreleased]
 
+### Added
+
+- JPEG XL (`jxl` / `image/jxl`) and AVIF (`avif` / `image/avif`) source MIME mappings
+  and default inline/remote-inline allowlists, including both shipped configuration templates.
+  The gateway streams source bytes unchanged; decoding remains in OpenDocViewer.
+
 ## [0.1.45] - 2026-11-09
 
 ### Added

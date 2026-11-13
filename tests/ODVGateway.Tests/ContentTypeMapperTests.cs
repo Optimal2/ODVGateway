@@ -26,6 +26,8 @@ public sealed class ContentTypeMapperTests
     [InlineData("bmp", "image/bmp")]
     [InlineData("gif", "image/gif")]
     [InlineData("webp", "image/webp")]
+    [InlineData("jxl", "image/jxl")]
+    [InlineData("avif", "image/avif")]
     public void GetContentType_ReturnsDefaultMapping(string extension, string expected)
     {
         var mapper = CreateMapper();
@@ -38,6 +40,8 @@ public sealed class ContentTypeMapperTests
     [InlineData(".pdf", "application/pdf")]
     [InlineData("  .PDF ", "application/pdf")]
     [InlineData(".Tiff", "image/tiff")]
+    [InlineData("  .JXL ", "image/jxl")]
+    [InlineData(".AVIF", "image/avif")]
     public void GetContentType_NormalizesCaseLeadingDotAndWhitespace(string extension, string expected)
     {
         var mapper = CreateMapper();

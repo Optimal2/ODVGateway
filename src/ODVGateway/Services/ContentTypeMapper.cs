@@ -19,7 +19,9 @@ public sealed class ContentTypeMapper
             ["png"] = "image/png",
             ["bmp"] = "image/bmp",
             ["gif"] = "image/gif",
-            ["webp"] = "image/webp"
+            ["webp"] = "image/webp",
+            ["jxl"] = "image/jxl",
+            ["avif"] = "image/avif"
         };
 
         foreach (var entry in options.Value.ContentTypes)

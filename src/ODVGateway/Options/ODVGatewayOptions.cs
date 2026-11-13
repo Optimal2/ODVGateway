@@ -134,7 +134,9 @@ public sealed class InlineSourceOptions
         "png",
         "bmp",
         "gif",
-        "webp"
+        "webp",
+        "jxl",
+        "avif"
     ];
 }
 
@@ -179,7 +181,9 @@ public sealed class RemoteInlineSourceOptions
         "png",
         "bmp",
         "gif",
-        "webp"
+        "webp",
+        "jxl",
+        "avif"
     ];
 }
 
