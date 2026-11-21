@@ -88,6 +88,31 @@ public sealed class WebClientHandoffGuardTests
     }
 
     [Fact]
+    public void Validate_NonMatchingInitiator_RejectionCarriesTheAttemptedInitiator()
+    {
+        var guard = CreateGuard();
+        var request = CreateRequest();
+        request.Headers.Referer = "https://evil.example/phishing";
+
+        var result = guard.Validate(request);
+
+        Assert.False(result.IsAllowed);
+        Assert.Equal("https://evil.example/phishing", result.Initiator);
+    }
+
+    [Fact]
+    public void Validate_MissingInitiatorHeaders_RejectionHasNoInitiator()
+    {
+        var guard = CreateGuard(allowMissingInitiatorHeaders: false);
+        var request = CreateRequest();
+
+        var result = guard.Validate(request);
+
+        Assert.False(result.IsAllowed);
+        Assert.Null(result.Initiator);
+    }
+
+    [Fact]
     public void Validate_MissingInitiatorHeaders_AllowsWhenConfigured()
     {
         var guard = CreateGuard(allowMissingInitiatorHeaders: true);

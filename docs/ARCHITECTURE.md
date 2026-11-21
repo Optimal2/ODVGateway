@@ -169,7 +169,7 @@ for production; IIS or the host decides it.
 | --- | --- | --- |
 | `GET /health` | `MapGet("/health")` | JSON snapshot; `200` with `status: "ok"`, `503` with `status: "degraded"` when no dist folder resolves. |
 | `POST /prep` | `MapPost("/prep")` | `200` with `sessionKey`, counts and `expiresUtc`; `400` bad payload; `403` guard rejection; `429` store full. |
-| `GET /`, `GET /index.html` | `RenderViewerAsync` | Viewer HTML, a `302` to `?bundleUrl=`, or a status page (`400`, `404`, `503`). |
+| `GET /`, `GET /index.html` | `RenderViewerAsync` | Viewer HTML, a `302` to `?bundleUrl=`, or a status page (`400`, `403`, `404`, `503`; `Vary: Cookie`, `Cache-Control: no-store`). |
 | `GET /bundle/{sessionKey}` | `MapGet("/bundle/{sessionKey}")` | Bundle JSON with `X-ODVGateway-*` diagnostics headers; `404` when unknown or expired. |
 | `GET`/`HEAD /source/{sessionKey}/{fileIndex:int}` | `MapMethods("/source/...")` | One file: direct with range support, or an upstream proxy; `403`, `404`, `502`, or a forwarded upstream failure status. |
 | `GET /source-pack/{sessionKey}` | `MapGet("/source-pack/{sessionKey}")` | All files of the session in one `odvsp1` stream. |
@@ -417,7 +417,7 @@ Settings that change behaviour most:
 | `webClientSourceFallback.requireSameHost` / `allowedHosts` | `true` / `[]` | Which hosts the gateway may call or link. |
 | `openDocViewerDistPath` / `requireExplicitOpenDocViewerDistPath` | `""` / `false` | Where the viewer comes from; whether probing is allowed. |
 | `sessionTtlMinutes` / `maxConcurrentSessions` | `30` / `50000` | Session lifetime and capacity. |
-| `maxSourcePackFrameBytes` / `maxSourceProxyBytes` | 64 MiB / same | Per-file byte caps. |
+| `maxSourcePackFrameBytes` / `maxSourceProxyBytes` | 64 MiB / `0` (follows `maxSourcePackFrameBytes`) | Per-file byte caps. |
 | `contentSecurityPolicy` | `null` | Replaces the default CSP. |
 | `metadataAliases` | `{}` | Copies chosen metadata fields into `metadata` for print templates. |
 | Top-level `AllowedHosts` | `localhost;127.0.0.1` in the sample | ASP.NET Core host filtering. |
@@ -564,7 +564,8 @@ Known failure modes:
 
 | Symptom | Cause in code |
 | --- | --- |
-| `403` on `/prep` or the viewer | Initiator not in `allowedInitiatorUrls`, or an extra `Referrer-Policy` from IIS or a proxy stripped the `Referer` on the redirect (comment in `RenderViewerAsync` and `web.config`). |
+| `403` on `/prep` or the viewer | Initiator not in `allowedInitiatorUrls`, or an extra `Referrer-Policy` from IIS or a proxy stripped the `Referer` on the redirect (comment in `RenderViewerAsync` and `web.config`). The rejection log names the refused initiator. |
+| `403` on `/source` for a trusted file path | The file resolved under `trustedSourceRoots` but the OS denied the data read; fix the file ACL. (`404` means not found; the other `403` means `trustClientFilePath` is off.) |
 | "Prepared ODVGateway session was not found" (`404`) | `/prep` did not arrive within `prepHandoffWaitMilliseconds`, the session expired, the process restarted, or a second instance served the request. |
 | `429` on `/prep` | `maxConcurrentSessions` reached. |
 | `503` status page or `/health` degraded | No readable `index.html` in the dist folder. |

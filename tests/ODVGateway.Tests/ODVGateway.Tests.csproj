@@ -23,5 +23,13 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\ODVGateway\ODVGateway.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- The OMP artifact baseline is excluded from the web app output
+         (Content Remove in the web project), so link it into the test output
+         under its own name for the shipped-configuration parity tests. -->
+    <Content Include="..\..\src\ODVGateway\Packaging\appsettings.json" Link="packaging.appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
 
 </Project>

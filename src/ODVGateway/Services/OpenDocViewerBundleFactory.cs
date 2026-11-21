@@ -218,7 +218,7 @@ public sealed class OpenDocViewerBundleFactory
         {
             "pdf" => "pdf",
             "tif" or "tiff" => "tiff",
-            "jpg" or "jpeg" or "png" or "bmp" or "gif" or "webp" => "raster-single-page",
+            "jpg" or "jpeg" or "png" or "bmp" or "gif" or "webp" or "jxl" or "avif" => "raster-single-page",
             _ => "unknown"
         };
     }
@@ -322,8 +322,8 @@ public sealed class OpenDocViewerBundleFactory
                 Key = id,
                 Value = EmptyToNull(field.Value),
                 LookupValue = EmptyToNull(field.LookupValue),
-                RawValue = EmptyToNull(field.Value),
-                RawLookupValue = EmptyToNull(field.LookupValue)
+                RawValue = field.Value,
+                RawLookupValue = field.LookupValue
             };
 
             meta.Add(record);

@@ -1,8 +1,14 @@
 using System.Net;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
+using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using ODVGateway.Models;
+using ODVGateway.Services;
 
 namespace ODVGateway.Tests;
 
@@ -200,6 +206,148 @@ public sealed class GatewayHttpStatusTests
         Assert.Contains("frame-src 'self' blob:", csp);
         Assert.Contains("connect-src 'self' blob:", csp);
     }
+
+    [Fact]
+    public async Task StatusPage_SendsVaryCookieAndNoStore()
+    {
+        // The status pages vary with the OMP_THEME_PREFERENCE cookie, so
+        // caches must key on Cookie and must not store the page at all.
+        using var factory = new GatewayFactory(distPath: null);
+        using var client = factory.CreateClient();
+
+        using var response = await client.GetAsync("/", TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("no-store", response.Headers.CacheControl?.ToString());
+        Assert.True(response.Headers.TryGetValues("Vary", out var vary));
+        Assert.Contains(vary, value => value.Contains("Cookie", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Viewer_WithUndecodableSessionData_Returns400HtmlStatusPage()
+    {
+        // The viewer flow is browser-facing: like the missing-sessiondata
+        // page, an undecodable token answers with a themed HTML status page,
+        // not a bare JSON string.
+        using var factory = new GatewayFactory(distPath: null);
+        using var client = factory.CreateClient();
+
+        using var response = await client.GetAsync(
+            "/?sessiondata=!!!not-base64!!!", TestContext.Current.CancellationToken);
+        var html = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("text/html", response.Content.Headers.ContentType?.MediaType);
+        Assert.Contains("could not be decoded", html);
+    }
+
+    [Fact]
+    public async Task Viewer_WithRejectedHandoff_Returns403HtmlStatusPage()
+    {
+        // Same for a rejected hand-over: the viewer answers with the themed
+        // page that carries the reason, not a bare 403.
+        using var factory = new GatewayFactory(distPath: null, allowedInitiatorUrl: "/WebClientODV/DocumentView");
+        using var client = factory.CreateClient();
+        var sessionData = EncodeBase64Url("""{"userId":"u1","sessionId":"s1"}""");
+
+        using var response = await client.GetAsync(
+            "/?sessiondata=" + sessionData, TestContext.Current.CancellationToken);
+        var html = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("text/html", response.Content.Headers.ContentType?.MediaType);
+        Assert.Contains("handoff", html, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Health_DefaultConfiguration_ProxyCapFollowsFrameCap()
+    {
+        // maxSourceProxyBytes 0 means "follow maxSourcePackFrameBytes"
+        // (GetMaxSourceProxyBytes); /health must echo them as equal.
+        using var factory = new GatewayFactory(distPath: null);
+        using var client = factory.CreateClient();
+
+        using var response = await client.GetAsync("/health", TestContext.Current.CancellationToken);
+        var payload = JsonNode.Parse(
+            await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))!.AsObject();
+
+        Assert.Equal(
+            payload["maxSourcePackFrameBytes"]!.GetValue<long>(),
+            payload["maxSourceProxyBytes"]!.GetValue<long>());
+    }
+
+    [Fact]
+    public async Task Source_WhenDirectFileCannotBeRead_Returns403()
+    {
+        // FileInfo.Exists succeeds on attributes alone (a data-read denial
+        // still resolves), so the /source endpoint must map the refused
+        // OpenRead to 403 instead of a generic 500. The data-read denial
+        // needs an ACL, so this probe is Windows-only.
+        if (!OperatingSystem.IsWindows())
+        {
+            TestContext.Current.SendDiagnosticMessage("Skipped: the read-deny ACL probe is Windows-only.");
+            return;
+        }
+
+        var root = NewTempDirectoryPath();
+        Directory.CreateDirectory(root);
+        var filePath = Path.Join(root, "denied.pdf");
+        File.WriteAllBytes(filePath, [1, 2, 3]);
+        DenyReadData(filePath);
+        try
+        {
+            using var factory = new GatewayFactory(
+                distPath: null, trustClientFilePath: true, trustedSourceRoot: root);
+            var session = factory.Services.GetRequiredService<GatewaySessionStore>().Store(new WebClientPrepRequest
+            {
+                UserId = "u1",
+                SessionId = "s1",
+                PortableDocuments = [new WebClientPortableDocument
+                {
+                    DocumentId = "d1",
+                    FileData = ["f1|pdf|" + filePath]
+                }]
+            }).Session!;
+            using var client = factory.CreateClient();
+
+            using var response = await client.GetAsync(
+                $"/source/{Uri.EscapeDataString(session.SessionKey)}/0",
+                TestContext.Current.CancellationToken);
+
+            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        }
+        finally
+        {
+            AllowReadData(filePath);
+            DeleteTempDirectory(root);
+        }
+    }
+
+    // The ACL probe below is Windows-only; the caller returns early on other
+    // platforms before touching it.
+#pragma warning disable CA1416
+    private static void DenyReadData(string path)
+    {
+        var info = new FileInfo(path);
+        var security = info.GetAccessControl();
+        security.AddAccessRule(new FileSystemAccessRule(
+            new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+            FileSystemRights.ReadData,
+            AccessControlType.Deny));
+        info.SetAccessControl(security);
+    }
+
+    private static void AllowReadData(string path)
+    {
+        var info = new FileInfo(path);
+        var security = info.GetAccessControl();
+        security.RemoveAccessRule(new FileSystemAccessRule(
+            new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+            FileSystemRights.ReadData,
+            AccessControlType.Deny));
+        info.SetAccessControl(security);
+    }
+#pragma warning restore CA1416
 
     private static string ThemeCookie(string mode)
     {
@@ -454,6 +602,8 @@ public sealed class GatewayHttpStatusTests
         private readonly string? _contentRoot;
         private readonly string? _allowedInitiatorUrl;
         private readonly bool _useBundleUrlHandoff;
+        private readonly bool _trustClientFilePath;
+        private readonly string? _trustedSourceRoot;
 
         // allowFallbackWithoutSession lets a probe reach OpenDocViewerIndexRenderer
         // without a prepared session. Without it every request to "/" stops at the
@@ -465,7 +615,9 @@ public sealed class GatewayHttpStatusTests
             bool requireExplicitDistPath = true,
             string? contentRoot = null,
             string? allowedInitiatorUrl = null,
-            bool useBundleUrlHandoff = true)
+            bool useBundleUrlHandoff = true,
+            bool trustClientFilePath = false,
+            string? trustedSourceRoot = null)
         {
             _distPath = distPath;
             _allowFallbackWithoutSession = allowFallbackWithoutSession;
@@ -473,6 +625,8 @@ public sealed class GatewayHttpStatusTests
             _contentRoot = contentRoot;
             _allowedInitiatorUrl = allowedInitiatorUrl;
             _useBundleUrlHandoff = useBundleUrlHandoff;
+            _trustClientFilePath = trustClientFilePath;
+            _trustedSourceRoot = trustedSourceRoot;
         }
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -488,15 +642,22 @@ public sealed class GatewayHttpStatusTests
 
             builder.ConfigureAppConfiguration((_, configuration) =>
             {
-                configuration.AddInMemoryCollection(new Dictionary<string, string?>
+                var overrides = new Dictionary<string, string?>
                 {
                     ["ODVGateway:OpenDocViewerDistPath"] = _distPath ?? string.Empty,
                     ["ODVGateway:RequireExplicitOpenDocViewerDistPath"] = _requireExplicitDistPath ? "true" : "false",
                     ["ODVGateway:AllowOpenDocViewerFallbackWithoutSession"] =
                         _allowFallbackWithoutSession ? "true" : "false",
                     ["ODVGateway:WebClientHandoff:AllowedInitiatorUrls:0"] = _allowedInitiatorUrl,
-                    ["ODVGateway:UseBundleUrlHandoff"] = _useBundleUrlHandoff ? "true" : "false"
-                });
+                    ["ODVGateway:UseBundleUrlHandoff"] = _useBundleUrlHandoff ? "true" : "false",
+                    ["ODVGateway:TrustClientFilePath"] = _trustClientFilePath ? "true" : "false"
+                };
+                if (_trustedSourceRoot is not null)
+                {
+                    overrides["ODVGateway:TrustedSourceRoots:0"] = _trustedSourceRoot;
+                }
+
+                configuration.AddInMemoryCollection(overrides);
             });
         }
     }

@@ -43,16 +43,22 @@ public sealed class WebClientHandoffGuard
             return HandoffGuardResult.Allowed();
         }
 
+        // TryMatchHeader leaves the last parseable initiator in the out
+        // variable even when nothing matched, so the rejection log can name
+        // the initiator that was refused instead of logging an empty one.
+        // The text is scheme://authority + path only (no query), built from
+        // an http(s) URI, so it is safe to log.
         return Reject(
             hasInitiatorHeader
                 ? "The request initiator is not allowed for ODVGateway handoff."
-                : "The request did not include Origin or Referer headers for ODVGateway handoff.");
+                : "The request did not include Origin or Referer headers for ODVGateway handoff.",
+            referer ?? origin);
     }
 
-    private HandoffGuardResult Reject(string reason)
+    private HandoffGuardResult Reject(string reason, string? initiator)
     {
         Interlocked.Increment(ref _rejectedCount);
-        return HandoffGuardResult.Rejected(reason);
+        return HandoffGuardResult.Rejected(reason, initiator);
     }
 
     private static bool TryMatchHeader(
@@ -168,9 +174,9 @@ public sealed record HandoffGuardResult(bool IsAllowed, string? Reason, string? 
         return new HandoffGuardResult(true, null, initiator);
     }
 
-    public static HandoffGuardResult Rejected(string reason)
+    public static HandoffGuardResult Rejected(string reason, string? initiator = null)
     {
-        return new HandoffGuardResult(false, reason, null);
+        return new HandoffGuardResult(false, reason, initiator);
     }
 }
 

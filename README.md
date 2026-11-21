@@ -9,7 +9,7 @@ ticket stream, or both. ODVGateway is also packaged as an OpenModulePlatform
 
 Current application version (`Directory.Build.props` `<Version>`):
 **v0.1.45**. Current OMP artifact version (`omp-components.json`):
-**0.1.88**. The two lines are deliberately independent — the OMP artifact
+**0.1.89**. The two lines are deliberately independent — the OMP artifact
 can move for a deployable change without an official release, and an
 official release can ship without bumping the artifact. Read both numbers
 out of their files; this paragraph names them once and can lag. Verified
@@ -166,7 +166,7 @@ changed by this repository alone.
 | `webClientSourceFallback.proxyThroughGatewayAboveSourceCount` | `1000` | Below this count the viewer is given the WebClient ticket URL; above it the gateway proxies. |
 | `webClientSourceFallback.proxyMaxConcurrency` | `14` | Shared per-process cap for upstream host fetches from both `/source` and `/source-pack`. |
 | `maxSourcePackFrameBytes` | 64 MiB | Per-frame cap for `application/vnd.opendocviewer.source-pack`. |
-| `maxSourceProxyBytes` | `maxSourcePackFrameBytes` | Per-response cap for the proxied `/source` path. |
+| `maxSourceProxyBytes` | `0` (follows `maxSourcePackFrameBytes`) | Per-response cap for the proxied `/source` path. |
 | `sourcePackStreamBufferBytes` | 128 KiB | Stream copy chunk size (clamped to 4 KiB – 1 MiB). |
 | `inlineSources.*` | see `appsettings.json` | Bound and reported by `/health` only. The current bundle factory never embeds source bytes in the bundle (`OpenDocViewerBundleFactory.BuildViewerFile` sets `InlineBase64 = null`), because WebClient tickets can be one-use. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#6-configuration). |
 | `remoteInlineSources.*` | see `appsettings.json` | No prefetch happens. Only `requestTimeoutMs`, `retryCount`, `retryBaseDelayMs`, `aspxAuthCookieNames` and `sessionCookieNames` are used, by the `/source` proxy and the source pack when they fetch from WebClient. The other keys are reported by `/health` only. |

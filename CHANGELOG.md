@@ -26,6 +26,29 @@ for its `0.1.x` release line.
   Microsoft.Bcl.AsyncInterfaces 10.0.15), xunit.v3.mtp-off 4.0.2 and
   xunit.runner.visualstudio 4.0.1.
 
+### Fixed
+
+- `GET /source` answers `403` instead of a generic `500` when a trusted file
+  resolves but the OS denies the data read (`FileInfo.Exists` succeeds on
+  attributes alone, so the refusal surfaces only at open time).
+- Scheme-relative (`//host/path`) WebClient file paths are checked against the
+  fallback allowlist with the request scheme again, instead of falling through
+  to the ticket-URL template.
+- `jxl` and `avif` sources classify as `raster-single-page` with a page-count
+  hint of 1, like the other single-page raster formats.
+- Bundle `RawValue` / `RawLookupValue` carry the host system's exact metadata
+  strings; only `Value` / `LookupValue` map blank to null.
+- Rejected hand-over log lines name the refused initiator instead of logging
+  an empty `Initiator`.
+- Status pages carry `Vary: Cookie` and `Cache-Control: no-store`.
+- Viewer errors are even: an undecodable `sessiondata` and a rejected hand-over
+  answer with a themed HTML status page (`400` / `403`), as a missing
+  `sessiondata` already did. `POST /prep` keeps its JSON `400` / bare `403`.
+- The OMP artifact baseline (`Packaging/appsettings.json`) ships
+  `prepHandoffWaitMilliseconds` again, and both shipped templates leave
+  `maxSourceProxyBytes` at `0` so it follows `maxSourcePackFrameBytes` as
+  documented. Effective shipped caps are unchanged (both are 64 MiB).
+
 ## [0.1.45] - 2026-11-09
 
 ### Added

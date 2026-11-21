@@ -357,11 +357,27 @@ app.MapMethods("/source/{sessionKey}/{fileIndex:int}", ["GET", "HEAD"], async (
             httpContext.Response.Headers.CacheControl = cacheControl;
         }
 
-        return Results.File(
-            directSources.OpenRead(directSource),
-            contentTypes.GetContentType(source.Extension),
-            source.DisplayName,
-            enableRangeProcessing: true);
+        try
+        {
+            return Results.File(
+                directSources.OpenRead(directSource),
+                contentTypes.GetContentType(source.Extension),
+                source.DisplayName,
+                enableRangeProcessing: true);
+        }
+        catch (UnauthorizedAccessException ex)
+        {
+            // FileInfo.Exists succeeds on attributes alone, so a file whose
+            // data reads are denied still resolves here and fails only when
+            // it is opened. Answer 403 (not the generic 500 and not 404: the
+            // gateway is configured to serve this path but the OS refused).
+            logger.LogWarning(
+                ex,
+                "Direct source file could not be read. Index={FileIndex}, HasClientFilePath={HasClientFilePath}",
+                fileIndex,
+                !string.IsNullOrWhiteSpace(source.FilePath));
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
+        }
     }
 
     var proxyUrl = fallbackUrlBuilder.BuildFallbackUrl(
@@ -463,7 +479,8 @@ static async Task<IResult> RenderViewerAsync(
         var handoffResult = handoffGuard.Validate(context.Request);
         if (!handoffResult.IsAllowed)
         {
-            return RejectInvalidHandoff(logger, "viewer-bundle-query", handoffResult);
+            return RejectInvalidHandoff(
+                logger, "viewer-bundle-query", handoffResult, OmpThemePreference.ReadMode(context.Request));
         }
 
         return await renderer.RenderAsync(context, bundle: null, cancellationToken);
@@ -475,7 +492,8 @@ static async Task<IResult> RenderViewerAsync(
         var handoffResult = handoffGuard.Validate(context.Request);
         if (!handoffResult.IsAllowed)
         {
-            return RejectInvalidHandoff(logger, "viewer-sessiondata", handoffResult);
+            return RejectInvalidHandoff(
+                logger, "viewer-sessiondata", handoffResult, OmpThemePreference.ReadMode(context.Request));
         }
     }
 
@@ -500,19 +518,19 @@ static async Task<IResult> RenderViewerAsync(
     }
     catch (InvalidDataException ex)
     {
-        return RejectInvalidSessionData(logger, ex);
+        return RejectInvalidSessionData(logger, ex, OmpThemePreference.ReadMode(context.Request));
     }
     catch (JsonException ex)
     {
-        return RejectInvalidSessionData(logger, ex);
+        return RejectInvalidSessionData(logger, ex, OmpThemePreference.ReadMode(context.Request));
     }
     catch (FormatException ex)
     {
-        return RejectInvalidSessionData(logger, ex);
+        return RejectInvalidSessionData(logger, ex, OmpThemePreference.ReadMode(context.Request));
     }
     catch (ArgumentException ex)
     {
-        return RejectInvalidSessionData(logger, ex);
+        return RejectInvalidSessionData(logger, ex, OmpThemePreference.ReadMode(context.Request));
     }
 
     var handoffLookupKey = SessionKeyFactory.CreateHandoffLookupKey(sessionData);
@@ -570,20 +588,33 @@ static IResult RejectInvalidPrepPayload(ILogger logger, Exception ex)
     return Results.BadRequest(new { error = "Invalid WebClient prep payload." });
 }
 
-static IResult RejectInvalidSessionData(ILogger logger, Exception ex)
+static IResult RejectInvalidSessionData(ILogger logger, Exception ex, string? themeMode)
 {
     logger.LogWarning(ex, "Could not decode WebClient sessiondata.");
-    return Results.BadRequest("The WebClient sessiondata query parameter could not be decoded.");
+    return GatewayHtml.StatusPage(
+        "Invalid WebClient sessiondata",
+        "The WebClient sessiondata query parameter could not be decoded. Open the document from WebClient again.",
+        StatusCodes.Status400BadRequest,
+        themeMode);
 }
 
-static IResult RejectInvalidHandoff(ILogger logger, string operation, HandoffGuardResult result)
+static IResult RejectInvalidHandoff(ILogger logger, string operation, HandoffGuardResult result, string? themeMode = null)
 {
     logger.LogWarning(
         "Rejected ODVGateway handoff. Operation={Operation}, Reason={Reason}, Initiator={Initiator}",
         operation,
         result.Reason,
         result.Initiator);
-    return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (themeMode is null)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
+
+    return GatewayHtml.StatusPage(
+        "ODVGateway handoff was rejected",
+        result.Reason ?? "The request initiator is not allowed for ODVGateway handoff.",
+        StatusCodes.Status403Forbidden,
+        themeMode);
 }
 
 static string BuildViewerBundleUrl(HttpRequest request, GatewaySession session)

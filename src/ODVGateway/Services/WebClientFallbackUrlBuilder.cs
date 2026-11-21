@@ -78,6 +78,19 @@ public sealed class WebClientFallbackUrlBuilder
         var raw = sourcePath?.Trim();
         if (string.IsNullOrWhiteSpace(raw)) return null;
 
+        // A scheme-relative ("//host/path") reference carries the request
+        // scheme. Check it before Uri.TryCreate: on .NET "//host/path"
+        // parses as an absolute file:// URI, which would take the absolute
+        // branch below and be rejected as a non-http(s) URL.
+        if (raw.StartsWith("//", StringComparison.Ordinal))
+        {
+            var schemeRelative = $"{request.Scheme}:{raw}";
+            return Uri.TryCreate(schemeRelative, UriKind.Absolute, out var schemeRelativeUri) &&
+                IsAllowedWebClientFallbackUrl(request, schemeRelativeUri, options)
+                ? schemeRelativeUri.ToString()
+                : null;
+        }
+
         if (Uri.TryCreate(raw, UriKind.Absolute, out var absolute))
         {
             if (absolute.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
@@ -89,15 +102,6 @@ public sealed class WebClientFallbackUrlBuilder
             }
 
             return null;
-        }
-
-        if (raw.StartsWith("//", StringComparison.Ordinal))
-        {
-            var schemeRelative = $"{request.Scheme}:{raw}";
-            return Uri.TryCreate(schemeRelative, UriKind.Absolute, out var schemeRelativeUri) &&
-                IsAllowedWebClientFallbackUrl(request, schemeRelativeUri, options)
-                ? schemeRelativeUri.ToString()
-                : null;
         }
 
         if (raw.StartsWith("/", StringComparison.Ordinal))

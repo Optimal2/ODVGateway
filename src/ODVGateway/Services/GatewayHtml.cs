@@ -101,6 +101,23 @@ public static class GatewayHtml
 </html>
 """;
 
-        return Results.Content(html, "text/html; charset=utf-8", statusCode: statusCode);
+        return new ThemedStatusPage(html, statusCode);
+    }
+
+    // The page varies with the OMP_THEME_PREFERENCE cookie, so every status
+    // page carries "Vary: Cookie" (a cache that ignores it could serve the
+    // wrong theme) and "Cache-Control: no-store" (error pages must not be
+    // stored at all).
+    private sealed class ThemedStatusPage(string html, int statusCode) : IResult
+    {
+        public Task ExecuteAsync(HttpContext httpContext)
+        {
+            var response = httpContext.Response;
+            response.StatusCode = statusCode;
+            response.ContentType = "text/html; charset=utf-8";
+            response.Headers.CacheControl = "no-store";
+            response.Headers.Vary = "Cookie";
+            return response.WriteAsync(html);
+        }
     }
 }

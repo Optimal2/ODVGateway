@@ -181,17 +181,40 @@ public sealed class WebClientFallbackUrlBuilderTests
     }
 
     [Fact]
-    public void Build_FilePathSchemeRelative_IsParsedAsFileUriAndFallsThroughToTemplate()
+    public void Build_FilePathSchemeRelative_UsesTheRequestSchemeOnTheRequestHost()
     {
-        // Documents .NET URI behavior: "//host/path" parses as an absolute
-        // file:// URI, so the dedicated scheme-relative branch in
-        // BuildBrowserUrlFromSourcePath is effectively unreachable for this
-        // input and the builder falls through to the URL template instead.
+        // A scheme-relative ("//host/path") reference carries the request
+        // scheme. It must be checked before Uri.TryCreate: on .NET
+        // "//host/path" parses as an absolute file:// URI, which would take
+        // the absolute branch and be rejected as a non-http(s) URL before a
+        // later scheme-relative branch is reached.
         var file = CreateFile(filePath: "//gateway.example/streams/file-1");
+        var result = Build(file, CreateOptions());
+
+        Assert.Equal(WebClientFallbackUrlKind.FilePath, result.Kind);
+        Assert.Equal("https://gateway.example/streams/file-1", result.Url);
+    }
+
+    [Fact]
+    public void Build_FilePathSchemeRelativeOtherHost_RequireSameHost_FallsThroughToTemplate()
+    {
+        var file = CreateFile(filePath: "//other.example/streams/file-1");
         var result = Build(file, CreateOptions());
 
         Assert.Equal(WebClientFallbackUrlKind.Template, result.Kind);
         Assert.Equal("https://gateway.example/WebClientODV/DocumentView/GetStream/?ticket=file-1", result.Url);
+    }
+
+    [Fact]
+    public void Build_FilePathSchemeRelativeOtherHost_InAllowedHosts_ReturnsFilePathUrl()
+    {
+        var file = CreateFile(filePath: "//webclient.example/streams/file-1");
+        var options = CreateOptions(o => o.AllowedHosts = ["https://webclient.example"]);
+
+        var result = Build(file, options);
+
+        Assert.Equal(WebClientFallbackUrlKind.FilePath, result.Kind);
+        Assert.Equal("https://webclient.example/streams/file-1", result.Url);
     }
 
     [Fact]

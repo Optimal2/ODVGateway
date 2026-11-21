@@ -16,6 +16,12 @@ public sealed class ODVGatewayOptions
 
     public long MaxSourcePackFrameBytes { get; set; } = 64L * 1024L * 1024L;
 
+    /// <summary>
+    /// Per-response cap for the proxied <c>/source</c> path. 0 (the default)
+    /// means "follow <see cref="MaxSourcePackFrameBytes"/>". Both shipped
+    /// configuration templates leave it at 0, so a deployment that raises
+    /// the frame cap raises the proxy cap with it.
+    /// </summary>
     public long MaxSourceProxyBytes { get; set; }
 
     public int SourcePackStreamBufferBytes { get; set; } = 128 * 1024;
