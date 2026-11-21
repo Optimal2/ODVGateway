@@ -188,5 +188,6 @@ absent in production:
 - `exposeOpenDocViewerDistPathInHealth` — reveals internal dist path in
   `/health` output.
 
-None of these appear in `appsettings.json` (the production config), so
-production deployments are safe by default.
+All four appear in `appsettings.json` (the production baseline) and are
+explicitly `false`, so production deployments are safe by default. Keep them
+disabled unless a deployment deliberately accepts the behavior described above.

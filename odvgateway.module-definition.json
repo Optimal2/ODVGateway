@@ -6,7 +6,7 @@
     "displayName": "ODVGateway",
     "moduleType": "WebAppModule",
     "schemaName": "odvgateway",
-    "description": "Gateway web application that adapts WebClient document selections into OpenDocViewer sessions backed by direct server-side file access.",
+    "description": "Gateway web application that adapts WebClient document selections into OpenDocViewer sessions.",
     "sortOrder": 315,
     "isEnabled": true
   },
@@ -42,7 +42,7 @@
   ],
   "sqlScripts": [],
   "integrity": {
-    "source": "ODVGateway has no module-owned database schema in version 0.1.0. Runtime behavior is configured through appsettings files.",
+    "source": "ODVGateway has no module-owned database schema. Runtime behavior is configured through appsettings files.",
     "requiredSchemas": [],
     "requiredTables": [],
     "requiredOmpRows": {
