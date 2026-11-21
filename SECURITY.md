@@ -147,7 +147,17 @@ handoff and source-access configuration:
 - keep `trustClientFilePath` disabled unless the gateway runs inside the same
   trust boundary as the supplied file paths
 - when `trustClientFilePath` is enabled, configure `trustedSourceRoots` with
-  the smallest practical set of absolute local or UNC roots
+  the smallest practical set of absolute local or UNC roots; relative client
+  paths are rejected rather than resolved against the gateway working directory
+- redact the `sessiondata` query parameter from host, reverse-proxy and other
+  surrounding access logs. It is unencrypted Base64/Base64URL JSON containing
+  `sessionId` and `aspxAuth`; the gateway itself does not log the token, but
+  external query-string logging can expose it. Any contract replacement must
+  be designed and rolled out together with the host application
+- leave `forwardedProxy.enabled` off unless the gateway is behind a reverse
+  proxy that supplies forwarded headers. When enabling it, configure
+  `forwardedProxy.knownProxies` with only the exact IP addresses of the directly
+  connected trusted proxies; no networks are trusted implicitly
 - keep `exposeOpenDocViewerDistPathInHealth` disabled in production unless a
   trusted monitor explicitly needs the literal filesystem path
 - review startup warnings about an empty `webClientHandoff.allowedInitiatorUrls`

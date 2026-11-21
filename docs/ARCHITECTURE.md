@@ -76,7 +76,8 @@ registered as singletons in `Program.cs`.
 | `OpenDocViewerIndexRenderer` | `Services/OpenDocViewerIndexRenderer.cs` | Serves `index.html`, optionally with an inline `window.ODV` bootstrap script. |
 | `DirectSourceFileResolver` | `Services/DirectSourceFileResolver.cs` | Enforces `trustClientFilePath` and `trustedSourceRoots`; opens files. |
 | `WebClientFallbackUrlBuilder` | `Services/WebClientFallbackUrlBuilder.cs` | Builds a WebClient URL for a file the gateway cannot read directly. |
-| `WebClientSourceProxyLimiter` | `Services/WebClientSourceProxyLimiter.cs` | Semaphore that caps concurrent `/source` proxy requests (`proxyMaxConcurrency`). |
+| `WebClientSourceFallbackPolicy` | `Services/WebClientSourceFallbackPolicy.cs` | Single proxy-threshold decision used by both bundle URL generation and `/source`. |
+| `ForwardedProxyConfiguration` | `Services/ForwardedProxyConfiguration.cs` | Builds the opt-in forwarded-header middleware options and exact known-proxy set. |
 | `ContentTypeMapper` | `Services/ContentTypeMapper.cs` | Extension to MIME type, built-in map plus `contentTypes` overrides. |
 | `GatewayHtml`, `OmpThemePreference` | `Services/GatewayHtml.cs`, `Services/OmpThemePreference.cs` | HTML-encoded status pages themed from the `OMP_THEME_PREFERENCE` cookie. |
 | `FlexibleStringJsonConverter` | `Services/FlexibleStringJsonConverter.cs` | Accepts numbers or strings where WebClient JSON is loose. |
@@ -140,21 +141,27 @@ for production; IIS or the host decides it.
 2. Kestrel drops the `Server` header (`AddServerHeader = false`).
 3. Startup validation: when `trustClientFilePath` is true, an empty or relative
    `trustedSourceRoots` list throws and the process does not start
-   (`ValidateTrustedSourceRootConfiguration`).
+   (`ValidateTrustedSourceRootConfiguration`). Enabled forwarded-proxy support
+   likewise requires a non-empty list of valid exact proxy IP addresses.
 4. Startup warnings for `useBundleUrlHandoff=false`, an empty
    `allowedInitiatorUrls` list and `allowMissingInitiatorHeaders=true`
    (`LogProductionCompatibilityWarnings`).
-5. Correlation middleware: reuses a valid `X-Correlation-ID` (at most 128 HTTP
+5. Optional forwarded-header processing for `X-Forwarded-For`,
+   `X-Forwarded-Host` and `X-Forwarded-Proto`. It is disabled by default; when
+   enabled, only `forwardedProxy.knownProxies` addresses are trusted, the
+   default known networks are cleared, and one hop is consumed.
+6. Correlation middleware: reuses a valid `X-Correlation-ID` (at most 128 HTTP
    token characters) or creates one, echoes it, and opens a logging scope.
-6. Exception handler returning a fixed `500` text, then status-code pages.
-7. Response compression (including `application/json`, also over HTTPS).
-8. Security headers on every response: `X-Frame-Options: SAMEORIGIN`,
+7. Exception handler returning a fixed `500` text, then status-code pages.
+8. Response compression (including `application/json`, also over HTTPS).
+9. Security headers on every response: `X-Frame-Options: SAMEORIGIN`,
    `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
    `X-Robots-Tag: noindex`, `Content-Security-Policy`
    (`DefaultContentSecurityPolicy` unless `contentSecurityPolicy` is set).
-9. Static files from the dist folder resolved **at startup**. `index.html` gets
-   `no-store`; every other dist file gets `public, max-age=31536000, immutable`.
-10. Mapped endpoints.
+10. Static files from the dist folder resolved **at startup**. `index.html`,
+    `odv.config.js` and `odv.site.config.js` get `no-store`; every other dist
+    file gets `public, max-age=31536000, immutable`.
+11. Mapped endpoints.
 
 ### Endpoints
 
@@ -275,7 +282,9 @@ Per file, the bundle factory chooses the URL like this:
 
 `/source-pack/{sessionKey}` always reads every file through the gateway: direct
 when possible, otherwise from the fallback URL with the same cookies and
-retries. It ignores the proxy threshold and the proxy limiter. A failed file
+retries. It ignores the proxy threshold but shares the proxy limiter with
+`/source`. Direct files are buffered and checked against their expected length
+before the frame header is written. A truncation, read failure or failed file
 becomes a frame with `ok: false` and an error text; the stream continues.
 
 ### Flow 3: health probe
@@ -306,7 +315,14 @@ ODVGateway has no database and writes no business data to disk.
 and `fileData[]` (strings, `fileId|extension|filePath`).
 
 **`?sessiondata=` token** (`WebClientSessionDataDecoder`): base64 or base64url
-JSON with `userId`, `sessionId`, `aspxAuth`, `caseIds[]`.
+JSON with `userId`, `sessionId`, `aspxAuth`, `caseIds[]`. This is unencrypted
+encoding, not confidentiality protection: the query value exposes the session
+ID and authentication value to browser history and to any surrounding access
+log that records query strings. The gateway's own NLog layout and application
+messages do not log the token or those decoded values. External hosts and
+proxies must redact the parameter. Changing this host-to-gateway contract
+requires a coordinated host-application change and is not owned by this
+repository alone.
 
 **Bundle** (`Models/OpenDocViewerBundleModels.cs`, built by
 `OpenDocViewerBundleFactory`): `session` (`id`, `userId`, `issuedAt`),
@@ -396,6 +412,8 @@ Settings that change behaviour most:
 | `trustClientFilePath` / `trustedSourceRoots` | `false` / `[]` | Turns direct file reads on and limits them to these roots. |
 | `useBundleUrlHandoff` | `true` | Redirect to `?bundleUrl=` instead of inline bootstrap. |
 | `webClientSourceFallback.proxyThroughGatewayAboveSourceCount` | `1000` | Below it the browser fetches WebClient URLs itself. |
+| `webClientSourceFallback.proxyMaxConcurrency` | `14` | Shared upstream-fetch cap for `/source` and `/source-pack`. |
+| `forwardedProxy.enabled` / `knownProxies` | `false` / `[]` | Opt-in forwarded scheme, host and remote-IP processing, restricted to exact trusted proxy addresses. |
 | `webClientSourceFallback.requireSameHost` / `allowedHosts` | `true` / `[]` | Which hosts the gateway may call or link. |
 | `openDocViewerDistPath` / `requireExplicitOpenDocViewerDistPath` | `""` / `false` | Where the viewer comes from; whether probing is allowed. |
 | `sessionTtlMinutes` / `maxConcurrentSessions` | `30` / `50000` | Session lifetime and capacity. |
@@ -434,10 +452,10 @@ rests on four mechanisms:
    guarded by the initiator check. They require the 256-bit random
    `sessionKey` (`SessionKeyFactory.CreateSessionKey`). Anyone who holds a
    valid key can read that session's files until it expires.
-3. **Trusted roots.** `DirectSourceFileResolver` normalises a client path with
-   `Path.GetFullPath` and accepts it only below a normalised trusted root. The
-   check is lexical; it does not resolve symbolic links or junctions inside a
-   root.
+3. **Trusted roots.** `DirectSourceFileResolver` rejects relative client paths,
+   normalises an absolute client path with `Path.GetFullPath` and accepts it
+   only below a normalised trusted root. The check is lexical; it does not
+   resolve symbolic links or junctions inside a root.
 4. **Outbound host allowlist.** `WebClientFallbackUrlBuilder` drops absolute
    fallback URLs on other hosts unless they are in `allowedHosts`
    (`requireSameHost`, default `true`). Relative URLs always resolve against
@@ -451,7 +469,12 @@ Trust boundaries:
 - Gateway to WebClient: the gateway forwards the user's WebClient
   authentication cookie value (`aspxAuth`) and session ID, taken from `/prep`,
   so the WebClient decides what the user may read. These values stay in
-  process memory for the session lifetime.
+  process memory for the session lifetime. The separate `?sessiondata=`
+  handoff carries the same kinds of values as unencrypted Base64 JSON in the
+  URL query; surrounding access logs must redact it.
+- Reverse proxy to gateway: forwarded headers are untrusted by default. If
+  enabled, only exact `forwardedProxy.knownProxies` IP addresses may supply
+  the external scheme, host and client IP used in URL and same-host decisions.
 - Gateway to file system: the gateway reads with its own process identity
   (the IIS application pool or service account). WebClient authorisation is
   not re-checked for direct reads.
@@ -461,7 +484,9 @@ correlation ID: guard rejections with reason and initiator (scheme, host and
 path only), prepared sessions with document and file counts, missing sessions,
 direct-path rejections, and proxy failures. Proxy logs name the source as
 `configured-webclient-source` instead of the URL (`GatewayLogNames`). The
-direct-file `UnauthorizedAccessException` warning logs the candidate path.
+gateway does not log the `sessiondata` query value or its decoded `sessionId`
+and `aspxAuth`; its NLog layout records log messages rather than request URLs.
+The direct-file `UnauthorizedAccessException` warning logs the candidate path.
 
 See [SECURITY.md](../SECURITY.md#security-model) for the production checklist.
 

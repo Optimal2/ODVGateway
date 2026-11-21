@@ -74,6 +74,8 @@ public sealed class ODVGatewayOptions
 
     public string? ContentSecurityPolicy { get; set; }
 
+    public ForwardedProxyOptions ForwardedProxy { get; set; } = new();
+
     public InlineSourceOptions InlineSources { get; set; } = new();
 
     public RemoteInlineSourceOptions RemoteInlineSources { get; set; } = new();
@@ -87,6 +89,13 @@ public sealed class ODVGatewayOptions
 
     public Dictionary<string, string> ContentTypes { get; set; } =
         new(StringComparer.OrdinalIgnoreCase);
+}
+
+public sealed class ForwardedProxyOptions
+{
+    public bool Enabled { get; set; }
+
+    public string[] KnownProxies { get; set; } = [];
 }
 
 public sealed class WebClientSourceFallbackOptions

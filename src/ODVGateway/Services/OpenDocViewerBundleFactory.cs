@@ -166,7 +166,7 @@ public sealed class OpenDocViewerBundleFactory
         }
 
         var shouldProxyWebClientFallback = fallbackUrl is not null &&
-            ShouldProxyWebClientFallback(options, session.SourceFiles.Count);
+            WebClientSourceFallbackPolicy.ShouldProxy(options, session.SourceFiles.Count);
         var sourceUrl = shouldProxyWebClientFallback
             ? BuildSourceUrl(request, sessionKey, file.Index)
             : fallbackUrl ?? BuildSourceUrl(request, sessionKey, file.Index);
@@ -210,15 +210,6 @@ public sealed class OpenDocViewerBundleFactory
             InlineMimeType = null,
             InlineSizeBytes = null
         };
-    }
-
-    private static bool ShouldProxyWebClientFallback(ODVGatewayOptions options, int sourceCount)
-    {
-        var fallback = options.WebClientSourceFallback;
-        if (!fallback.Enabled || !fallback.ProxyThroughGateway) return false;
-
-        var threshold = Math.Max(0, fallback.ProxyThroughGatewayAboveSourceCount);
-        return threshold <= 0 || sourceCount >= threshold;
     }
 
     private static string ResolveSourceKind(string? extension)

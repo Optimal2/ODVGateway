@@ -135,6 +135,17 @@ The store is process-local and non-durable. Restarts drop pending
 handoffs; multi-node production needs sticky routing or a shared session
 store added before traffic can move between instances.
 
+**`sessiondata` query exposure:** the host handoff contract places `sessionId`
+and `aspxAuth` in unencrypted Base64/Base64URL JSON in the `?sessiondata=`
+query parameter. Base64 is encoding, not encryption. Query strings can be
+retained by browser history and by access logs on hosts, reverse proxies and
+other infrastructure that process the request. The gateway's own NLog layout
+and application messages do not write the parameter or its decoded values.
+Deployments must nevertheless redact `sessiondata` from surrounding access
+logs and avoid URLs that log query strings. Replacing the handoff contract
+requires a coordinated host-application and gateway change; it cannot be
+changed by this repository alone.
+
 ### Direct source access
 
 | Setting | Default | Notes |
@@ -153,11 +164,29 @@ store added before traffic can move between instances.
 | `webClientSourceFallback.requireSameHost` | `true` | Reject fallback URLs whose host differs from the gateway request. |
 | `webClientSourceFallback.proxyThroughGateway` | `true` | Proxy fallback bytes through the gateway instead of handing the ticket URL to the viewer. |
 | `webClientSourceFallback.proxyThroughGatewayAboveSourceCount` | `1000` | Below this count the viewer is given the WebClient ticket URL; above it the gateway proxies. |
+| `webClientSourceFallback.proxyMaxConcurrency` | `14` | Shared per-process cap for upstream host fetches from both `/source` and `/source-pack`. |
 | `maxSourcePackFrameBytes` | 64 MiB | Per-frame cap for `application/vnd.opendocviewer.source-pack`. |
 | `maxSourceProxyBytes` | `maxSourcePackFrameBytes` | Per-response cap for the proxied `/source` path. |
 | `sourcePackStreamBufferBytes` | 128 KiB | Stream copy chunk size (clamped to 4 KiB – 1 MiB). |
 | `inlineSources.*` | see `appsettings.json` | Bound and reported by `/health` only. The current bundle factory never embeds source bytes in the bundle (`OpenDocViewerBundleFactory.BuildViewerFile` sets `InlineBase64 = null`), because WebClient tickets can be one-use. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#6-configuration). |
 | `remoteInlineSources.*` | see `appsettings.json` | No prefetch happens. Only `requestTimeoutMs`, `retryCount`, `retryBaseDelayMs`, `aspxAuthCookieNames` and `sessionCookieNames` are used, by the `/source` proxy and the source pack when they fetch from WebClient. The other keys are reported by `/health` only. |
+
+### Reverse proxy
+
+Forwarded headers are ignored by default. When the gateway is behind a reverse
+proxy that supplies `X-Forwarded-For`, `X-Forwarded-Host` and
+`X-Forwarded-Proto`, opt in with both settings:
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `forwardedProxy.enabled` | `false` | Enables ASP.NET Core forwarded-header processing before URL generation and handoff validation. |
+| `forwardedProxy.knownProxies` | `[]` | Required when enabled. Exact IP addresses of the directly connected trusted proxies. No implicit networks or proxies are trusted; invalid or empty configuration fails startup. Only one forwarded-header hop is consumed. |
+
+Enabling this changes the request scheme, host and remote IP used by
+`bundleUrl`, relative fallback URLs, same-host checks and relative initiator
+allowlist entries. Configure only the actual proxy addresses; trusting
+client-supplied forwarded headers would let callers spoof those security and
+routing decisions.
 
 ### Viewer and response hardening
 
@@ -176,7 +205,10 @@ inlined, whatever the list contains (see the rows above).
 
 Kestrel middleware always stamps `X-Frame-Options: SAMEORIGIN`,
 `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
-`X-Robots-Tag: noindex`, and `Content-Security-Policy`. The
+`X-Robots-Tag: noindex`, and `Content-Security-Policy`. Static `index.html`,
+`odv.config.js` and `odv.site.config.js` responses use `Cache-Control: no-store`;
+other dist assets keep the one-year immutable cache policy and must therefore
+be content-versioned by the viewer build. The
 `?sessiondata=` to `?bundleUrl=` redirect stamps
 `Referrer-Policy: strict-origin-when-cross-origin` on top, so the
 follow-up browser request still carries the WebClient `Referer`. The

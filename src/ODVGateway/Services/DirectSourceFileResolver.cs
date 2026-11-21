@@ -129,10 +129,15 @@ public sealed class DirectSourceFileResolver
             raw = uri.LocalPath;
         }
 
+        if (!Path.IsPathFullyQualified(raw))
+        {
+            return false;
+        }
+
         try
         {
             fullPath = Path.GetFullPath(raw);
-            return Path.IsPathFullyQualified(fullPath);
+            return true;
         }
         catch (ArgumentException)
         {

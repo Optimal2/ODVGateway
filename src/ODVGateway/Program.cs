@@ -88,6 +88,11 @@ builder.Services.AddResponseCompression(options =>
 
 var app = builder.Build();
 
+if (startupOptions.ForwardedProxy.Enabled)
+{
+    app.UseForwardedHeaders(ForwardedProxyConfiguration.CreateOptions(startupOptions.ForwardedProxy));
+}
+
 var distResolver = app.Services.GetRequiredService<OpenDocViewerDistResolver>();
 var distPath = distResolver.ResolveDistPath();
 
@@ -151,7 +156,9 @@ if (!string.IsNullOrWhiteSpace(distPath))
         FileProvider = new PhysicalFileProvider(distPath),
         OnPrepareResponse = context =>
         {
-            if (context.File.Name.Equals("index.html", StringComparison.OrdinalIgnoreCase))
+            if (context.File.Name.Equals("index.html", StringComparison.OrdinalIgnoreCase) ||
+                context.File.Name.Equals("odv.config.js", StringComparison.OrdinalIgnoreCase) ||
+                context.File.Name.Equals("odv.site.config.js", StringComparison.OrdinalIgnoreCase))
             {
                 context.Context.Response.Headers.CacheControl = "no-store";
                 return;
@@ -362,7 +369,7 @@ app.MapMethods("/source/{sessionKey}/{fileIndex:int}", ["GET", "HEAD"], async (
         session.SessionKey,
         source,
         options.Value.WebClientSourceFallback).Url;
-    if (proxyUrl is not null && ShouldProxyWebClientFallback(options.Value, session.SourceFiles.Count))
+    if (proxyUrl is not null && WebClientSourceFallbackPolicy.ShouldProxy(options.Value, session.SourceFiles.Count))
     {
         using var sourceProxyLease = await sourceProxyLimiter.WaitAsync(cancellationToken);
         return await ProxyWebClientSourceAsync(
@@ -403,6 +410,7 @@ app.MapGet("/source-pack/{sessionKey}", async (    HttpContext httpContext,
     DirectSourceFileResolver directSources,
     IHttpClientFactory httpClientFactory,
     WebClientFallbackUrlBuilder fallbackUrlBuilder,
+    WebClientSourceProxyLimiter sourceProxyLimiter,
     ILoggerFactory loggerFactory,
     CancellationToken cancellationToken) =>
 {
@@ -428,6 +436,7 @@ app.MapGet("/source-pack/{sessionKey}", async (    HttpContext httpContext,
         directSources,
         httpClientFactory,
         fallbackUrlBuilder,
+        sourceProxyLimiter,
         logger,
         cancellationToken);
 
@@ -651,6 +660,7 @@ static async Task WriteSourcePackAsync(
     DirectSourceFileResolver directSources,
     IHttpClientFactory httpClientFactory,
     WebClientFallbackUrlBuilder fallbackUrlBuilder,
+    WebClientSourceProxyLimiter sourceProxyLimiter,
     ILogger logger,
     CancellationToken cancellationToken)
 {
@@ -672,6 +682,7 @@ static async Task WriteSourcePackAsync(
                 directSources,
                 httpClientFactory,
                 fallbackUrlBuilder,
+                sourceProxyLimiter,
                 logger,
                 cancellationToken);
         }
@@ -700,7 +711,7 @@ static async Task WriteSourcePackAsync(
             payload = BuildFailedSourcePackPayload(logger, session, source, contentTypes, ex);
         }
 
-        await WriteSourcePackFrameAsync(response, source, payload, options, cancellationToken);
+        await WriteSourcePackFrameAsync(response, source, payload, cancellationToken);
     }
 
     await response.Body.WriteAsync(new byte[4], cancellationToken);
@@ -716,6 +727,7 @@ static async Task<SourcePackPayload> ReadGatewaySourceBytesAsync(
     DirectSourceFileResolver directSources,
     IHttpClientFactory httpClientFactory,
     WebClientFallbackUrlBuilder fallbackUrlBuilder,
+    WebClientSourceProxyLimiter sourceProxyLimiter,
     ILogger logger,
     CancellationToken cancellationToken)
 {
@@ -731,13 +743,21 @@ static async Task<SourcePackPayload> ReadGatewaySourceBytesAsync(
                 Error: FormatSourcePackLimitExceededMessage(directSource.Length, maxFrameBytes));
         }
 
+        // Read and validate the complete payload before WriteSourcePackFrameAsync
+        // commits its header. A late read failure can then become an ok:false frame
+        // instead of corrupting the framing for every file that follows.
+        await using var sourceStream = directSources.OpenRead(directSource);
+        var bytes = await ReadSourcePackBytesWithLimitAsync(
+            sourceStream,
+            maxFrameBytes,
+            directSource.Length,
+            GetSourcePackStreamBufferBytes(options),
+            cancellationToken);
         return new SourcePackPayload(
             Ok: true,
-            Bytes: [],
+            Bytes: bytes,
             ContentType: contentTypes.GetContentType(source.Extension),
-            Error: null,
-            ContentStream: directSources.OpenRead(directSource),
-            ContentLength: directSource.Length);
+            Error: null);
     }
 
     var proxyUrl = fallbackUrlBuilder.BuildFallbackUrl(
@@ -754,6 +774,7 @@ static async Task<SourcePackPayload> ReadGatewaySourceBytesAsync(
             Error: "No gateway source path or WebClient fallback URL was available.");
     }
 
+    using var sourceProxyLease = await sourceProxyLimiter.WaitAsync(cancellationToken);
     return await FetchWebClientSourceBytesAsync(
         session,
         source,
@@ -894,8 +915,10 @@ static async Task<SourcePackPayload> FetchWebClientSourceBytesAsync(
         {
             logger.LogWarning(
                 ex,
-                "Source pack payload exceeded configured limit. Index={FileIndex}",
-                source.Index);
+                "Source pack payload exceeded configured limit. Index={FileIndex}, Attempt={Attempt}, Source={SourceEndpoint}",
+                source.Index,
+                attempt,
+                GatewayLogNames.ConfiguredWebClientSource);
             return new SourcePackPayload(
                 Ok: false,
                 Bytes: [],
@@ -986,6 +1009,12 @@ static async Task<byte[]> ReadSourcePackBytesWithLimitAsync(
         var bytesRead = await source.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
         if (bytesRead <= 0)
         {
+            if (expectedBytes is long expected && totalBytes != expected)
+            {
+                throw new EndOfStreamException(
+                    "The source stream length changed while it was being read.");
+            }
+
             return output.ToArray();
         }
 
@@ -1018,12 +1047,9 @@ static async Task WriteSourcePackFrameAsync(
     HttpResponse response,
     GatewaySourceFile source,
     SourcePackPayload payload,
-    ODVGatewayOptions options,
     CancellationToken cancellationToken)
 {
-    var payloadBytes = payload.ContentStream is not null
-        ? payload.ContentLength
-        : payload.Bytes.LongLength;
+    var payloadBytes = payload.Bytes.LongLength;
     var header = new
     {
         ok = payload.Ok,
@@ -1041,60 +1067,12 @@ static async Task WriteSourcePackFrameAsync(
 
     await response.Body.WriteAsync(headerLength, cancellationToken);
     await response.Body.WriteAsync(headerBytes, cancellationToken);
-    if (payload.ContentStream is not null)
-    {
-        try
-        {
-            await CopySourcePackStreamAsync(
-                payload.ContentStream,
-                response.Body,
-                payload.ContentLength,
-                GetSourcePackStreamBufferBytes(options),
-                cancellationToken);
-        }
-        finally
-        {
-            await payload.ContentStream.DisposeAsync();
-        }
-    }
-    else if (payload.Bytes.Length > 0)
+    if (payload.Bytes.Length > 0)
     {
         await response.Body.WriteAsync(payload.Bytes, cancellationToken);
     }
 
     await response.Body.FlushAsync(cancellationToken);
-}
-
-static async Task CopySourcePackStreamAsync(
-    Stream source,
-    Stream destination,
-    long contentLength,
-    int bufferSize,
-    CancellationToken cancellationToken)
-{
-    var buffer = new byte[bufferSize];
-    var remainingBytes = Math.Max(0, contentLength);
-    while (remainingBytes > 0)
-    {
-        var bytesToRead = (int)Math.Min(buffer.Length, remainingBytes);
-        var bytesRead = await source.ReadAsync(buffer.AsMemory(0, bytesToRead), cancellationToken);
-        if (bytesRead <= 0)
-        {
-            return;
-        }
-
-        await destination.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
-        remainingBytes -= bytesRead;
-    }
-}
-
-static bool ShouldProxyWebClientFallback(ODVGatewayOptions options, int sourceCount)
-{
-    var fallback = options.WebClientSourceFallback;
-    if (!fallback.Enabled || !fallback.ProxyThroughGateway) return false;
-
-    var threshold = Math.Max(0, fallback.ProxyThroughGatewayAboveSourceCount);
-    return threshold <= 0 || sourceCount >= threshold;
 }
 
 static async Task<IResult> ProxyWebClientSourceAsync(
@@ -1514,6 +1492,4 @@ internal sealed record SourcePackPayload(
     bool Ok,
     byte[] Bytes,
     string ContentType,
-    string? Error,
-    Stream? ContentStream = null,
-    long ContentLength = 0);
+    string? Error);
