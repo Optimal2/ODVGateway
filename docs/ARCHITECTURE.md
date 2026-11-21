@@ -164,7 +164,7 @@ for production; IIS or the host decides it.
 | `POST /prep` | `MapPost("/prep")` | `200` with `sessionKey`, counts and `expiresUtc`; `400` bad payload; `403` guard rejection; `429` store full. |
 | `GET /`, `GET /index.html` | `RenderViewerAsync` | Viewer HTML, a `302` to `?bundleUrl=`, or a status page (`400`, `404`, `503`). |
 | `GET /bundle/{sessionKey}` | `MapGet("/bundle/{sessionKey}")` | Bundle JSON with `X-ODVGateway-*` diagnostics headers; `404` when unknown or expired. |
-| `GET`/`HEAD /source/{sessionKey}/{fileIndex:int}` | `MapMethods("/source/...")` | One file: direct with range support, or WebClient proxy; `403`, `404`, `502` on failure. |
+| `GET`/`HEAD /source/{sessionKey}/{fileIndex:int}` | `MapMethods("/source/...")` | One file: direct with range support, or an upstream proxy; `403`, `404`, `502`, or a forwarded upstream failure status. |
 | `GET /source-pack/{sessionKey}` | `MapGet("/source-pack/{sessionKey}")` | All files of the session in one `odvsp1` stream. |
 
 ### Flow 1: handoff and viewer start
@@ -363,17 +363,23 @@ Settings are read through the standard ASP.NET Core configuration stack
 3. Environment variables (for example `ODVGateway__trustClientFilePath`)
 4. Command-line arguments
 
-The `ODVGateway` section binds to `ODVGatewayOptions`. Most services read it
-through `IOptionsMonitor`, so a changed file applies to later requests. Three
-values are read only once at startup from `startupOptions` in `Program.cs`:
+The `ODVGateway` section binds to `ODVGatewayOptions`. Endpoint handlers read a
+process-lifetime `IOptions` snapshot, so settings they use require a restart.
+Only six services read `IOptionsMonitor` and observe changed files without a
+restart: `GatewaySessionStore`, `DirectSourceFileResolver`,
+`WebClientHandoffGuard`, `OpenDocViewerDistResolver`,
+`OpenDocViewerBundleFactory` and `WebClientSourceProxyLimiter`. Three values are
+read only once at startup from `startupOptions` in `Program.cs`:
 `contentSecurityPolicy`, `maxPrepBodyBytes` for `FormOptions`, and the
 trusted-root validation. The static-file dist folder is also fixed at startup.
 `ContentTypeMapper` reads `contentTypes` once through `IOptions`.
 
-Two shipped files exist:
+Three shipped files exist:
 
 - `src/ODVGateway/appsettings.json`: the standalone sample, published with the
   app.
+- `src/ODVGateway/appsettings.Development.json`: the development override,
+  published with the app.
 - `src/ODVGateway/Packaging/appsettings.json`: the OMP artifact configuration
   file. It equals the sample without `Logging`, `AllowedHosts` and
   `prepHandoffWaitMilliseconds` (the code default 5000 then applies). It is
@@ -475,7 +481,7 @@ Two independent version lines exist ([AGENTS.md](../AGENTS.md#releases)):
 | Version | File | Moved by |
 | --- | --- | --- |
 | Application | `Directory.Build.props` `<Version>` | `scripts/release.ps1 -ReleaseType ... -Publish` only |
-| OMP artifact | `omp-components.json` `version` and `repositoryVersion`, plus `maxVersion` in `odvgateway.module-definition.json` | `scripts/omp/bump-version.ps1` |
+| OMP artifact | `omp-components.json` `version` and `repositoryVersion`, plus `definitionVersion` and `maxVersion` in `odvgateway.module-definition.json` | `scripts/omp/bump-version.ps1` |
 
 Two outputs exist:
 
