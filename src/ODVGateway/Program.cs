@@ -51,13 +51,17 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.Host.UseNLog();
 
-builder.WebHost.ConfigureKestrel(options => options.AddServerHeader = false);
-
 var startupOptions = builder.Configuration
     .GetSection(ODVGatewayOptions.SectionName)
     .Get<ODVGatewayOptions>() ?? new ODVGatewayOptions();
 
 ValidateTrustedSourceRootConfiguration(startupOptions, builder.Environment.ContentRootPath);
+
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.AddServerHeader = false;
+    options.Limits.MaxRequestBodySize = GetMaxPrepBodyBytes(startupOptions);
+});
 
 builder.Services.Configure<ODVGatewayOptions>(
     builder.Configuration.GetSection(ODVGatewayOptions.SectionName));
@@ -74,7 +78,7 @@ builder.Services.AddHttpClient("ODVGateway.RemoteInline");
 
 builder.Services.Configure<FormOptions>(options =>
 {
-    options.ValueLengthLimit = ClampFormValueLengthLimitBytes(startupOptions.MaxPrepBodyBytes);
+    options.ValueLengthLimit = ClampFormValueLengthLimitBytes(GetMaxPrepBodyBytes(startupOptions));
     options.MultipartBodyLengthLimit = 64L * 1024L * 1024L;
 });
 builder.Services.AddResponseCompression(options =>
@@ -173,9 +177,9 @@ app.MapGet("/health", (
     OpenDocViewerDistResolver resolver,
     GatewaySessionStore sessions,
     WebClientHandoffGuard handoffGuard,
-    IOptions<ODVGatewayOptions> options) =>
+    IOptionsMonitor<ODVGatewayOptions> options) =>
 {
-    var currentOptions = options.Value;
+    var currentOptions = options.CurrentValue;
     var resolvedDistPath = resolver.ResolveDistPath();
     var exposeDistPath = currentOptions.ExposeOpenDocViewerDistPathInHealth;
     var distAvailable = !string.IsNullOrWhiteSpace(resolvedDistPath);
@@ -243,7 +247,7 @@ app.MapGet("/health", (
 app.MapPost("/prep", async (
     HttpRequest request,
     GatewaySessionStore sessions,
-    IOptions<ODVGatewayOptions> options,
+    IOptionsMonitor<ODVGatewayOptions> options,
     WebClientHandoffGuard handoffGuard,
     ILoggerFactory loggerFactory,
     CancellationToken cancellationToken) =>
@@ -261,7 +265,7 @@ app.MapPost("/prep", async (
     {
         prep = await WebClientPrepReader.ReadAsync(
             request,
-            options.Value.MaxPrepBodyBytes,
+            GetMaxPrepBodyBytes(options.CurrentValue),
             cancellationToken);
     }
     catch (InvalidDataException ex)
@@ -335,7 +339,7 @@ app.MapMethods("/source/{sessionKey}/{fileIndex:int}", ["GET", "HEAD"], async (
     int fileIndex,
     GatewaySessionStore sessions,
     ContentTypeMapper contentTypes,
-    IOptions<ODVGatewayOptions> options,
+    IOptionsMonitor<ODVGatewayOptions> options,
     DirectSourceFileResolver directSources,
     IHttpClientFactory httpClientFactory,
     WebClientSourceProxyLimiter sourceProxyLimiter,
@@ -351,7 +355,7 @@ app.MapMethods("/source/{sessionKey}/{fileIndex:int}", ["GET", "HEAD"], async (
 
     if (directSources.TryResolve(source, out var directSource))
     {
-        var cacheControl = options.Value.SourceCacheControl;
+        var cacheControl = options.CurrentValue.SourceCacheControl;
         if (!string.IsNullOrWhiteSpace(cacheControl))
         {
             httpContext.Response.Headers.CacheControl = cacheControl;
@@ -384,8 +388,8 @@ app.MapMethods("/source/{sessionKey}/{fileIndex:int}", ["GET", "HEAD"], async (
         httpContext.Request,
         session.SessionKey,
         source,
-        options.Value.WebClientSourceFallback).Url;
-    if (proxyUrl is not null && WebClientSourceFallbackPolicy.ShouldProxy(options.Value, session.SourceFiles.Count))
+        options.CurrentValue.WebClientSourceFallback).Url;
+    if (proxyUrl is not null && WebClientSourceFallbackPolicy.ShouldProxy(options.CurrentValue, session.SourceFiles.Count))
     {
         using var sourceProxyLease = await sourceProxyLimiter.WaitAsync(cancellationToken);
         return await ProxyWebClientSourceAsync(
@@ -394,13 +398,13 @@ app.MapMethods("/source/{sessionKey}/{fileIndex:int}", ["GET", "HEAD"], async (
             source,
             proxyUrl,
             contentTypes,
-            options.Value,
+            options.CurrentValue,
             httpClientFactory,
             logger,
             cancellationToken);
     }
 
-    if (!options.Value.TrustClientFilePath)
+    if (!options.CurrentValue.TrustClientFilePath)
     {
         logger.LogWarning("Direct file path access is disabled for the requested gateway session.");
         return Results.StatusCode(StatusCodes.Status403Forbidden);
@@ -422,7 +426,7 @@ app.MapGet("/source-pack/{sessionKey}", async (    HttpContext httpContext,
     string sessionKey,
     GatewaySessionStore sessions,
     ContentTypeMapper contentTypes,
-    IOptions<ODVGatewayOptions> options,
+    IOptionsMonitor<ODVGatewayOptions> options,
     DirectSourceFileResolver directSources,
     IHttpClientFactory httpClientFactory,
     WebClientFallbackUrlBuilder fallbackUrlBuilder,
@@ -448,7 +452,7 @@ app.MapGet("/source-pack/{sessionKey}", async (    HttpContext httpContext,
         response,
         session,
         contentTypes,
-        options.Value,
+        options.CurrentValue,
         directSources,
         httpClientFactory,
         fallbackUrlBuilder,
@@ -468,7 +472,7 @@ static async Task<IResult> RenderViewerAsync(
     GatewaySessionStore sessions,
     OpenDocViewerBundleFactory bundleFactory,
     OpenDocViewerIndexRenderer renderer,
-    IOptions<ODVGatewayOptions> options,
+    IOptionsMonitor<ODVGatewayOptions> options,
     WebClientHandoffGuard handoffGuard,
     ILoggerFactory loggerFactory,
     CancellationToken cancellationToken)
@@ -499,7 +503,7 @@ static async Task<IResult> RenderViewerAsync(
 
     if (string.IsNullOrWhiteSpace(sessionDataToken))
     {
-        if (options.Value.AllowOpenDocViewerFallbackWithoutSession)
+        if (options.CurrentValue.AllowOpenDocViewerFallbackWithoutSession)
         {
             return await renderer.RenderAsync(context, bundle: null, cancellationToken);
         }
@@ -534,7 +538,7 @@ static async Task<IResult> RenderViewerAsync(
     }
 
     var handoffLookupKey = SessionKeyFactory.CreateHandoffLookupKey(sessionData);
-    var prepWait = TimeSpan.FromMilliseconds(Math.Clamp(options.Value.PrepHandoffWaitMilliseconds, 0, 30000));
+    var prepWait = TimeSpan.FromMilliseconds(Math.Clamp(options.CurrentValue.PrepHandoffWaitMilliseconds, 0, 30000));
     var waitStarted = DateTimeOffset.UtcNow;
     var session = await sessions.WaitForHandoffLookupKeyAsync(handoffLookupKey, prepWait, cancellationToken);
     var waitedMs = (int)(DateTimeOffset.UtcNow - waitStarted).TotalMilliseconds;
@@ -557,7 +561,7 @@ static async Task<IResult> RenderViewerAsync(
             OmpThemePreference.ReadMode(context.Request));
     }
 
-    if (options.Value.UseBundleUrlHandoff)
+    if (options.CurrentValue.UseBundleUrlHandoff)
     {
         // The security middleware stamps Referrer-Policy: no-referrer on every response, and a
         // browser applies a redirect's Referrer-Policy to the request that follows it. The
@@ -992,6 +996,13 @@ static void LogWebClientSourcePackFetchFailed(
 static long GetMaxSourcePackFrameBytes(ODVGatewayOptions options)
 {
     return Math.Clamp(options.MaxSourcePackFrameBytes, 1L, int.MaxValue);
+}
+
+static long GetMaxPrepBodyBytes(ODVGatewayOptions options)
+{
+    return options.MaxPrepBodyBytes > 0
+        ? options.MaxPrepBodyBytes
+        : 50L * 1024L * 1024L;
 }
 
 static int ClampFormValueLengthLimitBytes(long maxPrepBodyBytes)

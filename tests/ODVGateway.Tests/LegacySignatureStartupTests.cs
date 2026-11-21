@@ -40,6 +40,82 @@ public sealed partial class LegacySignatureStartupTests
     }
 
     [Fact]
+    public async Task RequestOptions_WhenAppSettingsChanges_AreReloaded()
+    {
+        using var site = TestSite.Create();
+        await site.WriteUpgradedSiteAppSettingsAsync(enabled: false, trustDirectSources: false);
+
+        var initiallyEnabled = false;
+        var reloaded = false;
+        var boot = await BootGatewayOnFreeLoopbackPortAsync(site, async (client, cancellationToken) =>
+        {
+            using (var before = await client.GetAsync("/health", cancellationToken))
+            {
+                var payload = JsonNode.Parse(
+                    await before.Content.ReadAsStringAsync(cancellationToken))!.AsObject();
+                initiallyEnabled = payload["useBundleUrlHandoff"]!.GetValue<bool>();
+            }
+
+            var path = Path.Join(site.Root, "appsettings.json");
+            var root = JsonNode.Parse(await File.ReadAllTextAsync(path, cancellationToken))!.AsObject();
+            root["ODVGateway"]!["useBundleUrlHandoff"] = false;
+            var replacementPath = path + ".replacement";
+            await File.WriteAllTextAsync(replacementPath, root.ToJsonString(), cancellationToken);
+            File.Move(replacementPath, path, overwrite: true);
+
+            // Physical-file reload is asynchronous. Poll the actual endpoint for
+            // a bounded period instead of assuming when the change token fires.
+            for (var attempt = 0; attempt < 50 && !reloaded; attempt++)
+            {
+                await Task.Delay(100, cancellationToken);
+                using var after = await client.GetAsync("/health", cancellationToken);
+                var payload = JsonNode.Parse(
+                    await after.Content.ReadAsStringAsync(cancellationToken))!.AsObject();
+                reloaded = !payload["useBundleUrlHandoff"]!.GetValue<bool>();
+            }
+        });
+
+        AssertServedByOwnChild(site, boot);
+        Assert.True(initiallyEnabled);
+        Assert.True(reloaded, "/health kept its startup options after appsettings.json changed. Output:\n" + boot.Output);
+    }
+
+    [Fact]
+    public async Task Prep_BodyAboveKestrelDefaultButBelowConfiguredLimit_IsAccepted()
+    {
+        using var site = TestSite.Create();
+        await site.WriteUpgradedSiteAppSettingsAsync(enabled: false, trustDirectSources: false);
+
+        HttpStatusCode? prepStatus = null;
+        string? responseBody = null;
+        var boot = await BootGatewayOnFreeLoopbackPortAsync(site, async (client, cancellationToken) =>
+        {
+            // Kestrel's default request-body cap is 30,000,000 bytes. This valid
+            // 32 MiB JSON payload is above that host default but below the
+            // shipped maxPrepBodyBytes of 50 MiB. The unknown padding property
+            // is ignored by the same JSON deserializer used for real prep posts.
+            var prefix = Encoding.UTF8.GetBytes(
+                "{\"userId\":\"u1\",\"sessionId\":\"s1\",\"portableDocuments\":[],\"padding\":\"");
+            var suffix = Encoding.UTF8.GetBytes("\"}");
+            var payload = new byte[prefix.Length + 32 * 1024 * 1024 + suffix.Length];
+            prefix.CopyTo(payload, 0);
+            payload.AsSpan(prefix.Length, 32 * 1024 * 1024).Fill((byte)'x');
+            suffix.CopyTo(payload, prefix.Length + 32 * 1024 * 1024);
+            using var content = new ByteArrayContent(payload);
+            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+
+            using var response = await client.PostAsync("/prep", content, cancellationToken);
+            prepStatus = response.StatusCode;
+            responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
+        });
+
+        AssertServedByOwnChild(site, boot);
+        Assert.True(
+            prepStatus == HttpStatusCode.OK,
+            $"A 32 MiB prep body below the configured 50 MiB cap answered {prepStatus}: {responseBody}\n{boot.Output}");
+    }
+
+    [Fact]
     public async Task Startup_WithEnabledLegacySignaturesBlock_ServesADocumentThroughTheSessionPath()
     {
         using var site = TestSite.Create();

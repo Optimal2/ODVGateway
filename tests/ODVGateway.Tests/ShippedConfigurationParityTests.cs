@@ -67,6 +67,18 @@ public sealed class ShippedConfigurationParityTests
     [Theory]
     [InlineData("appsettings.json")]
     [InlineData("packaging.appsettings.json")]
+    public void ShippedSamples_DisableUnusedInlineSourceModes(string fileName)
+    {
+        using var sample = LoadSample(fileName);
+        var gateway = sample.RootElement.GetProperty("ODVGateway");
+
+        Assert.False(gateway.GetProperty("inlineSources").GetProperty("enabled").GetBoolean());
+        Assert.False(gateway.GetProperty("remoteInlineSources").GetProperty("enabled").GetBoolean());
+    }
+
+    [Theory]
+    [InlineData("appsettings.json")]
+    [InlineData("packaging.appsettings.json")]
     public void ShippedSamples_LeaveMaxSourceProxyBytesToFollowFrameBytes(string fileName)
     {
         // 0 means "follow maxSourcePackFrameBytes" (GetMaxSourceProxyBytes).

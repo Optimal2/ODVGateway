@@ -379,15 +379,15 @@ Settings are read through the standard ASP.NET Core configuration stack
 3. Environment variables (for example `ODVGateway__trustClientFilePath`)
 4. Command-line arguments
 
-The `ODVGateway` section binds to `ODVGatewayOptions`. Endpoint handlers read a
-process-lifetime `IOptions` snapshot, so settings they use require a restart.
-Only six services read `IOptionsMonitor` and observe changed files without a
-restart: `GatewaySessionStore`, `DirectSourceFileResolver`,
-`WebClientHandoffGuard`, `OpenDocViewerDistResolver`,
-`OpenDocViewerBundleFactory` and `WebClientSourceProxyLimiter`. Three values are
-read only once at startup from `startupOptions` in `Program.cs`:
-`contentSecurityPolicy`, `maxPrepBodyBytes` for `FormOptions`, and the
-trusted-root validation. The static-file dist folder is also fixed at startup.
+The `ODVGateway` section binds to `ODVGatewayOptions`. Endpoint handlers and six
+services read `IOptionsMonitor` and observe changed files without a restart:
+`GatewaySessionStore`, `DirectSourceFileResolver`, `WebClientHandoffGuard`,
+`OpenDocViewerDistResolver`, `OpenDocViewerBundleFactory` and
+`WebClientSourceProxyLimiter`. Startup-only validation and host/middleware setup
+still use `startupOptions` in `Program.cs`: trusted-root validation,
+`maxPrepBodyBytes` for the Kestrel and `FormOptions` limits,
+`contentSecurityPolicy`, and `forwardedProxy`. Restart after changing those
+host/middleware settings. The static-file dist folder is also fixed at startup.
 `ContentTypeMapper` reads `contentTypes` once through `IOptions`.
 
 Three shipped files exist:
@@ -422,8 +422,9 @@ Settings that change behaviour most:
 | `metadataAliases` | `{}` | Copies chosen metadata fields into `metadata` for print templates. |
 | Top-level `AllowedHosts` | `localhost;127.0.0.1` in the sample | ASP.NET Core host filtering. |
 
-The `inlineSources` and `remoteInlineSources` sections are bound and reported
-by `/health`, but the bundle factory never inlines bytes: it always sets
+The `inlineSources` and `remoteInlineSources` sections ship with `enabled:
+false`; they are bound and reported by `/health`, but the bundle factory never
+inlines bytes: it always sets
 `InlineBase64 = null` and reports zero inline counters
 (`OpenDocViewerBundleFactory.BuildViewerFile`). Only
 `remoteInlineSources.requestTimeoutMs`, `retryCount`, `retryBaseDelayMs`,

@@ -127,7 +127,7 @@ tool is not part of the build output or any package.
 | --- | --- | --- |
 | `sessionTtlMinutes` | 30 | Effective minimum is 5 minutes; lower values are clamped and a startup warning is logged. |
 | `maxConcurrentSessions` | 50 000 | Per-process; new `/prep` requests receive 429 when full. |
-| `maxPrepBodyBytes` | 50 MiB | Drives `FormOptions.ValueLengthLimit`. |
+| `maxPrepBodyBytes` | 50 MiB | Caps the `/prep` body. Kestrel and `FormOptions` read this limit at startup, so restart after changing it. The shipped IIS request-filtering limit is also 50 MiB; raise that limit with this setting. |
 | `webClientHandoff.allowedInitiatorUrls` | `[]` | Empty list **means "everything allowed"** (the guard fails open so a fresh clone can run locally without a configured allowlist). Production deployments must name the host WebClient pages that may start viewer sessions, otherwise the gateway accepts any initiator. |
 | `webClientHandoff.allowMissingInitiatorHeaders` | `false` | Compatibility escape hatch; startup logs a warning when enabled. |
 
@@ -168,8 +168,8 @@ changed by this repository alone.
 | `maxSourcePackFrameBytes` | 64 MiB | Per-frame cap for `application/vnd.opendocviewer.source-pack`. |
 | `maxSourceProxyBytes` | `0` (follows `maxSourcePackFrameBytes`) | Per-response cap for the proxied `/source` path. |
 | `sourcePackStreamBufferBytes` | 128 KiB | Stream copy chunk size (clamped to 4 KiB – 1 MiB). |
-| `inlineSources.*` | see `appsettings.json` | Bound and reported by `/health` only. The current bundle factory never embeds source bytes in the bundle (`OpenDocViewerBundleFactory.BuildViewerFile` sets `InlineBase64 = null`), because WebClient tickets can be one-use. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#6-configuration). |
-| `remoteInlineSources.*` | see `appsettings.json` | No prefetch happens. Only `requestTimeoutMs`, `retryCount`, `retryBaseDelayMs`, `aspxAuthCookieNames` and `sessionCookieNames` are used, by the `/source` proxy and the source pack when they fetch from WebClient. The other keys are reported by `/health` only. |
+| `inlineSources.*` | `enabled: false`; other values in `appsettings.json` | Bound and reported by `/health` only. The current bundle factory never embeds source bytes in the bundle (`OpenDocViewerBundleFactory.BuildViewerFile` sets `InlineBase64 = null`), because WebClient tickets can be one-use. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#6-configuration). |
+| `remoteInlineSources.*` | `enabled: false`; other values in `appsettings.json` | No prefetch happens. Only `requestTimeoutMs`, `retryCount`, `retryBaseDelayMs`, `aspxAuthCookieNames` and `sessionCookieNames` are used, by the `/source` proxy and the source pack when they fetch from WebClient. The other keys are reported by `/health` only. |
 
 ### Reverse proxy
 
@@ -387,8 +387,10 @@ Run the xUnit unit tests:
 dotnet test tests\ODVGateway.Tests\ODVGateway.Tests.csproj --configuration Release
 ```
 
-They are in-memory, net10.0, and need nothing installed. The local CI
-gate (`scripts/local-ci.ps1`) runs them between build and smoke test.
+They target net10.0. Most are in-memory; `LegacySignatureStartupTests` boots
+the real gateway over loopback HTTP and uses temporary files, but no test needs
+an external service. The local CI gate (`scripts/local-ci.ps1`) runs them
+between build and smoke test.
 
 There is no UiTests project in this repository, and that is deliberate:
 the gateway is a minimal-API service with no Razor pages or
@@ -413,8 +415,8 @@ Hooks:
 - `pre-commit` — light static checks only (`git diff --cached --check`).
   Does not build or run tests.
 - `pre-push` — runs `scripts\local-ci.ps1`, which builds the gateway,
-  runs the xUnit unit tests in `tests\ODVGateway.Tests` (in-memory, no
-  I/O or network dependencies), runs the smoke test, and validates OMP
+  runs the xUnit unit tests in `tests\ODVGateway.Tests` (including the
+  loopback/temp-file startup probes), runs the smoke test, and validates OMP
   component version lockstep. Its shared-script drift check (Check 15)
   is strict: set `OMP_PLATFORM_ROOT` to an OpenModulePlatform checkout
   when this repository is not beside one, or the push is blocked. See

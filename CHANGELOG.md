@@ -48,6 +48,17 @@ for its `0.1.x` release line.
   `prepHandoffWaitMilliseconds` again, and both shipped templates leave
   `maxSourceProxyBytes` at `0` so it follows `maxSourcePackFrameBytes` as
   documented. Effective shipped caps are unchanged (both are 64 MiB).
+- Request endpoints read current options through `IOptionsMonitor`, matching the
+  services, instead of retaining a process-lifetime snapshot after a settings
+  file reload. Host and middleware limits that are fixed at startup are now
+  identified in the architecture documentation.
+- The unused local and remote inline-source modes ship disabled in both
+  configuration templates and in their option defaults. Source-pack remains the
+  only bundle payload transport.
+- `/prep` requests between Kestrel's 30,000,000-byte default and the configured
+  50 MiB limit are no longer rejected by the hosting layer. Kestrel follows
+  `maxPrepBodyBytes` at startup, and the IIS template permits the shipped 50 MiB
+  request body.
 
 ## [0.1.45] - 2026-11-09
 

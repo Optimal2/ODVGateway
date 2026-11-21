@@ -134,7 +134,7 @@ public sealed class WebClientHandoffOptions
 
 public sealed class InlineSourceOptions
 {
-    public bool Enabled { get; set; } = true;
+    public bool Enabled { get; set; }
 
     public long MaxTotalBytes { get; set; } = 16L * 1024L * 1024L;
 
@@ -157,7 +157,7 @@ public sealed class InlineSourceOptions
 
 public sealed class RemoteInlineSourceOptions
 {
-    public bool Enabled { get; set; } = true;
+    public bool Enabled { get; set; }
 
     public bool RequireSameHost { get; set; } = true;
 
