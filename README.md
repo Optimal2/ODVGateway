@@ -9,7 +9,7 @@ ticket stream, or both. ODVGateway is also packaged as an OpenModulePlatform
 
 Current application version (`Directory.Build.props` `<Version>`):
 **v0.1.45**. Current OMP artifact version (`omp-components.json`):
-**0.1.89**. The two lines are deliberately independent — the OMP artifact
+**0.1.90**. The two lines are deliberately independent — the OMP artifact
 can move for a deployable change without an official release, and an
 official release can ship without bumping the artifact. Read both numbers
 out of their files; this paragraph names them once and can lag. Verified
