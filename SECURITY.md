@@ -11,9 +11,9 @@ Security issues should be reported privately before public disclosure.
 **ODVGateway v0.1.45** is the current supported release and the recommended
 deployment target. The OMP artifact version that ships the supported build is
 `0.1.87` (`odvgateway-web` in `omp-components.json`, bumped after the v0.1.45
-release commit as `scripts/release.ps1` instructs; `0.1.86` and `0.1.87` carry
-the same application code built as application version 0.1.45, plus the .NET
-SDK floor move and the JPEG XL/AVIF source mappings); the two lines are
+release commit as `scripts/release.ps1` instructs; `0.1.86` carries application
+version 0.1.45 plus the .NET SDK floor move, and `0.1.87` additionally carries
+the JPEG XL/AVIF source mappings); the two lines are
 deliberately independent and are not forced to match. Read each version out of
 its source file — `Directory.Build.props` for the application version and
 `omp-components.json` for the OMP artifact.
