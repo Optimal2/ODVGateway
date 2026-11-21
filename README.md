@@ -56,194 +56,19 @@ streams bytes for that viewer.
 
 ## Architecture
 
-The gateway sits between the host WebClient and the OpenDocViewer SPA. The
-viewer is served out of a sibling `dist/` folder; the gateway only owns
-the `/prep`, `/`, `/bundle/{key}`, `/source/{key}/{idx}` and
-`/source-pack/{key}` endpoints and the trust boundary around them.
+The full architecture description lives in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): components, the handoff and
+source-delivery flows with diagrams, the `odvsp1` source-pack format, data
+ownership, integration contracts, configuration precedence, the security
+model, build and deployment paths, operations and known trade-offs.
 
-```mermaid
-flowchart LR
-    User([Browser]) -->|HTTPS| WC[WebClient<br/>MediaViewerTwo.cshtml]
-    WC -->|POST /prep<br/>sessiondata JSON| GW[ODVGateway<br/>ASP.NET Core 10]
-
-    subgraph Boundary[ODVGateway trust boundary]
-        direction TB
-        Prep[/prep<br/>WebClientHandoffGuard<br/>GatewaySessionStore/]
-        Viewer[/<br/>OpenDocViewerIndexRenderer/]
-        Bundle[/bundle/&#123;key&#125;<br/>OpenDocViewerBundleFactory/]
-        Source[/source/&#123;key&#125;/&#123;i&#125;<br/>DirectSourceFileResolver/]
-        Pack[/source-pack/&#123;key&#125;<br/>odvsp1 stream/]
-    end
-
-    GW --- Prep
-    GW --- Viewer
-    GW --- Bundle
-    GW --- Source
-    GW --- Pack
-
-    Prep -. in-memory .-> Bundle
-    Bundle -->|window.ODV bootstrap| Viewer
-    Viewer -->|/bundle/&#123;key&#125;| Bundle
-    Viewer -->|/source-pack/&#123;key&#125;| Pack
-
-    Source -->|file read| FS[(Trusted source root<br/>local or UNC)]
-    Pack -->|file read| FS
-    Pack -->|HttpClient| WCF[WebClient<br/>GetStream ticket]
-    Source -->|HttpClient| WCF
-
-    ODV[OpenDocViewer dist/<br/>index.html + bundles] -->|StaticFileProvider| Viewer
-
-    style GW fill:#eef,stroke:#446
-    style Boundary fill:#fafafa,stroke:#999,stroke-dasharray: 4 3
-```
-
-Sources for this diagram:
-
-- `src/ODVGateway/Program.cs` — endpoint mapping (`/`, `/prep`,
-  `/bundle/{sessionKey}`, `/source/{sessionKey}/{fileIndex:int}`,
-  `/source-pack/{sessionKey}`, `/health`).
-- `src/ODVGateway/Services/WebClientHandoffGuard.cs` — initiator
-  allowlist check.
-- `src/ODVGateway/Services/GatewaySessionStore.cs` — in-memory session
-  table.
-- `src/ODVGateway/Services/OpenDocViewerBundleFactory.cs` — bundle
-  shape.
-- `src/ODVGateway/Services/DirectSourceFileResolver.cs` — trusted-root
-  enforcement.
-- `src/ODVGateway/Services/OpenDocViewerDistResolver.cs` — dist folder
-  resolution.
-
-## Request lifecycle for one document
-
-The handoff is split into three calls. The first two are initiated by
-WebClient; the viewer issues the rest.
-
-```mermaid
-flowchart TD
-    A([User clicks a document<br/>in WebClient]) --> B[WebClient renders<br/>MediaViewerTwo iframe<br/>pointed at ODVGateway]
-    B --> C[Browser POST /prep<br/>with WebClient payload]
-    C --> D{WebClientHandoffGuard<br/>allowedInitiatorUrls empty?}
-    D -- yes --> F[GatewaySessionStore.Store<br/>allocates sessionKey<br/>+ handoffLookupKey<br/>(fail-open, dev only)]
-    D -- no --> E{Referer/Origin matches<br/>an allowedInitiatorUrls entry?}
-    E -- no --> EH[/403 Forbidden<br/>Referer/Origin not in allowlist/]
-    E -- yes --> F
-    F --> G[Build GatewaySourceFile list<br/>FileTicket.Parse]
-    G --> H[200 OK: sessionKey,<br/>document + file count, expiresUtc]
-    H --> I[WebClient opens iframe<br/>GET /?sessiondata=&lt;token&gt;]
-
-    I --> J{useBundleUrlHandoff?}
-    J -- no --> K[Decode sessiondata<br/>+ match by handoffLookupKey<br/>+ render index.html inline<br/>with window.ODV payload]
-    J -- yes --> L[Decode sessiondata<br/>+ match by handoffLookupKey]
-    L --> M[302 redirect<br/>Referrer-Policy: strict-origin-when-cross-origin]
-    M --> N[Browser GET /?bundleUrl=&lt;url&gt;]
-    N --> K
-
-    K --> O[OpenDocViewer dist runs<br/>window.ODV.start]
-    O --> P[Viewer fetches<br/>GET /bundle/&#123;key&#125;]
-    P --> Q[OpenDocViewerBundleFactory.CreateAsync]
-    Q --> R[Viewer fetches sources<br/>GET /source-pack/&#123;key&#125;<br/>or /source/&#123;key&#125;/&#123;i&#125;]
-    R --> S{DirectSourceFileResolver<br/>under trustedSourceRoots?}
-    S -- yes --> T[Stream file with range support<br/>Results.File + enableRangeProcessing]
-    S -- no --> U{ShouldProxyWebClientFallback?}
-    U -- yes --> V[HttpClient GET WebClient<br/>byte-capped + chunked]
-    U -- no --> W[Pass WebClient ticket URL<br/>to viewer]
-```
-
-Sources for this diagram:
-
-- `Program.cs` `MapPost("/prep", ...)` — `/prep` handler and
-  `GatewaySessionStore.Store`.
-- `Program.cs` `RenderViewerAsync` — `?sessiondata=` redirect path and
-  `useBundleUrlHandoff` switch.
-- `Program.cs` `MapGet("/bundle/{sessionKey}", ...)` — bundle fetch.
-- `Program.cs` `MapGet("/source/{sessionKey}/{fileIndex:int}", ...)` —
-  single-file route with range support and WebClient proxy fallback.
-- `Program.cs` `MapGet("/source-pack/{sessionKey}", ...)` —
-  `application/vnd.opendocviewer.source-pack` stream format (`odvsp1`).
-- `Services/DirectSourceFileResolver.cs` — trusted-root check.
-- `Services/WebClientFallbackUrlBuilder.cs` — fallback URL construction.
-
-## API surface and error paths
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Browser
-    participant WC as WebClient<br/>(host)
-    participant GW as ODVGateway
-    participant Store as GatewaySessionStore
-    participant Files as DirectSourceFileResolver
-    participant FS as Source files / WebClient
-
-    Browser->>WC: click document
-    WC->>Browser: render MediaViewerTwo iframe<br/>URL = /ODVGateway/
-    Browser->>GW: POST /prep
-    GW->>GW: WebClientHandoffGuard.Validate<br/>(Referer / Origin vs allowedInitiatorUrls)
-    alt initiator rejected
-        GW-->>Browser: 403 Forbidden
-    else store full
-        GW->>Store: Store(prep)
-        Store-->>GW: CapacityExceeded
-        GW-->>Browser: 429 Too Many Requests<br/>(maxConcurrentSessions)
-    else accepted
-        Store-->>GW: session, sessionKey, expiresUtc
-        GW-->>Browser: 200 OK { sessionKey, ... }
-    end
-
-    Browser->>GW: GET /?sessiondata=<base64-json>
-    GW->>GW: Validate handoff headers again
-    alt sessiondata malformed
-        GW-->>Browser: 400 Bad Request
-    else no matching prepared session
-        GW-->>Browser: 404 with status page
-    else useBundleUrlHandoff true
-        GW-->>Browser: 302 ?bundleUrl=&lt;absolute&gt;<br/>Referrer-Policy: strict-origin-when-cross-origin
-        Browser->>GW: GET /?bundleUrl=&lt;absolute&gt;
-    end
-
-    GW->>Store: TryGetByHandoffLookupKey
-    Store-->>GW: GatewaySession
-    GW->>GW: OpenDocViewerIndexRenderer.RenderAsync
-    GW-->>Browser: 200 text/html<br/>OpenDocViewer index.html + window.ODV bootstrap
-
-    Browser->>GW: GET /bundle/{sessionKey}
-    GW->>Store: TryGet(sessionKey)
-    Store-->>GW: GatewaySession
-    GW->>GW: OpenDocViewerBundleFactory.CreateAsync
-    GW-->>Browser: 200 application/json<br/>X-ODVGateway-* diagnostics headers
-
-    Browser->>GW: GET /source-pack/{sessionKey}
-    GW->>Store: TryGet(sessionKey)
-    GW-->>Browser: 200 application/vnd.opendocviewer.source-pack<br/>Content-Type: odvsp1<br/>X-ODVGateway-Source-Pack: odvsp1
-    loop per source file
-        GW->>Files: TryResolve(source)
-        alt direct path under trustedSourceRoots
-            Files-->>GW: DirectSourceFile
-            GW-->>Browser: per-file JSON header + bytes
-        else WebClient fallback
-            GW->>FS: HttpClient GET with ASPXAUTH + ASP.NET_SessionId cookies
-            alt success
-                FS-->>GW: 200 bytes
-                GW-->>Browser: per-file JSON header + bytes
-            else payload &gt; maxSourcePackFrameBytes
-                GW-->>Browser: per-file JSON header<br/>error: source too large
-            else retryable status / timeout
-                GW->>FS: retry up to retryCount
-            end
-        end
-    end
-
-    Browser->>GW: GET /health
-    GW->>Store: Count
-    GW-->>Browser: 200 OK { status: "ok", ... }<br/>or 503 if dist path missing
-```
-
-Sources for this diagram: the full pipeline in
-`src/ODVGateway/Program.cs`, plus `Services/GatewaySessionStore.cs`
-(capacity and lookup), `Services/WebClientHandoffGuard.cs` (Referer /
-Origin allowlist), `Services/OpenDocViewerIndexRenderer.cs`
-(`window.ODV` bootstrap injection), `Services/OpenDocViewerBundleFactory.cs`
-(bundle diagnostics headers), and `Services/ContentTypeMapper.cs`.
+In short: the gateway sits between the host WebClient and the OpenDocViewer
+SPA. WebClient posts `/prep`; the gateway keeps the payload in an in-memory
+session and answers the viewer's `?sessiondata=` request with a redirect to
+`?bundleUrl=`. The viewer then fetches `/bundle/{sessionKey}` and the source
+bytes from `/source/{sessionKey}/{fileIndex}` or `/source-pack/{sessionKey}`.
+Bytes come from a trusted server-side root or from the WebClient ticket
+stream. All endpoints are mapped in `src/ODVGateway/Program.cs`.
 
 ## Quickstart
 
@@ -331,8 +156,8 @@ store added before traffic can move between instances.
 | `maxSourcePackFrameBytes` | 64 MiB | Per-frame cap for `application/vnd.opendocviewer.source-pack`. |
 | `maxSourceProxyBytes` | `maxSourcePackFrameBytes` | Per-response cap for the proxied `/source` path. |
 | `sourcePackStreamBufferBytes` | 128 KiB | Stream copy chunk size (clamped to 4 KiB – 1 MiB). |
-| `inlineSources.enabled` | `true` | Embed small raster sources directly into the bundle. |
-| `remoteInlineSources.*` | see `appsettings.json` | Server-side prefetch for small same-host raster WebClient URLs (sequential, retry-on-transient). |
+| `inlineSources.*` | see `appsettings.json` | Bound and reported by `/health` only. The current bundle factory never embeds source bytes in the bundle (`OpenDocViewerBundleFactory.BuildViewerFile` sets `InlineBase64 = null`), because WebClient tickets can be one-use. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#6-configuration). |
+| `remoteInlineSources.*` | see `appsettings.json` | No prefetch happens. Only `requestTimeoutMs`, `retryCount`, `retryBaseDelayMs`, `aspxAuthCookieNames` and `sessionCookieNames` are used, by the `/source` proxy and the source pack when they fetch from WebClient. The other keys are reported by `/health` only. |
 
 ### Viewer and response hardening
 
@@ -346,8 +171,8 @@ store added before traffic can move between instances.
 | `contentTypes` | pdf/tif/tiff/jpg/jpeg/png/bmp/gif/webp/jxl/avif | Extension-to-content-type mapping for source files. JPEG XL (`image/jxl`) and AVIF (`image/avif`) are streamed unchanged; OpenDocViewer handles decoding. |
 
 The default `inlineSources.extensions` and `remoteInlineSources.extensions` lists
-include `jxl` and `avif`. Existing deployments with explicit extension lists must
-add these entries to their private configuration to enable inline transport for them.
+include `jxl` and `avif`. These lists do not change behaviour today: no source is
+inlined, whatever the list contains (see the rows above).
 
 Kestrel middleware always stamps `X-Frame-Options: SAMEORIGIN`,
 `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`,
@@ -583,6 +408,7 @@ reporting, and deployment hardening guidance.
 
 | Document | Purpose |
 | --- | --- |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Architecture: components, flows, data, integration contracts, configuration, security model, build and deployment, operations, trade-offs. |
 | [AGENTS.md](AGENTS.md) | Repository workflow, dependency-pin policy, release gate, two-version-line model. |
 | [SECURITY.md](SECURITY.md) | Supported versions, vulnerability reporting, security model, operational guidance. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Build, packaging, public-readiness checklist. |

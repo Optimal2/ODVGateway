@@ -16,6 +16,10 @@ for its `0.1.x` release line.
 
 ### Changed
 
+- Documentation: new `docs/ARCHITECTURE.md` describes the architecture from the code;
+  the README's diagram sections moved there. The README no longer claims that
+  `inlineSources` / `remoteInlineSources` inline or prefetch bytes: the bundle never
+  inlines, and only the remote timeout, retry and cookie-name keys affect the proxy.
 - .NET SDK floor raised to 10.0.404 (`global.json`, `rollForward: latestFeature`).
 - Test packages bumped to Microsoft.NET.Test.Sdk 18.11.0,
   Microsoft.AspNetCore.Mvc.Testing 10.0.15 (with explicit
