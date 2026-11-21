@@ -14,6 +14,14 @@ for its `0.1.x` release line.
   and default inline/remote-inline allowlists, including both shipped configuration templates.
   The gateway streams source bytes unchanged; decoding remains in OpenDocViewer.
 
+### Changed
+
+- .NET SDK floor raised to 10.0.404 (`global.json`, `rollForward: latestFeature`).
+- Test packages bumped to Microsoft.NET.Test.Sdk 18.11.0,
+  Microsoft.AspNetCore.Mvc.Testing 10.0.15 (with explicit
+  Microsoft.Bcl.AsyncInterfaces 10.0.15), xunit.v3.mtp-off 4.0.2 and
+  xunit.runner.visualstudio 4.0.1.
+
 ## [0.1.45] - 2026-11-09
 
 ### Added

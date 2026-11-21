@@ -70,8 +70,8 @@ ODVGateway/
    dotnet run --project src\ODVGateway\ODVGateway.csproj
    ```
 
-4. Open `http://localhost:5000` (or whatever `launchSettings.json`
-   names for the dev profile).
+4. Open `http://localhost:8095` (the `applicationUrl` of the
+   `ODVGateway` profile in `src/ODVGateway/Properties/launchSettings.json`).
 
 ## Verify It Works
 

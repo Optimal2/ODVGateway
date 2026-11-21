@@ -46,15 +46,19 @@ do not assume a central pin exists.
 That difference has an observable consequence, so treat it as a known state rather than
 rediscovering it: because a family-wide pin bump does not reach this repository automatically,
 a shared pin has to be lifted here by hand, and this repository is where such a pin lags.
-Re-measured 2026-09-27 against the OpenModulePlatform central pins:
+Re-measured 2026-11-21 against the OpenModulePlatform central pins:
 
 | Package | Here | OpenModulePlatform | State |
 | --- | --- | --- | --- |
-| `Microsoft.NET.Test.Sdk` | 18.10.1 | 18.10.1 | in line |
-| `xunit.v3.mtp-off` | 4.0.1 | `xunit` 2.9.3 (v2) | ahead, deliberately (see below) |
-| `xunit.runner.visualstudio` | 4.0.0 | 4.0.0 | in line |
-| `Microsoft.AspNetCore.Mvc.Testing` | 10.0.12 | 10.0.12 | in line |
-| `NLog.Web.AspNetCore` | 6.2.1 | 6.2.1 | in line |
+| `Microsoft.NET.Test.Sdk` | 18.11.0 | 18.11.0 | in line |
+| `xunit.v3.mtp-off` | 4.0.2 | `xunit` 2.9.3 (v2) | ahead, deliberately (see below) |
+| `xunit.runner.visualstudio` | 4.0.1 | 4.0.1 | in line |
+| `Microsoft.AspNetCore.Mvc.Testing` | 10.0.15 | 10.0.15 | in line |
+| `NLog.Web.AspNetCore` | 6.2.2 | 6.2.2 | in line |
+
+The test project additionally pins `Microsoft.Bcl.AsyncInterfaces` 10.0.15
+explicitly (the `Microsoft.AspNetCore.Mvc.Testing` 10.0.15 line); it has no
+central-pin counterpart and follows the test-package bump.
 
 Earlier rows were brought in line by family-wide campaigns rather than by this repository
 catching up on its own; `NLog.Web.AspNetCore` lagged at 6.1.4 until 2026-09-08.

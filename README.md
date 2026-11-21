@@ -8,12 +8,12 @@ ticket stream, or both. ODVGateway is also packaged as an OpenModulePlatform
 (OMP) web-app artifact (`odvgateway-web`).
 
 Current application version (`Directory.Build.props` `<Version>`):
-**v0.1.42**. Current OMP artifact version (`omp-components.json`):
-**0.1.50**. The two lines are deliberately independent — the OMP artifact
+**v0.1.45**. Current OMP artifact version (`omp-components.json`):
+**0.1.87**. The two lines are deliberately independent — the OMP artifact
 can move for a deployable change without an official release, and an
 official release can ship without bumping the artifact. Read both numbers
 out of their files; this paragraph names them once and can lag. Verified
-2026-09-26 against `Directory.Build.props`, `omp-components.json`, and
+2026-11-21 against `Directory.Build.props`, `omp-components.json`, and
 `odvgateway.module-definition.json`.
 
 The companion SPA it serves is the public
@@ -277,7 +277,7 @@ Default URLs:
 | `POST /prep` | Store a WebClient payload in the in-memory session table. |
 | `GET /` (and `GET /index.html`) | Viewer bootstrap. |
 | `GET /bundle/{sessionKey}` | One-shot JSON bundle (with diagnostics headers). |
-| `GET /source/{sessionKey}/{fileIndex:int}` | Single source file (range-supported when served from a trusted root). |
+| `GET /source/{sessionKey}/{fileIndex:int}` | Single source file (answers `GET` and `HEAD`; range-supported when served from a trusted root). |
 | `GET /source-pack/{sessionKey}` | `application/vnd.opendocviewer.source-pack` (odvsp1) stream of all source files. |
 
 Standalone IIS deployment: see [Standalone IIS Deployment](#standalone-iis-deployment).
@@ -343,7 +343,7 @@ store added before traffic can move between instances.
 | `exposeOpenDocViewerDistPathInHealth` | `false` | When `true`, `/health` includes the resolved filesystem path. Keep disabled in production. |
 | `contentSecurityPolicy` | `null` (uses `DefaultContentSecurityPolicy`) | Optional override for the `Content-Security-Policy` response header. When omitted, the gateway emits a restrictive default that allows same-origin dist files, the inline `odvgateway-bootstrap` script, inline status-page styles, `blob:`/`data:` images, same-origin API calls, and WebAssembly compilation (`'wasm-unsafe-eval'`) for OpenDocViewer's opt-in OCR and pdf.js decoders. JavaScript `eval` remains prohibited. Custom overrides must keep this token when OCR is enabled; the viewer's HTML meta policy is enforced independently. |
 | `metadataAliases` | `{}` | Optional alias mapping copied into the neutral ODV bundle so print templates such as `{{metadata.patientId}}` keep working. Deployments own these mappings in private config; the public repo ships an empty alias map. |
-| `contentTypes` | pdf/tif/jpg/png/bmp/gif/webp/jxl/avif | Extension-to-content-type mapping for source files. JPEG XL (`image/jxl`) and AVIF (`image/avif`) are streamed unchanged; OpenDocViewer handles decoding. |
+| `contentTypes` | pdf/tif/tiff/jpg/jpeg/png/bmp/gif/webp/jxl/avif | Extension-to-content-type mapping for source files. JPEG XL (`image/jxl`) and AVIF (`image/avif`) are streamed unchanged; OpenDocViewer handles decoding. |
 
 The default `inlineSources.extensions` and `remoteInlineSources.extensions` lists
 include `jxl` and `avif`. Existing deployments with explicit extension lists must
@@ -591,7 +591,8 @@ reporting, and deployment hardening guidance.
 | [docs/DEV-SETUP.md](docs/DEV-SETUP.md) | Local clone layout, dev-only settings, demo source files. |
 | [scripts/omp/README.md](scripts/omp/README.md) | OMP packaging and version-lockstep tooling. |
 | [tools/appsettings-generator/README.md](tools/appsettings-generator/README.md) | Generate and drift-check a site `appsettings.json` from the shipped sample plus a site profile (not packaged). |
-| [release-notes/](release-notes/) | Per-version release notes (v0.1.39 – v0.1.42). |
+| [release-notes/](release-notes/) | Per-version release notes (v0.1.39 – v0.1.45). |
+| [docs/reproducible-artifacts.md](docs/reproducible-artifacts.md) | Why checkout line endings are pinned and how to compare OMP artifact packages. |
 
 ### Published release vs OMP artifact
 
@@ -608,7 +609,7 @@ The two distribution outputs share the `ODVGateway-` prefix and the same
   `scripts/omp/build-repository-objects.ps1:Get-ArtifactPackageName` from
   the five `omp-components.json` fields (`moduleKey`, `appKey`,
   `packageType`, `targetName`, `version`). Example for the current build:
-  `odvgateway__odvgateway_webapp__web-app__odvgateway__0.1.51.zip`.
+  `odvgateway__odvgateway_webapp__web-app__odvgateway__0.1.87.zip`.
 
 The two archives are rebuilt independently: an official release may or
 may not roll into the next OMP artifact, and vice versa — the
