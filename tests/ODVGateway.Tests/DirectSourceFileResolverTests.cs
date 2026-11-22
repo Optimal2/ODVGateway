@@ -9,7 +9,10 @@ public sealed class DirectSourceFileResolverTests
     [Fact]
     public void TryResolve_RelativeClientPath_IsRejectedEvenWhenItResolvesBelowTrustedRoot()
     {
-        var root = Path.Join(Path.GetTempPath(), "odvgateway-tests-" + Guid.NewGuid().ToString("N"));
+        // Below the working directory, so the relative path below is relative on every
+        // runner: Path.GetRelativePath returns an absolute path when the temp folder is on
+        // another drive than the working directory (GitHub's Windows runners).
+        var root = Path.Join(Directory.GetCurrentDirectory(), "odvgateway-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
         var filePath = Path.Join(root, "source.pdf");
         File.WriteAllBytes(filePath, [1, 2, 3]);
@@ -24,6 +27,7 @@ public sealed class DirectSourceFileResolverTests
             var monitor = new StaticOptionsMonitor<ODVGatewayOptions>(options);
             var resolver = new DirectSourceFileResolver(monitor, NullLogger<DirectSourceFileResolver>.Instance);
             var relativePath = Path.GetRelativePath(Directory.GetCurrentDirectory(), filePath);
+            Assert.False(Path.IsPathRooted(relativePath), "The test needs a relative client path.");
 
             var resolved = resolver.TryResolve(relativePath, out _);
 
