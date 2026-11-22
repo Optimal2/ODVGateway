@@ -17,8 +17,9 @@
        unrelated validator error cannot pass it). A root NAMED by
        OMP_PLATFORM_ROOT that is not a checkout fails whether or not
        -Strict is passed.
-    2. OMP_PLATFORM_ROOT is honoured and wins over OpenModulePlatformRoot, so
-       the comparison actually runs.
+    2. OMP_PLATFORM_ROOT is honoured when OpenModulePlatformRoot is not set, so
+       the comparison actually runs. Conflicting values are covered by the
+       canonical shared platform-root resolution suite.
     3. -PlatformRepositoryRoot wins over OMP_PLATFORM_ROOT.
     4. scripts/local-ci.ps1 runs the validator with -Strict unless
        -AllowUnverifiedSharedScripts is passed, forwards -PlatformRepositoryRoot,
@@ -80,15 +81,15 @@ Describe 'Check 15 strict wiring' {
         $case1 = Invoke-Validator -Environment @{ OMP_PLATFORM_ROOT = $missingRoot } -Arguments @{ Strict = $true }
         $case1.ExitCode | Should -Be 1 -Because "the validator must fail when OMP_PLATFORM_ROOT '$missingRoot' is not a platform checkout"
         $case1.Output | Should -Match 'Check 15'
-        $case1.Output | Should -Match 'does not contain'
+        $case1.Output | Should -Match 'was not found'
         $case1.Output | Should -Match 'OMP_PLATFORM_ROOT'
         $case1.Output | Should -Not -Match 'NOT VERIFIED'
     }
 
-    # Case 2: OMP_PLATFORM_ROOT wins over a bogus OpenModulePlatformRoot.
+    # Case 2: OMP_PLATFORM_ROOT is honoured when OpenModulePlatformRoot is not set.
     It 'OMP_PLATFORM_ROOT runs the comparison' -Skip:$skipPlatformCases {
         $hasPlatform | Should -BeTrue -Because $missingPlatformDetail
-        $case2 = Invoke-Validator -Environment @{ OMP_PLATFORM_ROOT = $platformRoot; OpenModulePlatformRoot = $missingRoot } -Arguments @{ Strict = $true }
+        $case2 = Invoke-Validator -Environment @{ OMP_PLATFORM_ROOT = $platformRoot } -Arguments @{ Strict = $true }
         Test-ComparisonRan -Output $case2.Output | Should -BeTrue -Because "the canonical comparison must run (exit $($case2.ExitCode))"
     }
 

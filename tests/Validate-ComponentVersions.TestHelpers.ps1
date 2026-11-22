@@ -62,6 +62,7 @@ function New-TemporaryTestRepository {
     $null = New-Item -ItemType Directory -Path $ompScriptsDir -Force
     Copy-Item -LiteralPath $scriptPath -Destination (Join-Path $ompScriptsDir 'validate-component-versions.ps1') -Force
     Copy-Item -LiteralPath $helpersPath -Destination (Join-Path $ompScriptsDir 'validate-component-versions.helpers.ps1') -Force
+    Copy-Item -LiteralPath (Join-Path (Split-Path $scriptPath) 'resolve-platform-root.ps1') -Destination (Join-Path $ompScriptsDir 'resolve-platform-root.ps1') -Force
 
     Copy-Item -LiteralPath (Join-Path (Split-Path $scriptPath) 'bump-version.ps1') -Destination (Join-Path $ompScriptsDir 'bump-version.ps1')
 

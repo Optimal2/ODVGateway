@@ -148,8 +148,8 @@ What the guard protects against:
 > repository, and this repository gained Checks 12, 13 and 16 plus `-SelfTest`.
 >
 > **Check 15 is a different thing from Check 14, and it DOES apply here.** It compares
-> this repository's copies of the shared `scripts/omp/*` files — `bump-version.ps1`
-> and `validate-component-versions.helpers.ps1` — against the canonical copies in the
+> this repository's copies of the shared `scripts/omp/*` files — `bump-version.ps1`,
+> `validate-component-versions.helpers.ps1` and `resolve-platform-root.ps1` — against the canonical copies in the
 > neighbouring OpenModulePlatform checkout, by calling `validate-shared-scripts.ps1`
 > there. It is about script drift, not about shared project trees, which is why all
 > eight consumers have it while only the six Web.Shared consumers have Check 14. When
@@ -163,8 +163,9 @@ What the guard protects against:
 > `-Strict` unless `-AllowUnverifiedSharedScripts` is given, and the validator resolves
 > the platform checkout with `Resolve-PlatformCheckScript` in the canonical guard's
 > order: `-PlatformRepositoryRoot`, `OMP_PLATFORM_ROOT`, `OpenModulePlatformRoot`,
-> sibling `OpenModulePlatform`. `-AllowUnverifiedSharedScripts` maps to
-> `OMP_ALLOW_MISSING_PLATFORM=1`.
+> sibling `OpenModulePlatform`. When both environment variables are set, they must
+> resolve to the same checkout; conflicting roots fail rather than selecting one.
+> `-AllowUnverifiedSharedScripts` maps to `OMP_ALLOW_MISSING_PLATFORM=1`.
 
 If the guard fails:
 
