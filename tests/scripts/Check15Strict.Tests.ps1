@@ -33,8 +33,8 @@
     the same one the validator calls, so this file and the validator look in
     the same places in the same order: -PlatformRepositoryRoot,
     OMP_PLATFORM_ROOT, OpenModulePlatformRoot, then the sibling directory
-    named OpenModulePlatform. local-ci.ps1 forwards its -PlatformRepositoryRoot
-    as OMP_PLATFORM_ROOT.
+    named OpenModulePlatform. local-ci.ps1 resolves its -PlatformRepositoryRoot
+    and sets both environment variables to that root for Pester.
 
     Cases 2 and 3 need a real OpenModulePlatform checkout. It is read, never
     written. Without one those cases fail rather than skip, because a check
@@ -116,13 +116,16 @@ Describe 'Check 15 strict wiring' {
     }
 
     # Case 5: local-ci runs this suite through the canonical Pester step,
-    # forwards the root as OMP_PLATFORM_ROOT, and allows a missing platform
+    # forwards the resolved root through the environment, and allows a missing platform
     # only when -AllowUnverifiedSharedScripts was passed.
     It 'local-ci runs this suite through the canonical Pester step' {
         $text = $localCiAst.Extent.Text
         $text | Should -Match '\$scriptTestsRunner\s*=\s*Join-Path\s+\$scriptDir\s+[''"]omp[/\\]run-script-tests\.ps1[''"]'
         (Get-LocalCiCallText -Ast $localCiAst -VariablePattern 'scriptTestsRunner').Count | Should -BeGreaterThan 0 -Because 'run-script-tests.ps1 must be invoked'
-        $text | Should -Match '\$env:OMP_PLATFORM_ROOT\s*=\s*\$PlatformRepositoryRoot'
+        $text | Should -Match '\$platformRootResolver\s*=\s*Join-Path\s+\$scriptDir\s+[''"]omp[/\\]resolve-platform-root\.ps1[''"]'
+        $text | Should -Match '\$resolvedPlatformRoot\s*=\s*&\s*\$platformRootResolver\s+-RepositoryRoot\s+\$repoRoot\s+-PlatformRepositoryRoot\s+\$PlatformRepositoryRoot'
+        $text | Should -Match '\$env:OMP_PLATFORM_ROOT\s*=\s*\$resolvedPlatformRoot'
+        $text | Should -Match '\$env:OpenModulePlatformRoot\s*=\s*\$resolvedPlatformRoot'
         $text | Should -Match '\$env:ODVGATEWAY_CHECK15_ALLOW_MISSING_PLATFORM\s*=\s*if\s*\(\s*\$AllowUnverifiedSharedScripts\s*\)\s*\{\s*[''"]1[''"]\s*\}'
     }
 }

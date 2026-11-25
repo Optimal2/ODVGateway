@@ -44,9 +44,9 @@
     baseline, for example across the phases of a multi-step change.
 
 .PARAMETER PlatformRepositoryRoot
-    OpenModulePlatform checkout used by Check 15, forwarded to
-    validate-component-versions.ps1. Overrides OMP_PLATFORM_ROOT. Optional:
-    when omitted the validator resolves the checkout itself (see above).
+    Explicit OpenModulePlatform checkout for Check 15 and the Pester step.
+    Takes precedence over the environment variables. If both environment
+    variables are set, they must still agree with each other.
 
 .PARAMETER AllowUnverifiedSharedScripts
     Deliberately accepts an unresolvable OpenModulePlatform checkout as NOT
@@ -85,6 +85,7 @@ $testResultsDir = Join-Path $repoRoot 'TestResults'
 $smokeScript = Join-Path $scriptDir 'smoke-test.ps1'
 $validatorScript = Join-Path $scriptDir 'omp\validate-component-versions.ps1'
 $scriptTestsRunner = Join-Path $scriptDir 'omp\run-script-tests.ps1'
+$platformRootResolver = Join-Path $scriptDir 'omp\resolve-platform-root.ps1'
 
 # --- Local-ci telemetry (best-effort; never changes the gate's exit code) ----
 # One compact JSONL line per run under
@@ -304,17 +305,20 @@ Write-StepResult -Step 'validate-component-versions.ps1' -Passed $step4Pass -Mes
 # suite, among them Check15Strict.Tests.ps1, which pins that Check 15 fails
 # when the platform checkout cannot be found and that this gate runs it
 # -Strict. Not gated on earlier steps: the suites read scripts only and never
-# need the build output. The runner takes no suite parameters, so the platform
-# root is handed over as OMP_PLATFORM_ROOT and a missing platform checkout is
-# reported as skipped only when -AllowUnverifiedSharedScripts was passed on
-# purpose. Both environment variables are restored afterwards.
+# need the build output. The runner takes no suite parameters, so an explicit
+# platform root is resolved before publishing it in both environment variables.
+# A missing platform checkout is reported as skipped only when
+# -AllowUnverifiedSharedScripts was passed on purpose.
 $step5Pass = $false
 $step5Message = ''
 $savedPlatformRoot = $env:OMP_PLATFORM_ROOT
+$savedBuildPlatformRoot = $env:OpenModulePlatformRoot
 $savedAllowMissing = $env:ODVGATEWAY_CHECK15_ALLOW_MISSING_PLATFORM
 try {
     if (-not [string]::IsNullOrWhiteSpace($PlatformRepositoryRoot)) {
-        $env:OMP_PLATFORM_ROOT = $PlatformRepositoryRoot
+        $resolvedPlatformRoot = & $platformRootResolver -RepositoryRoot $repoRoot -PlatformRepositoryRoot $PlatformRepositoryRoot
+        $env:OMP_PLATFORM_ROOT = $resolvedPlatformRoot
+        $env:OpenModulePlatformRoot = $resolvedPlatformRoot
     }
     $env:ODVGATEWAY_CHECK15_ALLOW_MISSING_PLATFORM = if ($AllowUnverifiedSharedScripts) { '1' } else { $null }
     Write-Host ''
@@ -334,6 +338,7 @@ catch {
 }
 finally {
     $env:OMP_PLATFORM_ROOT = $savedPlatformRoot
+    $env:OpenModulePlatformRoot = $savedBuildPlatformRoot
     $env:ODVGATEWAY_CHECK15_ALLOW_MISSING_PLATFORM = $savedAllowMissing
 }
 Write-StepResult -Step 'run-script-tests.ps1 (Pester)' -Passed $step5Pass -Message $step5Message
